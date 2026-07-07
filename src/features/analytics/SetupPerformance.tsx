@@ -35,7 +35,7 @@ export function SetupPerformance({ trades }: Props) {
   // Load tag descriptions for tooltips
   useEffect(() => {
     const loadDescriptions = async () => {
-      const glossaryTerms = await db.glossary.toArray();
+      const glossaryTerms = await db.glossaryTerms.toArray();
       const descMap: Record<string, string> = {};
       for (const term of glossaryTerms) {
         descMap[term.term] = term.definition;

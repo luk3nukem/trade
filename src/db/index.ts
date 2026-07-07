@@ -8,7 +8,7 @@ class TradingDiaryDB extends Dexie {
   accounts!: EntityTable<Account, 'id'>;
   strategies!: EntityTable<Strategy, 'id'>;
   dailyJournals!: EntityTable<DailyJournal, 'id'>;
-  glossary!: EntityTable<GlossaryTerm, 'id'>;
+  glossaryTerms!: EntityTable<GlossaryTerm, 'id'>;
 
   constructor() {
     super('tradingDiary', { addons: [dexieCloud] });
@@ -248,7 +248,7 @@ class TradingDiaryDB extends Dexie {
         strategies: '@id',
         dailyJournals: '@id, date, accountId',
         tagDefinitions: null, // Remove tagDefinitions table
-        glossary: 'term, category', // New glossary table
+        glossaryTerms: 'term, category', // New glossary table
       })
       .upgrade(async (tx) => {
         // Migrate any existing tagDefinitions to glossary
@@ -259,7 +259,7 @@ class TradingDiaryDB extends Dexie {
             definition: def.description,
             category: 'Setup Tags', // Default category for migrated tags
           }));
-          await tx.table('glossary').bulkAdd(glossaryEntries);
+          await tx.table('glossaryTerms').bulkAdd(glossaryEntries);
         }
       });
 
@@ -270,7 +270,7 @@ class TradingDiaryDB extends Dexie {
         accounts: '@id',
         strategies: '@id',
         dailyJournals: '@id, date, accountId',
-        glossary: 'term, category',
+        glossaryTerms: 'term, category',
       })
       .upgrade((tx) => {
         return tx
@@ -303,19 +303,19 @@ class TradingDiaryDB extends Dexie {
         accounts: '@id',
         strategies: '@id',
         dailyJournals: '@id, date, accountId',
-        glossary: '@id, term, category', // Changed from 'term, category' to '@id, term, category'
+        glossaryTerms: '@id, term, category', // Changed from 'term, category' to '@id, term, category'
       })
       .upgrade(async (tx) => {
         // Migration: Copy existing glossary entries to new schema with @id
         // Dexie will automatically generate new IDs for entries without one
-        const existingTerms = await tx.table('glossary').toArray();
+        const existingTerms = await tx.table('glossaryTerms').toArray();
 
         // Clear and re-add with new schema (Dexie Cloud will generate @id)
-        await tx.table('glossary').clear();
+        await tx.table('glossaryTerms').clear();
 
         for (const term of existingTerms) {
           // Add without id - Dexie Cloud will generate @id
-          await tx.table('glossary').add({
+          await tx.table('glossaryTerms').add({
             term: term.term,
             definition: term.definition,
             category: term.category,

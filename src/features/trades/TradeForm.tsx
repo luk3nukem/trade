@@ -279,7 +279,7 @@ export function TradeForm() {
       setPreviousSetupTags(uniqueTags);
 
       // Load glossary for tag descriptions
-      const glossaryTerms = await db.glossary.toArray();
+      const glossaryTerms = await db.glossaryTerms.toArray();
       const descMap: Record<string, string> = {};
       for (const term of glossaryTerms) {
         descMap[term.term] = term.definition;

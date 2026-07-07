@@ -156,7 +156,7 @@ export function TradeDetail() {
         setTrade(found || null);
 
         // Load glossary for tag tooltips
-        const glossaryTerms = await db.glossary.toArray();
+        const glossaryTerms = await db.glossaryTerms.toArray();
         const descMap: Record<string, string> = {};
         for (const term of glossaryTerms) {
           descMap[term.term] = term.definition;

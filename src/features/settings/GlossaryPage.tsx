@@ -86,11 +86,11 @@ export function GlossaryPage() {
   // Load glossary terms
   const loadTerms = async () => {
     try {
-      const allTerms = await db.glossary.toArray();
+      const allTerms = await db.glossaryTerms.toArray();
 
       // Seed default terms if empty
       if (allTerms.length === 0) {
-        await db.glossary.bulkAdd(DEFAULT_GLOSSARY_TERMS);
+        await db.glossaryTerms.bulkAdd(DEFAULT_GLOSSARY_TERMS);
         setTerms(DEFAULT_GLOSSARY_TERMS);
       } else {
         setTerms(allTerms);
@@ -194,7 +194,7 @@ export function GlossaryPage() {
     }
 
     // Check for duplicate using where clause (term is no longer primary key)
-    const existing = await db.glossary.where('term').equals(formData.term.trim().toUpperCase()).first();
+    const existing = await db.glossaryTerms.where('term').equals(formData.term.trim().toUpperCase()).first();
     if (existing) {
       setMessage({ type: 'error', text: `Term "${formData.term}" already exists.` });
       return;
@@ -206,7 +206,7 @@ export function GlossaryPage() {
         definition: formData.definition.trim(),
         category: formData.category.trim() || undefined,
       };
-      await db.glossary.add(newTerm);
+      await db.glossaryTerms.add(newTerm);
       await loadTerms();
       setFormData({ term: '', definition: '', category: '' });
       setIsAdding(false);
@@ -224,7 +224,7 @@ export function GlossaryPage() {
     }
 
     try {
-      await db.glossary.update(editingId, {
+      await db.glossaryTerms.update(editingId, {
         definition: formData.definition.trim(),
         category: formData.category.trim() || undefined,
       });
@@ -243,7 +243,7 @@ export function GlossaryPage() {
     if (!confirm(`Delete "${termName}" from glossary?`)) return;
 
     try {
-      await db.glossary.delete(id);
+      await db.glossaryTerms.delete(id);
       await loadTerms();
       setMessage({ type: 'success', text: `Deleted "${termName}".` });
     } catch (error) {

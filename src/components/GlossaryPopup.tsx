@@ -19,7 +19,7 @@ export function GlossaryPopup({ isOpen, onClose }: Props) {
 
     const loadTerms = async () => {
       try {
-        const allTerms = await db.glossary.toArray();
+        const allTerms = await db.glossaryTerms.toArray();
         setTerms(allTerms);
       } catch (error) {
         console.error('Failed to load glossary:', error);
