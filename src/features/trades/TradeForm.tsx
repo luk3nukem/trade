@@ -72,8 +72,8 @@ const getInitialFormData = (): TradeFormData => ({
   tags: [],
   commissions: '',
   swap: '',
-  accountId: 'default',
-  strategyId: 'default',
+  accountId: '', // Will be set to default account's ID on load
+  strategyId: '', // Will be set to default strategy's ID on load
   postExitBestPrice: '',
   postExitWorstPrice: '',
   reachedTargetPostExit: null,
@@ -292,12 +292,16 @@ export function TradeForm() {
       setAccounts(allAccounts);
       setStrategies(allStrategies);
 
+      // Find default account/strategy by isDefault flag
+      const defaultAccount = allAccounts.find(a => a.isDefault);
+      const defaultStrategy = allStrategies.find(s => s.isDefault);
+
       // Set default account/strategy from global filter if not editing
       if (!id) {
         setFormData((prev) => ({
           ...prev,
-          accountId: dashboardFilters.accountId || 'default',
-          strategyId: dashboardFilters.strategyId || 'default',
+          accountId: dashboardFilters.accountId || defaultAccount?.id || '',
+          strategyId: dashboardFilters.strategyId || defaultStrategy?.id || '',
         }));
       }
     };

@@ -337,6 +337,78 @@ class TradingDiaryDB extends Dexie {
         await tx.table('glossaryTerms').clear();
       });
 
+    // Version 14 - Add isDefault flag to accounts/strategies, migrate hardcoded 'default' IDs
+    this.version(14)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade(async (tx) => {
+        // Migrate accounts with id === 'default'
+        const accountsTable = tx.table('accounts');
+        const oldDefaultAccount = await accountsTable.get('default');
+        if (oldDefaultAccount) {
+          // Delete the old record with invalid ID
+          await accountsTable.delete('default');
+          // Create new record with auto-generated ID and isDefault flag
+          await accountsTable.add({
+            name: oldDefaultAccount.name || 'Default Account',
+            broker: oldDefaultAccount.broker || '',
+            currency: oldDefaultAccount.currency || 'USD',
+            startingBalance: oldDefaultAccount.startingBalance || 0,
+            currentBalance: oldDefaultAccount.currentBalance || 0,
+            isDefault: true,
+            createdAt: oldDefaultAccount.createdAt,
+            updatedAt: oldDefaultAccount.updatedAt,
+          });
+        }
+
+        // Migrate strategies with id === 'default'
+        const strategiesTable = tx.table('strategies');
+        const oldDefaultStrategy = await strategiesTable.get('default');
+        if (oldDefaultStrategy) {
+          // Delete the old record with invalid ID
+          await strategiesTable.delete('default');
+          // Create new record with auto-generated ID and isDefault flag
+          await strategiesTable.add({
+            name: oldDefaultStrategy.name || 'Default Strategy',
+            description: oldDefaultStrategy.description || '',
+            rules: oldDefaultStrategy.rules || '',
+            isDefault: true,
+            createdAt: oldDefaultStrategy.createdAt,
+            updatedAt: oldDefaultStrategy.updatedAt,
+          });
+        }
+
+        // Get the new default account/strategy IDs for updating references
+        const newDefaultAccount = await accountsTable.filter((a: Account) => a.isDefault === true).first();
+        const newDefaultStrategy = await strategiesTable.filter((s: Strategy) => s.isDefault === true).first();
+
+        // Update trades that reference 'default' account/strategy
+        if (newDefaultAccount || newDefaultStrategy) {
+          await tx.table('trades').toCollection().modify((trade: TradeRecord) => {
+            if (trade.accountId === 'default' && newDefaultAccount?.id) {
+              trade.accountId = newDefaultAccount.id;
+            }
+            if (trade.strategyId === 'default' && newDefaultStrategy?.id) {
+              trade.strategyId = newDefaultStrategy.id;
+            }
+          });
+        }
+
+        // Update daily journals that reference 'default' account
+        if (newDefaultAccount) {
+          await tx.table('dailyJournals').toCollection().modify((journal: DailyJournal) => {
+            if (journal.accountId === 'default' && newDefaultAccount.id) {
+              journal.accountId = newDefaultAccount.id;
+            }
+          });
+        }
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {
@@ -351,39 +423,49 @@ class TradingDiaryDB extends Dexie {
 // Create and export the database instance
 export const db = new TradingDiaryDB();
 
-// Default account seed data
-const DEFAULT_ACCOUNT: Account = {
-  id: 'default',
+// Default account seed data (no id - Dexie Cloud will auto-generate)
+const DEFAULT_ACCOUNT: Omit<Account, 'id'> = {
   name: 'Default Account',
   broker: '',
   currency: 'USD',
   startingBalance: 0,
   currentBalance: 0,
+  isDefault: true,
 };
 
-// Default strategy seed data
-const DEFAULT_STRATEGY: Strategy = {
-  id: 'default',
+// Default strategy seed data (no id - Dexie Cloud will auto-generate)
+const DEFAULT_STRATEGY: Omit<Strategy, 'id'> = {
   name: 'Default Strategy',
   description: '',
   rules: '',
+  isDefault: true,
 };
 
 // Initialize seed data on first load
 export async function initializeSeedData(): Promise<void> {
-  // Check and insert default account if it doesn't exist
-  const existingAccount = await db.accounts.get('default');
-  if (!existingAccount) {
-    await db.accounts.add(DEFAULT_ACCOUNT);
+  // Check and insert default account if none exists with isDefault flag
+  const existingDefaultAccount = await db.accounts.where('isDefault').equals(1).first();
+  if (!existingDefaultAccount) {
+    await db.accounts.add(DEFAULT_ACCOUNT as Account);
     console.log('Default account created');
   }
 
-  // Check and insert default strategy if it doesn't exist
-  const existingStrategy = await db.strategies.get('default');
-  if (!existingStrategy) {
-    await db.strategies.add(DEFAULT_STRATEGY);
+  // Check and insert default strategy if none exists with isDefault flag
+  const existingDefaultStrategy = await db.strategies.where('isDefault').equals(1).first();
+  if (!existingDefaultStrategy) {
+    await db.strategies.add(DEFAULT_STRATEGY as Strategy);
     console.log('Default strategy created');
   }
+}
+
+// Helper to get the default account
+export async function getDefaultAccount(): Promise<Account | undefined> {
+  return db.accounts.where('isDefault').equals(1).first();
+}
+
+// Helper to get the default strategy
+export async function getDefaultStrategy(): Promise<Strategy | undefined> {
+  return db.strategies.where('isDefault').equals(1).first();
 }
 
 export default db;

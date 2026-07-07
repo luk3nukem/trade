@@ -27,7 +27,7 @@ const GRADES: { value: 'A' | 'B' | 'C' | 'D' | 'F'; label: string; color: string
 
 export function DailyJournalForm({ date, accountId, onSave, onCancel }: Props) {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState(accountId || 'default');
+  const [selectedAccountId, setSelectedAccountId] = useState(accountId || '');
   const [existingEntry, setExistingEntry] = useState<DailyJournal | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -47,12 +47,18 @@ export function DailyJournalForm({ date, accountId, onSave, onCancel }: Props) {
       const allAccounts = await db.accounts.toArray();
       setAccounts(allAccounts);
 
+      // Set default account if none selected
+      const effectiveAccountId = selectedAccountId || allAccounts.find(a => a.isDefault)?.id || '';
+      if (!selectedAccountId && effectiveAccountId) {
+        setSelectedAccountId(effectiveAccountId);
+      }
+
       // Look for existing entry for this date and account
       const dateStr = date.toISOString().split('T')[0];
       const entries = await db.dailyJournals.toArray();
       const existing = entries.find(e => {
         const entryDate = new Date(e.date).toISOString().split('T')[0];
-        return entryDate === dateStr && e.accountId === selectedAccountId;
+        return entryDate === dateStr && e.accountId === effectiveAccountId;
       });
 
       if (existing) {

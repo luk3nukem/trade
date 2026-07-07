@@ -27,7 +27,7 @@ export function JournalPage() {
   const [activeTab, setActiveTab] = useState<JournalTab>('timeline');
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [journals, setJournals] = useState<DailyJournal[]>([]);
-  const [, setAccounts] = useState<Account[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Timeline state
@@ -294,10 +294,14 @@ export function JournalPage() {
         updatedAt: now,
       });
     } else {
+      // Find the default account ID (by isDefault flag)
+      const defaultAccount = accounts.find(a => a.isDefault);
+      const accountId = dashboardFilters.accountId || defaultAccount?.id || '';
+
       // Don't provide an id - let Dexie Cloud generate it with @id schema
       const newEntry = {
         date: friday,
-        accountId: dashboardFilters.accountId || 'default',
+        accountId,
         isWeeklyReview: true,
         weeklyDidWell: didWell,
         weeklyToImprove: toImprove,

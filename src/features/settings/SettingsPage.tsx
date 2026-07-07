@@ -571,8 +571,21 @@ export function SettingsPage() {
     setMessage(null);
 
     try {
-      // Generate demo trades (all use 'default' account/strategy for cloud compatibility)
-      const trades = generateDemoTrades();
+      // Find the default account and strategy by isDefault flag
+      const defaultAccount = await db.accounts.filter(a => a.isDefault === true).first();
+      const defaultStrategy = await db.strategies.filter(s => s.isDefault === true).first();
+
+      if (!defaultAccount?.id || !defaultStrategy?.id) {
+        setMessage({
+          type: 'error',
+          text: 'Default account or strategy not found. Please ensure they exist.',
+        });
+        setLoading(false);
+        return;
+      }
+
+      // Generate demo trades using default account/strategy IDs
+      const trades = generateDemoTrades(defaultAccount.id, defaultStrategy.id);
 
       // Add trades one by one to handle Dexie Cloud ID generation
       for (const trade of trades) {
@@ -919,7 +932,7 @@ export function SettingsPage() {
                 <tr key={account.id} className="text-gray-200">
                   <td className="py-3">
                     {account.name}
-                    {account.id === 'default' && (
+                    {account.isDefault && (
                       <span className="ml-2 px-1.5 py-0.5 bg-gray-700 text-gray-400 text-xs rounded">
                         Default
                       </span>
@@ -943,7 +956,7 @@ export function SettingsPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                       </button>
-                      {account.id !== 'default' && (
+                      {!account.isDefault && (
                         <button
                           onClick={() => openDeleteAccount(account)}
                           className="p-1 text-gray-400 hover:text-red-400 transition-colors"
@@ -995,7 +1008,7 @@ export function SettingsPage() {
                 <tr key={strategy.id} className="text-gray-200">
                   <td className="py-3">
                     {strategy.name}
-                    {strategy.id === 'default' && (
+                    {strategy.isDefault && (
                       <span className="ml-2 px-1.5 py-0.5 bg-gray-700 text-gray-400 text-xs rounded">
                         Default
                       </span>
@@ -1022,7 +1035,7 @@ export function SettingsPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                       </button>
-                      {strategy.id !== 'default' && (
+                      {!strategy.isDefault && (
                         <button
                           onClick={() => openDeleteStrategy(strategy)}
                           className="p-1 text-gray-400 hover:text-red-400 transition-colors"

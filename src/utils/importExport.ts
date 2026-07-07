@@ -388,21 +388,21 @@ export async function clearEverything(): Promise<{
   await db.accounts.clear();
   await db.strategies.clear();
 
-  // Re-create default account and strategy
+  // Re-create default account and strategy (no id - Dexie Cloud will auto-generate)
   await db.accounts.add({
-    id: 'default',
     name: 'Default Account',
     broker: '',
     currency: 'USD',
     startingBalance: 0,
     currentBalance: 0,
+    isDefault: true,
   });
 
   await db.strategies.add({
-    id: 'default',
     name: 'Default Strategy',
     description: '',
     rules: '',
+    isDefault: true,
   });
 
   return counts;

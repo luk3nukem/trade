@@ -215,17 +215,9 @@ function generateExits(
   return exits;
 }
 
-// Account and Strategy IDs for demo - use only 'default' for Dexie Cloud compatibility
-const DEMO_ACCOUNTS = [
-  { id: 'default', weight: 100 },
-];
-
-const DEMO_STRATEGIES = [
-  { id: 'default', weight: 100 },
-];
-
 // Main seed data generation
-export function generateDemoTrades(): TradeRecord[] {
+// accountId and strategyId are the IDs of the default account/strategy (with isDefault: true)
+export function generateDemoTrades(accountId: string, strategyId: string): TradeRecord[] {
   const trades: TradeRecord[] = [];
 
   // Plan the trade distribution across 3 months (~90 days)
@@ -516,21 +508,6 @@ export function generateDemoTrades(): TradeRecord[] {
       }
     }
 
-    // Select account and strategy (weighted distribution)
-    const accountId = weightedRandom(
-      DEMO_ACCOUNTS.map(a => a.id),
-      DEMO_ACCOUNTS.map(a => a.weight)
-    );
-
-    // Breakout scalp strategy correlates with breakout tag
-    const hasBreakoutTag = setupConfig.tags.includes('breakout');
-    const strategyId = hasBreakoutTag
-      ? (Math.random() > 0.3 ? 'breakout-scalp' : 'default')
-      : weightedRandom(
-          DEMO_STRATEGIES.map(s => s.id),
-          DEMO_STRATEGIES.map(s => s.weight)
-        );
-
     // Generate post-exit data for ~60% of closed trades
     // Leave ~40% unreviewed to demonstrate "Trades to Review" dashboard prompt
     let postExitBestPrice: number | null = null;
@@ -727,16 +704,7 @@ export function generateDemoTrades(): TradeRecord[] {
 
     const plannedRR = roundToDecimals(tpDistance / stopDistance, 2);
 
-    // Select account and strategy for open trades
-    const accountId = weightedRandom(
-      DEMO_ACCOUNTS.map(a => a.id),
-      DEMO_ACCOUNTS.map(a => a.weight)
-    );
-    const strategyId = weightedRandom(
-      DEMO_STRATEGIES.map(s => s.id),
-      DEMO_STRATEGIES.map(s => s.weight)
-    );
-
+    // Use the passed default account/strategy IDs
     const openTrade: TradeRecord = {
       // Let Dexie Cloud generate the ID with @id schema
       accountId,
@@ -865,16 +833,7 @@ export function generateDemoTrades(): TradeRecord[] {
       notTakenReason = randomElement(NOT_TAKEN_REASONS);
     }
 
-    // Select account and strategy
-    const accountId = weightedRandom(
-      DEMO_ACCOUNTS.map(a => a.id),
-      DEMO_ACCOUNTS.map(a => a.weight)
-    );
-    const strategyId = weightedRandom(
-      DEMO_STRATEGIES.map(s => s.id),
-      DEMO_STRATEGIES.map(s => s.weight)
-    );
-
+    // Use the passed default account/strategy IDs
     const missedTrade: TradeRecord = {
       accountId,
       strategyId,

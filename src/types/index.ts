@@ -82,6 +82,7 @@ export interface Account {
   currency: string;
   startingBalance: number;
   currentBalance: number;
+  isDefault?: boolean; // True for the default account (replaces hardcoded "default" ID)
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -92,6 +93,7 @@ export interface Strategy {
   name: string;
   description: string;
   rules: string;
+  isDefault?: boolean; // True for the default strategy (replaces hardcoded "default" ID)
   createdAt?: Date;
   updatedAt?: Date;
 }
