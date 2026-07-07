@@ -2,69 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import { db } from '../../db';
 import type { GlossaryTerm } from '../../types';
 
-// Default glossary terms to seed on first load
-const DEFAULT_GLOSSARY_TERMS: GlossaryTerm[] = [
-  // Order Blocks
-  { term: 'OB', definition: 'Order Block — institutional candle where large orders were placed', category: 'Order Blocks' },
-  { term: 'HOB', definition: 'Hidden Order Block — order block hidden within the body of a larger candle', category: 'Order Blocks' },
-  { term: 'DHOB', definition: 'Double Hidden Order Block — two hidden OBs stacked at the same level', category: 'Order Blocks' },
-  { term: 'BB', definition: 'Breaker Block — failed order block that becomes support/resistance', category: 'Order Blocks' },
-  { term: 'MB', definition: 'Mitigation Block — order block used to mitigate losing positions', category: 'Order Blocks' },
-
-  // Fair Value Gaps
-  { term: 'FVG', definition: 'Fair Value Gap — imbalance/inefficiency in price, gap between candle wicks', category: 'Fair Value Gaps' },
-  { term: 'BISI', definition: 'Buy-side Imbalance Sell-side Inefficiency — bullish FVG', category: 'Fair Value Gaps' },
-  { term: 'SIBI', definition: 'Sell-side Imbalance Buy-side Inefficiency — bearish FVG', category: 'Fair Value Gaps' },
-  { term: 'CE', definition: 'Consequent Encroachment — 50% level of a FVG', category: 'Fair Value Gaps' },
-
-  // Market Structure
-  { term: 'BOS', definition: 'Break of Structure — price breaks a significant high/low', category: 'Market Structure' },
-  { term: 'CHoCH', definition: 'Change of Character — first sign of trend reversal', category: 'Market Structure' },
-  { term: 'MSS', definition: 'Market Structure Shift — confirmed change in market direction', category: 'Market Structure' },
-  { term: 'HH', definition: 'Higher High — price makes a new high above previous high', category: 'Market Structure' },
-  { term: 'HL', definition: 'Higher Low — price makes a low above previous low', category: 'Market Structure' },
-  { term: 'LH', definition: 'Lower High — price makes a high below previous high', category: 'Market Structure' },
-  { term: 'LL', definition: 'Lower Low — price makes a new low below previous low', category: 'Market Structure' },
-
-  // Key Levels
-  { term: 'PDH', definition: 'Previous Day High — highest price of the previous trading day', category: 'Key Levels' },
-  { term: 'PDL', definition: 'Previous Day Low — lowest price of the previous trading day', category: 'Key Levels' },
-  { term: 'PWH', definition: 'Previous Week High — highest price of the previous trading week', category: 'Key Levels' },
-  { term: 'PWL', definition: 'Previous Week Low — lowest price of the previous trading week', category: 'Key Levels' },
-  { term: 'PMH', definition: 'Previous Month High — highest price of the previous month', category: 'Key Levels' },
-  { term: 'PML', definition: 'Previous Month Low — lowest price of the previous month', category: 'Key Levels' },
-
-  // Fibonacci
-  { term: 'GP', definition: 'Golden Pocket — 0.618–0.65 fibonacci retracement zone, high probability reversal area', category: 'Fibonacci' },
-  { term: 'OTE', definition: 'Optimal Trade Entry — 0.62–0.79 fibonacci retracement zone', category: 'Fibonacci' },
-
-  // Entry Patterns
-  { term: 'RRT', definition: 'Rounded Retest — price curves back to retest a level with momentum', category: 'Entry Patterns' },
-  { term: 'LHPB', definition: 'Last High Pre-Break — the final high before a break of structure', category: 'Entry Patterns' },
-  { term: 'QML', definition: 'Quasimodo Level — specific reversal pattern with unequal highs/lows', category: 'Entry Patterns' },
-
-  // Liquidity
-  { term: 'BSL', definition: 'Buy-side Liquidity — stop losses above highs that attract price', category: 'Liquidity' },
-  { term: 'SSL', definition: 'Sell-side Liquidity — stop losses below lows that attract price', category: 'Liquidity' },
-  { term: 'EQH', definition: 'Equal Highs — multiple highs at the same level creating liquidity pool', category: 'Liquidity' },
-  { term: 'EQL', definition: 'Equal Lows — multiple lows at the same level creating liquidity pool', category: 'Liquidity' },
-  { term: 'LG', definition: 'Liquidity Grab — quick move to take out stops before reversing', category: 'Liquidity' },
-  { term: 'SH', definition: 'Stop Hunt — intentional move to trigger stop losses', category: 'Liquidity' },
-
-  // Sessions & Time
-  { term: 'KZ', definition: 'Kill Zone — high probability trading window during session opens', category: 'Sessions' },
-  { term: 'LKZ', definition: 'London Kill Zone — 2-5am EST, London session open', category: 'Sessions' },
-  { term: 'NYKZ', definition: 'New York Kill Zone — 7-10am EST, NY session open', category: 'Sessions' },
-  { term: 'LOKZ', definition: 'London Open Kill Zone — same as LKZ', category: 'Sessions' },
-
-  // Other Concepts
-  { term: 'SMT', definition: 'Smart Money Technique/Divergence — divergence between correlated pairs', category: 'SMC Concepts' },
-  { term: 'AMD', definition: 'Accumulation, Manipulation, Distribution — market cycle phases', category: 'SMC Concepts' },
-  { term: 'PO3', definition: 'Power of Three — AMD pattern within a single session', category: 'SMC Concepts' },
-  { term: 'ICT', definition: 'Inner Circle Trader — trading methodology/mentor', category: 'SMC Concepts' },
-  { term: 'SMC', definition: 'Smart Money Concepts — institutional trading methodology', category: 'SMC Concepts' },
-];
-
 type SortField = 'term' | 'category';
 type SortDirection = 'asc' | 'desc';
 
@@ -87,14 +24,7 @@ export function GlossaryPage() {
   const loadTerms = async () => {
     try {
       const allTerms = await db.glossaryTerms.toArray();
-
-      // Seed default terms if empty
-      if (allTerms.length === 0) {
-        await db.glossaryTerms.bulkAdd(DEFAULT_GLOSSARY_TERMS);
-        setTerms(DEFAULT_GLOSSARY_TERMS);
-      } else {
-        setTerms(allTerms);
-      }
+      setTerms(allTerms);
     } catch (error) {
       console.error('Failed to load glossary:', error);
       setMessage({ type: 'error', text: 'Failed to load glossary terms.' });

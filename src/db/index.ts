@@ -323,6 +323,20 @@ class TradingDiaryDB extends Dexie {
         }
       });
 
+    // Version 13 - Clear glossary table (remove pre-seeded terms, start fresh)
+    this.version(13)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id',
+        strategies: '@id',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade(async (tx) => {
+        // Clear all glossary terms - users will add their own
+        await tx.table('glossaryTerms').clear();
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {
