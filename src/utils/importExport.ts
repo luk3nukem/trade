@@ -1,8 +1,41 @@
 import { db } from '../db';
-import type { TradeRecord, Account, Strategy, DailyJournal } from '../types';
+import type { TradeRecord, Account, Strategy, DailyJournal, Screenshot } from '../types';
 
 // Backup version for migration compatibility
 const BACKUP_VERSION = 1;
+
+// Helper: Convert Blob to base64 data URL
+async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Helper: Convert base64 data URL to Blob
+function base64ToBlob(dataUrl: string): Blob | undefined {
+  try {
+    // Handle data URLs (e.g., "data:image/png;base64,...")
+    const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) return undefined;
+
+    const mimeType = match[1];
+    const base64Data = match[2];
+    const byteString = atob(base64Data);
+    const arrayBuffer = new ArrayBuffer(byteString.length);
+    const uint8Array = new Uint8Array(arrayBuffer);
+
+    for (let i = 0; i < byteString.length; i++) {
+      uint8Array[i] = byteString.charCodeAt(i);
+    }
+
+    return new Blob([uint8Array], { type: mimeType });
+  } catch {
+    return undefined;
+  }
+}
 
 // Backup data structure
 export interface BackupData {
@@ -49,17 +82,46 @@ export async function exportFullBackup(): Promise<BackupData> {
   const strategies = await db.strategies.toArray();
   const dailyJournals = await db.dailyJournals.toArray();
 
-  // Count screenshots
+  // Process trades to convert blob screenshots to base64 for JSON serialization
+  const tradesWithBase64Screenshots: TradeRecord[] = [];
   let screenshotCount = 0;
+
   for (const trade of trades) {
-    screenshotCount += trade.screenshots?.length ?? 0;
+    if (!trade.screenshots || trade.screenshots.length === 0) {
+      tradesWithBase64Screenshots.push(trade);
+      continue;
+    }
+
+    // Convert blob screenshots to base64
+    const convertedScreenshots: Screenshot[] = [];
+    for (const screenshot of trade.screenshots) {
+      screenshotCount++;
+      if (screenshot.blob) {
+        // Convert blob to base64 data URL
+        const base64Data = await blobToBase64(screenshot.blob);
+        convertedScreenshots.push({
+          id: screenshot.id,
+          data: base64Data, // Store as base64 for JSON export
+          caption: screenshot.caption,
+          createdAt: screenshot.createdAt,
+        });
+      } else if (screenshot.data) {
+        // Already has base64 data
+        convertedScreenshots.push(screenshot);
+      }
+    }
+
+    tradesWithBase64Screenshots.push({
+      ...trade,
+      screenshots: convertedScreenshots,
+    });
   }
 
   return {
     version: BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
     data: {
-      trades,
+      trades: tradesWithBase64Screenshots,
       accounts,
       strategies,
       dailyJournals,
@@ -194,10 +256,17 @@ export async function importBackup(backup: BackupData): Promise<ImportResult> {
               ...s,
               time: new Date(s.time),
             })) ?? [],
-            screenshots: trade.screenshots?.map((s) => ({
-              ...s,
-              createdAt: new Date(s.createdAt),
-            })) ?? [],
+            screenshots: trade.screenshots?.map((s) => {
+              // Convert base64 data to Blob for native storage
+              const blob = s.data ? base64ToBlob(s.data) : undefined;
+              return {
+                id: s.id,
+                blob, // Store as Blob for Dexie
+                data: s.data, // Keep base64 as fallback
+                caption: s.caption,
+                createdAt: new Date(s.createdAt),
+              };
+            }) ?? [],
           };
           await db.trades.add(tradeWithDates);
           result.imported.trades++;

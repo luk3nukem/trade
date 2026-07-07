@@ -204,6 +204,50 @@ export function TradeForm() {
   const [newStrategyName, setNewStrategyName] = useState('');
   const [isAddingStrategy, setIsAddingStrategy] = useState(false);
 
+  // Screenshot blob URLs for display (created from stored Blobs)
+  const [screenshotUrls, setScreenshotUrls] = useState<Record<string, string>>({});
+
+  // Create blob URLs for screenshots and clean up on unmount
+  useEffect(() => {
+    const newUrls: Record<string, string> = {};
+
+    for (const screenshot of formData.screenshots) {
+      // Skip if we already have a URL for this screenshot
+      if (screenshotUrls[screenshot.id]) {
+        newUrls[screenshot.id] = screenshotUrls[screenshot.id];
+        continue;
+      }
+
+      // Create URL from blob if available
+      if (screenshot.blob) {
+        newUrls[screenshot.id] = URL.createObjectURL(screenshot.blob);
+      }
+      // Fall back to legacy base64 data
+      else if (screenshot.data) {
+        newUrls[screenshot.id] = screenshot.data;
+      }
+    }
+
+    // Revoke URLs for removed screenshots
+    for (const [id, url] of Object.entries(screenshotUrls)) {
+      if (!newUrls[id] && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    setScreenshotUrls(newUrls);
+
+    // Cleanup all blob URLs on unmount
+    return () => {
+      for (const url of Object.values(newUrls)) {
+        if (url.startsWith('blob:')) {
+          URL.revokeObjectURL(url);
+        }
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.screenshots]);
+
   // Load existing trade data for edit mode
   useEffect(() => {
     if (!id) return;
@@ -537,7 +581,7 @@ export function TradeForm() {
     }));
   };
 
-  // Handle screenshot paste
+  // Handle screenshot paste - store Blob directly for Dexie persistence
   const handlePaste = useCallback((e: ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -546,37 +590,10 @@ export function TradeForm() {
       if (item.type.startsWith('image/')) {
         const file = item.getAsFile();
         if (file) {
-          const reader = new FileReader();
-          reader.onload = (event) => {
-            const newScreenshot: Screenshot = {
-              id: uuidv4(),
-              data: event.target?.result as string,
-              caption: '',
-              createdAt: new Date(),
-            };
-            setFormData((prev) => ({
-              ...prev,
-              screenshots: [...prev.screenshots, newScreenshot],
-            }));
-          };
-          reader.readAsDataURL(file);
-        }
-      }
-    }
-  }, []);
-
-  // Handle screenshot drop
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
-
-    for (const file of files) {
-      if (file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
+          // Store the Blob directly - Dexie handles binary data natively
           const newScreenshot: Screenshot = {
             id: uuidv4(),
-            data: event.target?.result as string,
+            blob: file,
             caption: '',
             createdAt: new Date(),
           };
@@ -584,8 +601,29 @@ export function TradeForm() {
             ...prev,
             screenshots: [...prev.screenshots, newScreenshot],
           }));
+        }
+      }
+    }
+  }, []);
+
+  // Handle screenshot drop - store Blob directly for Dexie persistence
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    const files = e.dataTransfer.files;
+
+    for (const file of files) {
+      if (file.type.startsWith('image/')) {
+        // Store the Blob directly - Dexie handles binary data natively
+        const newScreenshot: Screenshot = {
+          id: uuidv4(),
+          blob: file,
+          caption: '',
+          createdAt: new Date(),
         };
-        reader.readAsDataURL(file);
+        setFormData((prev) => ({
+          ...prev,
+          screenshots: [...prev.screenshots, newScreenshot],
+        }));
       }
     }
   }, []);
@@ -2281,16 +2319,18 @@ export function TradeForm() {
                 {/* Screenshot previews */}
                 {formData.screenshots.length > 0 && (
                   <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {formData.screenshots.filter(s => s.data && s.data.length > 0).map((screenshot) => (
+                    {formData.screenshots.filter(s => s.blob || (s.data && s.data.length > 0)).map((screenshot) => (
                       <div key={screenshot.id} className="relative group">
-                        <img
-                          src={screenshot.data}
-                          alt="Screenshot"
-                          className="w-full h-32 object-cover rounded-lg"
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
+                        {screenshotUrls[screenshot.id] && (
+                          <img
+                            src={screenshotUrls[screenshot.id]}
+                            alt="Screenshot"
+                            className="w-full h-32 object-cover rounded-lg"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
+                        )}
                         <button
                           type="button"
                           onClick={() => removeScreenshot(screenshot.id)}

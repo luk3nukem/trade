@@ -146,6 +146,7 @@ export function TradeDetail() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
+  const [screenshotUrls, setScreenshotUrls] = useState<Record<string, string>>({});
 
   // Load trade from database
   useEffect(() => {
@@ -170,6 +171,33 @@ export function TradeDetail() {
     };
     loadTrade();
   }, [id]);
+
+  // Create blob URLs for screenshots and clean up on unmount
+  useEffect(() => {
+    if (!trade?.screenshots) return;
+
+    const newUrls: Record<string, string> = {};
+    for (const screenshot of trade.screenshots) {
+      // Create URL from blob if available
+      if (screenshot.blob) {
+        newUrls[screenshot.id] = URL.createObjectURL(screenshot.blob);
+      }
+      // Fall back to legacy base64 data
+      else if (screenshot.data) {
+        newUrls[screenshot.id] = screenshot.data;
+      }
+    }
+    setScreenshotUrls(newUrls);
+
+    // Cleanup blob URLs on unmount or when trade changes
+    return () => {
+      for (const url of Object.values(newUrls)) {
+        if (url.startsWith('blob:')) {
+          URL.revokeObjectURL(url);
+        }
+      }
+    };
+  }, [trade?.screenshots]);
 
   // Handle delete
   const handleDelete = async () => {
@@ -704,22 +732,24 @@ export function TradeDetail() {
           <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
             <h3 className="text-lg font-medium text-white mb-4">Screenshots</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {trade.screenshots.filter(s => s.data && s.data.length > 0).map((screenshot) => (
+              {trade.screenshots.filter(s => s.blob || (s.data && s.data.length > 0)).map((screenshot) => (
                 <div key={screenshot.id} className="space-y-2">
-                  <button
-                    onClick={() => setLightboxImage(screenshot.data)}
-                    className="w-full aspect-video bg-gray-700 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all"
-                  >
-                    <img
-                      src={screenshot.data}
-                      alt={screenshot.caption || 'Trade screenshot'}
-                      className="w-full h-full object-cover"
-                      onError={(e) => {
-                        // Hide broken images
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  </button>
+                  {screenshotUrls[screenshot.id] && (
+                    <button
+                      onClick={() => setLightboxImage(screenshotUrls[screenshot.id])}
+                      className="w-full aspect-video bg-gray-700 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all"
+                    >
+                      <img
+                        src={screenshotUrls[screenshot.id]}
+                        alt={screenshot.caption || 'Trade screenshot'}
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          // Hide broken images
+                          (e.target as HTMLImageElement).style.display = 'none';
+                        }}
+                      />
+                    </button>
+                  )}
                   {screenshot.caption && (
                     <p className="text-xs text-gray-400 text-center">{screenshot.caption}</p>
                   )}

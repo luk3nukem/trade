@@ -69,7 +69,8 @@ export interface StopAdjustment {
 // Screenshot with caption
 export interface Screenshot {
   id: string;
-  data: string; // base64 or URL
+  blob?: Blob; // Binary data stored directly in Dexie (preferred)
+  data?: string; // Legacy: base64 string (for backward compatibility)
   caption: string;
   createdAt: Date;
 }

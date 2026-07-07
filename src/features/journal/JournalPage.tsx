@@ -52,12 +52,13 @@ export function JournalPage() {
   // Screenshots state
   const [screenshotFilter, setScreenshotFilter] = useState({ pair: '', dateFrom: '', dateTo: '' });
   const [selectedScreenshot, setSelectedScreenshot] = useState<{
-    data: string;
+    url: string;
     pair: string;
     rMultiple: number;
     tradeId?: string;
     date: string;
   } | null>(null);
+  const [screenshotBlobUrls, setScreenshotBlobUrls] = useState<Record<string, string>>({});
 
   const { dashboardFilters } = useAppStore();
 
@@ -222,10 +223,12 @@ export function JournalPage() {
     };
   }, [selectedWeekStart, trades, journals]);
 
-  // Screenshots data
+  // Screenshots data - collect all screenshots from filtered trades
   const screenshotsData = useMemo(() => {
     const screenshots: Array<{
-      data: string;
+      id: string;
+      blob?: Blob;
+      data?: string;
       caption: string;
       pair: string;
       rMultiple: number;
@@ -250,19 +253,55 @@ export function JournalPage() {
       }
 
       for (const ss of trade.screenshots) {
-        screenshots.push({
-          data: ss.data,
-          caption: ss.caption,
-          pair: trade.pair,
-          rMultiple: trade.rMultiple ?? 0,
-          tradeId: trade.id,
-          date: new Date(trade.entryTime).toISOString().split('T')[0],
-        });
+        if (ss.blob || (ss.data && ss.data.length > 0)) {
+          screenshots.push({
+            id: ss.id,
+            blob: ss.blob,
+            data: ss.data,
+            caption: ss.caption,
+            pair: trade.pair,
+            rMultiple: trade.rMultiple ?? 0,
+            tradeId: trade.id,
+            date: new Date(trade.entryTime).toISOString().split('T')[0],
+          });
+        }
       }
     }
 
     return screenshots.sort((a, b) => b.date.localeCompare(a.date));
   }, [trades, screenshotFilter]);
+
+  // Create blob URLs for screenshots
+  useEffect(() => {
+    const newUrls: Record<string, string> = {};
+
+    for (const ss of screenshotsData) {
+      if (ss.blob) {
+        newUrls[ss.id] = URL.createObjectURL(ss.blob);
+      } else if (ss.data) {
+        newUrls[ss.id] = ss.data;
+      }
+    }
+
+    // Cleanup old blob URLs
+    for (const [id, url] of Object.entries(screenshotBlobUrls)) {
+      if (!newUrls[id] && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    setScreenshotBlobUrls(newUrls);
+
+    // Cleanup on unmount
+    return () => {
+      for (const url of Object.values(newUrls)) {
+        if (url.startsWith('blob:')) {
+          URL.revokeObjectURL(url);
+        }
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenshotsData]);
 
   // Get selected day's journal
   const selectedDayJournal = useMemo(() => {
@@ -772,18 +811,26 @@ export function JournalPage() {
       {/* Screenshot Grid */}
       {screenshotsData.length > 0 ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {screenshotsData.map((ss, i) => (
+          {screenshotsData.map((ss) => (
             <button
-              key={i}
-              onClick={() => setSelectedScreenshot(ss)}
+              key={ss.id}
+              onClick={() => setSelectedScreenshot({
+                url: screenshotBlobUrls[ss.id] || '',
+                pair: ss.pair,
+                rMultiple: ss.rMultiple,
+                tradeId: ss.tradeId,
+                date: ss.date,
+              })}
               className="bg-gray-800 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all"
             >
               <div className="aspect-video bg-gray-900">
-                <img
-                  src={ss.data}
-                  alt={`${ss.pair} trade`}
-                  className="w-full h-full object-cover"
-                />
+                {screenshotBlobUrls[ss.id] && (
+                  <img
+                    src={screenshotBlobUrls[ss.id]}
+                    alt={`${ss.pair} trade`}
+                    className="w-full h-full object-cover"
+                  />
+                )}
               </div>
               <div className="p-2">
                 <div className="flex items-center justify-between">
@@ -837,7 +884,7 @@ export function JournalPage() {
               </div>
             </div>
             <img
-              src={selectedScreenshot.data}
+              src={selectedScreenshot.url}
               alt={`${selectedScreenshot.pair} trade`}
               className="w-full"
             />
