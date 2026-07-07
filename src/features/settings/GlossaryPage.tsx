@@ -291,7 +291,8 @@ export function GlossaryPage() {
         <button
           onClick={() => {
             setIsAdding(true);
-            setEditingTerm(null);
+            setEditingId(null);
+            setEditingTermName('');
             setFormData({ term: '', definition: '', category: '' });
           }}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
