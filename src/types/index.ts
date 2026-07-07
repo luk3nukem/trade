@@ -104,7 +104,8 @@ export interface TagDefinition {
 
 // Glossary term for trading terminology
 export interface GlossaryTerm {
-  term: string; // Primary key - the acronym or short form (e.g. "DHOB", "RRT")
+  id?: string; // Optional - Dexie Cloud generates with @id
+  term: string; // The acronym or short form (e.g. "DHOB", "RRT")
   definition: string; // Full explanation
   category?: string; // Optional grouping (e.g. "Order Blocks", "Fibonacci")
 }

@@ -8,8 +8,7 @@ class TradingDiaryDB extends Dexie {
   accounts!: EntityTable<Account, 'id'>;
   strategies!: EntityTable<Strategy, 'id'>;
   dailyJournals!: EntityTable<DailyJournal, 'id'>;
-  tagDefinitions!: EntityTable<TagDefinition, 'tag'>;
-  glossary!: EntityTable<GlossaryTerm, 'term'>;
+  glossary!: EntityTable<GlossaryTerm, 'id'>;
 
   constructor() {
     super('tradingDiary', { addons: [dexieCloud] });
@@ -295,6 +294,33 @@ class TradingDiaryDB extends Dexie {
               trade.reviewedAt = null;
             }
           });
+      });
+
+    // Version 12 - Change glossary to use @id for Dexie Cloud compatibility
+    this.version(12)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id',
+        strategies: '@id',
+        dailyJournals: '@id, date, accountId',
+        glossary: '@id, term, category', // Changed from 'term, category' to '@id, term, category'
+      })
+      .upgrade(async (tx) => {
+        // Migration: Copy existing glossary entries to new schema with @id
+        // Dexie will automatically generate new IDs for entries without one
+        const existingTerms = await tx.table('glossary').toArray();
+
+        // Clear and re-add with new schema (Dexie Cloud will generate @id)
+        await tx.table('glossary').clear();
+
+        for (const term of existingTerms) {
+          // Add without id - Dexie Cloud will generate @id
+          await tx.table('glossary').add({
+            term: term.term,
+            definition: term.definition,
+            category: term.category,
+          });
+        }
       });
 
     // Configure Dexie Cloud

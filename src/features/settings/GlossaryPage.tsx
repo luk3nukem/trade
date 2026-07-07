@@ -78,7 +78,8 @@ export function GlossaryPage() {
 
   // Form state
   const [isAdding, setIsAdding] = useState(false);
-  const [editingTerm, setEditingTerm] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null); // Store id, not term
+  const [editingTermName, setEditingTermName] = useState<string>(''); // For display only
   const [formData, setFormData] = useState({ term: '', definition: '', category: '' });
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -192,8 +193,8 @@ export function GlossaryPage() {
       return;
     }
 
-    // Check for duplicate
-    const existing = await db.glossary.get(formData.term.trim().toUpperCase());
+    // Check for duplicate using where clause (term is no longer primary key)
+    const existing = await db.glossary.where('term').equals(formData.term.trim().toUpperCase()).first();
     if (existing) {
       setMessage({ type: 'error', text: `Term "${formData.term}" already exists.` });
       return;
@@ -217,33 +218,34 @@ export function GlossaryPage() {
   };
 
   const handleEdit = async () => {
-    if (!editingTerm || !formData.definition.trim()) {
+    if (!editingId || !formData.definition.trim()) {
       setMessage({ type: 'error', text: 'Definition is required.' });
       return;
     }
 
     try {
-      await db.glossary.update(editingTerm, {
+      await db.glossary.update(editingId, {
         definition: formData.definition.trim(),
         category: formData.category.trim() || undefined,
       });
       await loadTerms();
-      setEditingTerm(null);
+      setEditingId(null);
+      setEditingTermName('');
       setFormData({ term: '', definition: '', category: '' });
-      setMessage({ type: 'success', text: `Updated "${editingTerm}".` });
+      setMessage({ type: 'success', text: `Updated "${editingTermName}".` });
     } catch (error) {
       console.error('Failed to update term:', error);
       setMessage({ type: 'error', text: 'Failed to update term.' });
     }
   };
 
-  const handleDelete = async (term: string) => {
-    if (!confirm(`Delete "${term}" from glossary?`)) return;
+  const handleDelete = async (id: string, termName: string) => {
+    if (!confirm(`Delete "${termName}" from glossary?`)) return;
 
     try {
-      await db.glossary.delete(term);
+      await db.glossary.delete(id);
       await loadTerms();
-      setMessage({ type: 'success', text: `Deleted "${term}".` });
+      setMessage({ type: 'success', text: `Deleted "${termName}".` });
     } catch (error) {
       console.error('Failed to delete term:', error);
       setMessage({ type: 'error', text: 'Failed to delete term.' });
@@ -251,7 +253,8 @@ export function GlossaryPage() {
   };
 
   const startEditing = (term: GlossaryTerm) => {
-    setEditingTerm(term.term);
+    setEditingId(term.id!);
+    setEditingTermName(term.term);
     setFormData({
       term: term.term,
       definition: term.definition,
@@ -261,7 +264,8 @@ export function GlossaryPage() {
   };
 
   const cancelEdit = () => {
-    setEditingTerm(null);
+    setEditingId(null);
+    setEditingTermName('');
     setIsAdding(false);
     setFormData({ term: '', definition: '', category: '' });
   };
@@ -305,10 +309,10 @@ export function GlossaryPage() {
       )}
 
       {/* Add/Edit Form */}
-      {(isAdding || editingTerm) && (
+      {(isAdding || editingId) && (
         <div className="bg-gray-800 rounded-lg p-4 space-y-4">
           <h3 className="text-lg font-medium text-white">
-            {isAdding ? 'Add New Term' : `Edit "${editingTerm}"`}
+            {isAdding ? 'Add New Term' : `Edit "${editingTermName}"`}
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -317,7 +321,7 @@ export function GlossaryPage() {
                 type="text"
                 value={formData.term}
                 onChange={(e) => setFormData(prev => ({ ...prev, term: e.target.value }))}
-                disabled={!!editingTerm}
+                disabled={!!editingId}
                 placeholder="e.g., FVG, OB, BOS"
                 className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 disabled:opacity-50"
               />
@@ -432,7 +436,7 @@ export function GlossaryPage() {
                   </thead>
                   <tbody className="divide-y divide-gray-700">
                     {categoryTerms.map(term => (
-                      <tr key={term.term} className="hover:bg-gray-750">
+                      <tr key={term.id || term.term} className="hover:bg-gray-750">
                         <td className="px-4 py-3">
                           <span className="px-2 py-1 bg-blue-500/20 text-blue-400 rounded text-sm font-mono">
                             {term.term}
@@ -451,7 +455,7 @@ export function GlossaryPage() {
                               </svg>
                             </button>
                             <button
-                              onClick={() => handleDelete(term.term)}
+                              onClick={() => handleDelete(term.id!, term.term)}
                               className="p-1 text-gray-400 hover:text-red-400 transition-colors"
                               title="Delete"
                             >
