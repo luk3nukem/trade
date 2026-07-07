@@ -444,14 +444,14 @@ const DEFAULT_STRATEGY: Omit<Strategy, 'id'> = {
 // Initialize seed data on first load
 export async function initializeSeedData(): Promise<void> {
   // Check and insert default account if none exists with isDefault flag
-  const existingDefaultAccount = await db.accounts.where('isDefault').equals(1).first();
+  const existingDefaultAccount = await db.accounts.filter(a => a.isDefault === true).first();
   if (!existingDefaultAccount) {
     await db.accounts.add(DEFAULT_ACCOUNT as Account);
     console.log('Default account created');
   }
 
   // Check and insert default strategy if none exists with isDefault flag
-  const existingDefaultStrategy = await db.strategies.where('isDefault').equals(1).first();
+  const existingDefaultStrategy = await db.strategies.filter(s => s.isDefault === true).first();
   if (!existingDefaultStrategy) {
     await db.strategies.add(DEFAULT_STRATEGY as Strategy);
     console.log('Default strategy created');
@@ -460,12 +460,12 @@ export async function initializeSeedData(): Promise<void> {
 
 // Helper to get the default account
 export async function getDefaultAccount(): Promise<Account | undefined> {
-  return db.accounts.where('isDefault').equals(1).first();
+  return db.accounts.filter(a => a.isDefault === true).first();
 }
 
 // Helper to get the default strategy
 export async function getDefaultStrategy(): Promise<Strategy | undefined> {
-  return db.strategies.where('isDefault').equals(1).first();
+  return db.strategies.filter(s => s.isDefault === true).first();
 }
 
 export default db;
