@@ -273,7 +273,26 @@ export function SettingsPage() {
 
     setLoading(true);
     try {
+      const wasDefault = accountToDelete.isDefault;
       await db.accounts.delete(accountToDelete.id);
+
+      // If we deleted the last account (or the default), create a new default
+      const remainingAccounts = await db.accounts.toArray();
+      if (remainingAccounts.length === 0) {
+        await db.accounts.add({
+          name: 'Default Account',
+          broker: '',
+          currency: 'USD',
+          startingBalance: 0,
+          currentBalance: 0,
+          isDefault: true,
+        });
+      } else if (wasDefault) {
+        // If we deleted the default, make the first remaining account the new default
+        const firstAccount = remainingAccounts[0];
+        await db.accounts.update(firstAccount.id!, { isDefault: true });
+      }
+
       await loadAccounts();
       setAccountToDelete(null);
       setActiveModal(null);
@@ -368,7 +387,24 @@ export function SettingsPage() {
 
     setLoading(true);
     try {
+      const wasDefault = strategyToDelete.isDefault;
       await db.strategies.delete(strategyToDelete.id);
+
+      // If we deleted the last strategy (or the default), create a new default
+      const remainingStrategies = await db.strategies.toArray();
+      if (remainingStrategies.length === 0) {
+        await db.strategies.add({
+          name: 'Default Strategy',
+          description: '',
+          rules: '',
+          isDefault: true,
+        });
+      } else if (wasDefault) {
+        // If we deleted the default, make the first remaining strategy the new default
+        const firstStrategy = remainingStrategies[0];
+        await db.strategies.update(firstStrategy.id!, { isDefault: true });
+      }
+
       await loadStrategies();
       setStrategyToDelete(null);
       setActiveModal(null);
@@ -956,17 +992,15 @@ export function SettingsPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                       </button>
-                      {!account.isDefault && (
-                        <button
-                          onClick={() => openDeleteAccount(account)}
-                          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
-                          title="Delete"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      )}
+                      <button
+                        onClick={() => openDeleteAccount(account)}
+                        className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                        title="Delete"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -1035,17 +1069,15 @@ export function SettingsPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
                       </button>
-                      {!strategy.isDefault && (
-                        <button
-                          onClick={() => openDeleteStrategy(strategy)}
-                          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
-                          title="Delete"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      )}
+                      <button
+                        onClick={() => openDeleteStrategy(strategy)}
+                        className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                        title="Delete"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
                     </div>
                   </td>
                 </tr>
