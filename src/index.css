@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+/* Dark mode as default - using class strategy */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Custom theme colors for trading app */
+@theme {
+  --color-profit: #22c55e;
+  --color-loss: #ef4444;
+  --color-breakeven: #f59e0b;
+
+  /* Sidebar colors */
+  --color-sidebar-bg: #111827;
+  --color-sidebar-hover: #1f2937;
+  --color-sidebar-active: #374151;
+}
+
+/* Base styles */
+@layer base {
+  body {
+    @apply bg-gray-900 text-gray-100 antialiased;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+}
+
+/* Smooth transitions for collapsible sidebar */
+.sidebar-transition {
+  transition: width 200ms ease-in-out;
+}
+
+/* Scrollbar styling for dark mode */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-600 rounded;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-500;
+}
