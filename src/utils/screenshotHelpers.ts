@@ -1,4 +1,12 @@
-import type { Screenshot } from '../types';
+/**
+ * Screenshot-like object with optional blob and data fields
+ */
+interface ScreenshotLike {
+  id: string;
+  blob?: Blob | Uint8Array | ArrayBuffer | unknown;
+  data?: string;
+  caption?: string;
+}
 
 /**
  * Safely create a URL for displaying a screenshot.
@@ -9,8 +17,17 @@ import type { Screenshot } from '../types';
  *
  * @returns A URL string (either blob URL or base64 data URL) or null if no valid data
  */
-export function createScreenshotUrl(screenshot: Screenshot): string | null {
+export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
   const blob = screenshot.blob;
+
+  // Skip if no blob data
+  if (!blob) {
+    // Base64 data URL fallback
+    if (screenshot.data && typeof screenshot.data === 'string') {
+      return screenshot.data;
+    }
+    return null;
+  }
 
   // Native Blob or File - use directly
   if (blob instanceof Blob) {
@@ -23,7 +40,7 @@ export function createScreenshotUrl(screenshot: Screenshot): string | null {
   }
 
   // Check if blob is an object with byteLength (another ArrayBuffer-like check)
-  if (blob && typeof blob === 'object' && 'byteLength' in blob) {
+  if (typeof blob === 'object' && blob !== null && 'byteLength' in blob) {
     try {
       return URL.createObjectURL(new Blob([blob as ArrayBuffer]));
     } catch {
@@ -42,7 +59,7 @@ export function createScreenshotUrl(screenshot: Screenshot): string | null {
 /**
  * Check if a screenshot has any renderable data
  */
-export function hasRenderableScreenshot(screenshot: Screenshot): boolean {
+export function hasRenderableScreenshot(screenshot: ScreenshotLike): boolean {
   return createScreenshotUrl(screenshot) !== null;
 }
 
@@ -51,7 +68,7 @@ export function hasRenderableScreenshot(screenshot: Screenshot): boolean {
  * Returns a map of screenshot ID to URL for efficient lookup.
  * Only includes screenshots that have valid renderable data.
  */
-export function createScreenshotUrlMap(screenshots: Screenshot[]): Map<string, string> {
+export function createScreenshotUrlMap(screenshots: ScreenshotLike[]): Map<string, string> {
   const urlMap = new Map<string, string>();
 
   for (const screenshot of screenshots) {

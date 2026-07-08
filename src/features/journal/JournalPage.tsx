@@ -278,7 +278,7 @@ export function JournalPage() {
 
     for (const ss of screenshotsData) {
       // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
-      const url = createScreenshotUrl(ss as { id: string; blob?: Blob; data?: string; caption: string; createdAt: Date });
+      const url = createScreenshotUrl(ss);
       if (url) {
         newUrls[ss.id] = url;
       }
