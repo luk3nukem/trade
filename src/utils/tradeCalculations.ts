@@ -490,3 +490,60 @@ export function derivePostExitMetrics(
 
   return { missedR, wouldHaveR, exitEfficiency, isStopout, postStopMoveR };
 }
+
+/**
+ * Check if a post-exit review is complete.
+ * A review is only complete when ALL four fields have values:
+ * - postExitBestPrice is not null
+ * - postExitWorstPrice is not null
+ * - reachedTargetPostExit is not null (must be explicitly yes or no)
+ * - postExitNotes is not empty string
+ */
+export function isPostExitReviewComplete(
+  postExitBestPrice: number | null | undefined,
+  postExitWorstPrice: number | null | undefined,
+  reachedTargetPostExit: boolean | null | undefined,
+  postExitNotes: string | undefined
+): boolean {
+  // postExitBestPrice must be a valid number (not null, not undefined, not NaN)
+  if (postExitBestPrice === null || postExitBestPrice === undefined || isNaN(postExitBestPrice)) {
+    return false;
+  }
+
+  // postExitWorstPrice must be a valid number (not null, not undefined, not NaN)
+  if (postExitWorstPrice === null || postExitWorstPrice === undefined || isNaN(postExitWorstPrice)) {
+    return false;
+  }
+
+  // reachedTargetPostExit must be explicitly true or false (not null, not undefined)
+  if (reachedTargetPostExit === null || reachedTargetPostExit === undefined) {
+    return false;
+  }
+
+  // postExitNotes must be a non-empty string
+  if (!postExitNotes || postExitNotes.trim() === '') {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if a post-exit review is partially complete (some fields filled but not all)
+ */
+export function isPostExitReviewPartial(
+  postExitBestPrice: number | null | undefined,
+  postExitWorstPrice: number | null | undefined,
+  reachedTargetPostExit: boolean | null | undefined,
+  postExitNotes: string | undefined
+): boolean {
+  const hasBestPrice = postExitBestPrice !== null && postExitBestPrice !== undefined && !isNaN(postExitBestPrice);
+  const hasWorstPrice = postExitWorstPrice !== null && postExitWorstPrice !== undefined && !isNaN(postExitWorstPrice);
+  const hasReachedTarget = reachedTargetPostExit !== null && reachedTargetPostExit !== undefined;
+  const hasNotes = postExitNotes !== undefined && postExitNotes.trim() !== '';
+
+  const filledCount = [hasBestPrice, hasWorstPrice, hasReachedTarget, hasNotes].filter(Boolean).length;
+
+  // Partial means at least one field but not all four
+  return filledCount > 0 && filledCount < 4;
+}

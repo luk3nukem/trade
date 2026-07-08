@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord } from '../../types';
 import { formatDuration } from '../../utils';
-import { derivePostExitMetrics } from '../../utils/tradeCalculations';
+import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial } from '../../utils/tradeCalculations';
 import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import { useAppStore } from '../../stores/appStore';
 
@@ -842,50 +842,119 @@ export function TradeDetail() {
         )}
 
         {/* Post-Exit Review Section - Only for closed trades */}
-        {trade.status === 'closed' && (
-          <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
-            <h3 className="text-lg font-medium text-white mb-4">Post-Exit Review</h3>
+        {trade.status === 'closed' && (() => {
+          const isReviewComplete = isPostExitReviewComplete(
+            trade.postExitBestPrice,
+            trade.postExitWorstPrice,
+            trade.reachedTargetPostExit,
+            trade.postExitNotes
+          );
+          const isPartialReview = isPostExitReviewPartial(
+            trade.postExitBestPrice,
+            trade.postExitWorstPrice,
+            trade.reachedTargetPostExit,
+            trade.postExitNotes
+          );
+          const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+          const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
+          const isReviewDue = exitTime && exitTime < fortyEightHoursAgo;
 
-            {!trade.reviewedAt ? (
-              // CTA card for unreviewed trades
-              <div className="bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-lg p-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0 w-12 h-12 bg-blue-500/20 rounded-full flex items-center justify-center">
-                    <svg className="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="text-lg font-medium text-white mb-1">Time for a post-exit review</h4>
-                    <p className="text-gray-400 mb-4">
-                      This trade closed on{' '}
-                      <span className="text-gray-300">
-                        {trade.exitTime ? new Date(trade.exitTime).toLocaleDateString('en-US', {
-                          month: 'long',
-                          day: 'numeric',
-                          year: 'numeric'
-                        }) : 'unknown date'}
-                      </span>
-                      . Come back and record what happened next — did price continue to your target?
-                    </p>
-                    <Link
-                      to={`/trades/${trade.id}/edit`}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          const formatExitDateTime = (date: Date) => {
+            return date.toLocaleDateString('en-US', {
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric'
+            }) + ' at ' + date.toLocaleTimeString('en-US', {
+              hour: 'numeric',
+              minute: '2-digit'
+            });
+          };
+
+          return (
+            <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
+              <h3 className="text-lg font-medium text-white mb-4">Post-Exit Review</h3>
+
+              {isReviewComplete ? (
+                // Display completed review data
+                <PostExitReviewDisplay trade={trade} />
+              ) : (
+                // CTA card for incomplete/unreviewed trades
+                <div className={`rounded-lg p-6 ${
+                  isPartialReview
+                    ? 'bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30'
+                    : isReviewDue
+                      ? 'bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30'
+                      : 'bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30'
+                }`}>
+                  <div className="flex items-start gap-4">
+                    <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
+                      isPartialReview
+                        ? 'bg-amber-500/20'
+                        : isReviewDue
+                          ? 'bg-red-500/20'
+                          : 'bg-blue-500/20'
+                    }`}>
+                      <svg className={`w-6 h-6 ${
+                        isPartialReview
+                          ? 'text-amber-400'
+                          : isReviewDue
+                            ? 'text-red-400'
+                            : 'text-blue-400'
+                      }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                       </svg>
-                      Add Post-Exit Review
-                    </Link>
+                    </div>
+                    <div className="flex-1">
+                      <h4 className={`text-lg font-medium mb-1 ${
+                        isPartialReview
+                          ? 'text-amber-300'
+                          : isReviewDue
+                            ? 'text-red-300'
+                            : 'text-white'
+                      }`}>
+                        {isPartialReview
+                          ? 'Review incomplete'
+                          : isReviewDue
+                            ? 'Post-exit review is due'
+                            : 'Post-exit review scheduled'}
+                      </h4>
+                      <p className="text-gray-400 mb-4">
+                        {isPartialReview ? (
+                          <>Fill in all fields to complete your review — best price, worst price, reached target, and notes.</>
+                        ) : isReviewDue ? (
+                          <>Record what happened after your exit to improve your exit strategy.</>
+                        ) : exitTime ? (
+                          <>
+                            This trade closed on{' '}
+                            <span className="text-gray-300">{formatExitDateTime(exitTime)}</span>.
+                            Review will be due 48 hours after close.
+                          </>
+                        ) : (
+                          <>Record what happened after your exit.</>
+                        )}
+                      </p>
+                      <Link
+                        to={`/trades/${trade.id}/edit`}
+                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-colors ${
+                          isPartialReview
+                            ? 'bg-amber-600 hover:bg-amber-500'
+                            : isReviewDue
+                              ? 'bg-red-600 hover:bg-red-500'
+                              : 'bg-blue-600 hover:bg-blue-500'
+                        }`}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        {isPartialReview ? 'Complete Review' : isReviewDue ? 'Add Review Now' : 'Add Post-Exit Review'}
+                      </Link>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : (
-              // Display reviewed post-exit data
-              <PostExitReviewDisplay trade={trade} />
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Back link */}

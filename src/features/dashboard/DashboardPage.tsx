@@ -36,15 +36,16 @@ function TradesToReviewSection({
   trades: TradeRecord[];
   navigate: (path: string) => void;
 }) {
-  // Get trades that need review: closed, reviewedAt is null, closed more than 24 hours ago
+  // Get trades that need review: closed, reviewedAt is null, closed more than 48 hours ago
+  // Uses full datetime precision (not just date)
   const tradesToReview = useMemo(() => {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       if (t.reviewedAt) return false; // Already reviewed
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
-      return exitTime < twentyFourHoursAgo;
+      return exitTime < fortyEightHoursAgo;
     }).sort((a, b) => {
       // Sort by exit time, oldest first
       const aExit = a.exitTime ? new Date(a.exitTime).getTime() : 0;
@@ -55,13 +56,13 @@ function TradesToReviewSection({
 
   // Total count for display
   const totalUnreviewed = useMemo(() => {
-    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       if (t.reviewedAt) return false;
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
-      return exitTime < twentyFourHoursAgo;
+      return exitTime < fortyEightHoursAgo;
     }).length;
   }, [trades]);
 
@@ -69,11 +70,28 @@ function TradesToReviewSection({
     return null;
   }
 
-  const formatDate = (date: Date) => {
-    return new Date(date).toLocaleDateString('en-US', {
+  const formatDateTime = (date: Date) => {
+    const d = new Date(date);
+    return d.toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
+    }) + ' at ' + d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
     });
+  };
+
+  const getTimeSinceClose = (exitTime: Date) => {
+    const now = Date.now();
+    const exitMs = new Date(exitTime).getTime();
+    const diffMs = now - exitMs;
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffDays > 0) {
+      return `closed ${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+    }
+    return `closed ${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
   };
 
   return (
@@ -87,7 +105,7 @@ function TradesToReviewSection({
           </div>
           <div>
             <h3 className="text-lg font-medium text-white">
-              You have {totalUnreviewed} {totalUnreviewed === 1 ? 'trade' : 'trades'} to review
+              {totalUnreviewed} {totalUnreviewed === 1 ? 'trade' : 'trades'} due for review
             </h3>
             <p className="text-sm text-gray-400">
               Record what happened after you exited to improve your exit strategy
@@ -115,7 +133,7 @@ function TradesToReviewSection({
                 {trade.direction.charAt(0).toUpperCase()}
               </span>
               <span className="text-sm text-gray-400">
-                Closed {trade.exitTime ? formatDate(trade.exitTime) : 'unknown'}
+                {trade.exitTime ? getTimeSinceClose(trade.exitTime) : 'unknown'}
               </span>
             </div>
             <div className="flex items-center gap-4">

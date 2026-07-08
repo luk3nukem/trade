@@ -35,6 +35,7 @@ import {
   parseLocalDateTime,
   getCurrentDateTimeString,
   toLocalDateTimeString,
+  isPostExitReviewComplete,
 } from '../../utils';
 
 // Initial form state
@@ -762,8 +763,14 @@ export function TradeForm() {
         postExitWorstPrice: formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null,
         reachedTargetPostExit: formData.reachedTargetPostExit,
         postExitNotes: formData.postExitNotes.trim(),
-        // Set reviewedAt when post-exit data is first filled in
-        reviewedAt: (formData.postExitBestPrice || formData.postExitWorstPrice || formData.reachedTargetPostExit !== null || formData.postExitNotes.trim())
+        // Only set reviewedAt when ALL four post-exit fields are complete
+        // If editing and fields are cleared, unset reviewedAt so trade reappears in review queue
+        reviewedAt: isPostExitReviewComplete(
+          formData.postExitBestPrice ? parseFloat(formData.postExitBestPrice) : null,
+          formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null,
+          formData.reachedTargetPostExit,
+          formData.postExitNotes
+        )
           ? (existingReviewedAt || now.toISOString())
           : null,
         createdAt: isEditMode ? createdAt! : now,
