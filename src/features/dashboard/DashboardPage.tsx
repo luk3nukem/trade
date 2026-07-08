@@ -70,17 +70,6 @@ function TradesToReviewSection({
     return null;
   }
 
-  const formatDateTime = (date: Date) => {
-    const d = new Date(date);
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }) + ' at ' + d.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
-  };
-
   const getTimeSinceClose = (exitTime: Date) => {
     const now = Date.now();
     const exitMs = new Date(exitTime).getTime();
