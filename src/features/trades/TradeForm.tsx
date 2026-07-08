@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { FormSection } from '../../components/FormSection';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
+import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import type {
   TradeFormData,
   TradeRecord,
@@ -218,17 +219,14 @@ export function TradeForm() {
         continue;
       }
 
-      // Create URL from blob if available
-      if (screenshot.blob) {
-        newUrls[screenshot.id] = URL.createObjectURL(screenshot.blob);
-      }
-      // Fall back to legacy base64 data
-      else if (screenshot.data) {
-        newUrls[screenshot.id] = screenshot.data;
+      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
+      const url = createScreenshotUrl(screenshot);
+      if (url) {
+        newUrls[screenshot.id] = url;
       }
     }
 
-    // Revoke URLs for removed screenshots
+    // Revoke URLs for removed screenshots (only blob: URLs, not base64)
     for (const [id, url] of Object.entries(screenshotUrls)) {
       if (!newUrls[id] && url.startsWith('blob:')) {
         URL.revokeObjectURL(url);

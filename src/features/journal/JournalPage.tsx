@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
+import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import type { TradeRecord, DailyJournal, Account } from '../../types';
 import { DailyJournalForm } from './DailyJournalForm';
 
@@ -276,10 +277,10 @@ export function JournalPage() {
     const newUrls: Record<string, string> = {};
 
     for (const ss of screenshotsData) {
-      if (ss.blob) {
-        newUrls[ss.id] = URL.createObjectURL(ss.blob);
-      } else if (ss.data) {
-        newUrls[ss.id] = ss.data;
+      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
+      const url = createScreenshotUrl(ss as { id: string; blob?: Blob; data?: string; caption: string; createdAt: Date });
+      if (url) {
+        newUrls[ss.id] = url;
       }
     }
 

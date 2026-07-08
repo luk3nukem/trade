@@ -4,6 +4,7 @@ import { db } from '../../db';
 import type { TradeRecord } from '../../types';
 import { formatDuration } from '../../utils';
 import { derivePostExitMetrics } from '../../utils/tradeCalculations';
+import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import { useAppStore } from '../../stores/appStore';
 
 // Emotional state emoji map
@@ -245,13 +246,10 @@ export function TradeDetail() {
 
     const newUrls: Record<string, string> = {};
     for (const screenshot of trade.screenshots) {
-      // Create URL from blob if available
-      if (screenshot.blob) {
-        newUrls[screenshot.id] = URL.createObjectURL(screenshot.blob);
-      }
-      // Fall back to legacy base64 data
-      else if (screenshot.data) {
-        newUrls[screenshot.id] = screenshot.data;
+      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
+      const url = createScreenshotUrl(screenshot);
+      if (url) {
+        newUrls[screenshot.id] = url;
       }
     }
     setScreenshotUrls(newUrls);
