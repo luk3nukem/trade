@@ -1,5 +1,5 @@
 import type { TradeRecord, TradingSession } from '../types';
-import { calculateMaeDistance, calculateMfeDistance } from './tradeCalculations';
+import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR } from './tradeCalculations';
 
 // Generic group performance stats
 export interface GroupStats {
@@ -2093,6 +2093,13 @@ export interface BEAnalysisStats {
     savedByBE: number;     // Moved to BE, exited at BE (would have been loss)
     missedProfit: number;  // Moved to BE too early, stopped at BE but would have won
   };
+  // Post-exit validation using minRThreshold
+  postExitValidation: {
+    tradesWithPostExitData: number;       // BE trades with post-exit tracking
+    thesisCostYou: number;                 // BE stopped you AND post-exit move >= minRThreshold
+    belowThreshold: number;                // BE stopped you but post-exit move < minRThreshold
+    avgPostExitMoveR: number;              // Avg R move after BE stopped you out
+  };
 }
 
 export interface StopAdjustmentTriggerStats {
@@ -2111,8 +2118,9 @@ export interface StopDestinationStats {
 
 /**
  * Analyze break-even move effectiveness
+ * @param minRThreshold - Minimum R move to consider BE as having "cost you" a valid trade
  */
-export function getBEAnalysis(trades: TradeRecord[]): BEAnalysisStats {
+export function getBEAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): BEAnalysisStats {
   const closedTrades = trades.filter(t => t.status === 'closed');
 
   // Trades with BE moves (look for "BE" or "break" or "breakeven" in stop adjustment reasons)
@@ -2168,6 +2176,39 @@ export function getBEAnalysis(trades: TradeRecord[]): BEAnalysisStats {
     }
   }
 
+  // Post-exit validation: Only count "BE cost you" if post-exit move exceeded threshold
+  // This uses post-exit best price data when available
+  const beTradesStoppedAtBE = movedToBE.filter(t => {
+    const r = t.rMultiple ?? 0;
+    return r === 0 || (r > -0.1 && r < 0.1); // Stopped at BE
+  });
+
+  const beTradesWithPostExitData = beTradesStoppedAtBE.filter(t =>
+    t.postExitBestPrice !== null && t.stopDistance && t.stopDistance > 0
+  );
+
+  let thesisCostYou = 0;
+  let belowThreshold = 0;
+  let totalPostExitMoveR = 0;
+
+  for (const trade of beTradesWithPostExitData) {
+    // Calculate post-exit move from entry (how far price went in trader's favour after BE stop)
+    const postExitMoveR = calculatePostStopMoveR(
+      trade.entryPrice,
+      trade.postExitBestPrice,
+      trade.stopDistance,
+      trade.direction
+    ) ?? 0;
+
+    totalPostExitMoveR += postExitMoveR;
+
+    if (postExitMoveR >= minRThreshold) {
+      thesisCostYou++;
+    } else {
+      belowThreshold++;
+    }
+  }
+
   return {
     movedToBE: calcStats(movedToBE),
     stayedOriginal: calcStats(stayedOriginal),
@@ -2175,6 +2216,14 @@ export function getBEAnalysis(trades: TradeRecord[]): BEAnalysisStats {
       heldForWin,
       savedByBE,
       missedProfit,
+    },
+    postExitValidation: {
+      tradesWithPostExitData: beTradesWithPostExitData.length,
+      thesisCostYou,
+      belowThreshold,
+      avgPostExitMoveR: beTradesWithPostExitData.length > 0
+        ? totalPostExitMoveR / beTradesWithPostExitData.length
+        : 0,
     },
   };
 }
@@ -2257,11 +2306,13 @@ export function getStopDestinationAnalysis(trades: TradeRecord[]): StopDestinati
 
 /**
  * Generate stop management insights
+ * @param minRThreshold - Minimum R threshold for evaluating whether BE "cost you" a valid trade
  */
 export function getStopManagementInsights(
   beAnalysis: BEAnalysisStats,
   triggerAnalysis: StopAdjustmentTriggerStats[],
-  destinationAnalysis: StopDestinationStats[]
+  destinationAnalysis: StopDestinationStats[],
+  minRThreshold: number = 1.0
 ): string[] {
   const insights: string[] = [];
 
@@ -2290,6 +2341,27 @@ export function getStopManagementInsights(
       insights.push(
         'BE outcomes: ' + heldForWin + ' held to win, ' + savedByBE + ' saved from loss, ' +
         missedProfit + ' stopped at BE but had 1R+ MFE.'
+      );
+    }
+  }
+
+  // Post-exit validation insight (uses minRThreshold)
+  const { postExitValidation } = beAnalysis;
+  if (postExitValidation.tradesWithPostExitData >= 3) {
+    const percentCostYou = postExitValidation.tradesWithPostExitData > 0
+      ? (postExitValidation.thesisCostYou / postExitValidation.tradesWithPostExitData) * 100
+      : 0;
+
+    if (postExitValidation.thesisCostYou > 0) {
+      insights.push(
+        `Of ${postExitValidation.tradesWithPostExitData} BE stops with post-exit data, ` +
+        `${percentCostYou.toFixed(0)}% (${postExitValidation.thesisCostYou}) saw price exceed your ` +
+        `${minRThreshold}R threshold afterwards — BE cost you on valid trades.`
+      );
+    } else if (postExitValidation.tradesWithPostExitData > 0) {
+      insights.push(
+        `None of your ${postExitValidation.tradesWithPostExitData} BE stops saw price exceed ` +
+        `${minRThreshold}R afterwards — your BE moves are not costing you on validated setups.`
       );
     }
   }
@@ -3002,6 +3074,25 @@ export interface PostExitAnalysis {
   tradesReachedTarget: number;
 }
 
+// Separate analysis for stopouts vs voluntary exits
+export interface StopoutAnalysis {
+  totalStopouts: number;
+  stopoutsWithPostExitData: number;
+  avgPostStopMoveR: number;
+  stopoutsAboveThreshold: number; // Number where post-stop move >= minRThreshold
+  stopoutsAboveThresholdPercent: number; // % of stopouts where thesis was validated
+  avgPostStopMoveAboveThreshold: number; // Avg R of those that exceeded threshold
+  avgPostStopMoveBelowThreshold: number; // Avg R of those below threshold
+}
+
+export interface VoluntaryExitAnalysis {
+  totalVoluntaryExits: number;
+  withPostExitData: number;
+  avgMissedR: number;
+  avgExitEfficiency: number;
+  reachedTargetPercent: number;
+}
+
 export interface MissedRByStopReason {
   reason: string;
   tradeCount: number;
@@ -3085,6 +3176,133 @@ export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
       ? (tradesReachedTarget / tradesWithTargetInfo.length) * 100
       : 0,
     tradesReachedTarget,
+  };
+}
+
+/**
+ * Get stopout-specific post-exit analysis
+ * For stopouts, we measure how far price moved in the trader's favour AFTER being stopped out
+ * This helps identify if the thesis was correct but stop placement was wrong
+ */
+export function getStopoutPostExitAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): StopoutAnalysis {
+  const closedTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false);
+  const stopouts = closedTrades.filter(t => t.exitType === 'sl_hit');
+  const stopoutsWithData = stopouts.filter(t =>
+    t.postExitBestPrice !== null && t.stopDistance && t.stopDistance > 0
+  );
+
+  if (stopoutsWithData.length === 0) {
+    return {
+      totalStopouts: stopouts.length,
+      stopoutsWithPostExitData: 0,
+      avgPostStopMoveR: 0,
+      stopoutsAboveThreshold: 0,
+      stopoutsAboveThresholdPercent: 0,
+      avgPostStopMoveAboveThreshold: 0,
+      avgPostStopMoveBelowThreshold: 0,
+    };
+  }
+
+  let totalPostStopMoveR = 0;
+  let aboveThresholdCount = 0;
+  let aboveThresholdTotalR = 0;
+  let belowThresholdCount = 0;
+  let belowThresholdTotalR = 0;
+
+  for (const trade of stopoutsWithData) {
+    const postStopMoveR = calculatePostStopMoveR(
+      trade.entryPrice,
+      trade.postExitBestPrice,
+      trade.stopDistance,
+      trade.direction
+    ) ?? 0;
+
+    totalPostStopMoveR += postStopMoveR;
+
+    if (postStopMoveR >= minRThreshold) {
+      aboveThresholdCount++;
+      aboveThresholdTotalR += postStopMoveR;
+    } else {
+      belowThresholdCount++;
+      belowThresholdTotalR += postStopMoveR;
+    }
+  }
+
+  return {
+    totalStopouts: stopouts.length,
+    stopoutsWithPostExitData: stopoutsWithData.length,
+    avgPostStopMoveR: totalPostStopMoveR / stopoutsWithData.length,
+    stopoutsAboveThreshold: aboveThresholdCount,
+    stopoutsAboveThresholdPercent: (aboveThresholdCount / stopoutsWithData.length) * 100,
+    avgPostStopMoveAboveThreshold: aboveThresholdCount > 0 ? aboveThresholdTotalR / aboveThresholdCount : 0,
+    avgPostStopMoveBelowThreshold: belowThresholdCount > 0 ? belowThresholdTotalR / belowThresholdCount : 0,
+  };
+}
+
+/**
+ * Get voluntary exit (non-stopout) post-exit analysis
+ * For voluntary exits, we use the traditional missedR calculation (how much more could have been captured)
+ */
+export function getVoluntaryExitPostExitAnalysis(trades: TradeRecord[]): VoluntaryExitAnalysis {
+  const closedTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false);
+  const voluntaryExits = closedTrades.filter(t =>
+    t.exitType && t.exitType !== 'sl_hit'
+  );
+  const withData = voluntaryExits.filter(t =>
+    t.postExitBestPrice !== null && t.exitPrice !== undefined && t.stopDistance && t.stopDistance > 0
+  );
+
+  if (withData.length === 0) {
+    return {
+      totalVoluntaryExits: voluntaryExits.length,
+      withPostExitData: 0,
+      avgMissedR: 0,
+      avgExitEfficiency: 0,
+      reachedTargetPercent: 0,
+    };
+  }
+
+  let totalMissedR = 0;
+  let totalEfficiency = 0;
+  let efficiencyCount = 0;
+  let reachedTargetCount = 0;
+  let targetInfoCount = 0;
+
+  for (const trade of withData) {
+    // Calculate traditional missed R (from exit price to best price)
+    const missedR = calculateMissedR(
+      trade.exitPrice,
+      trade.postExitBestPrice,
+      trade.stopDistance,
+      trade.direction
+    ) ?? 0;
+    totalMissedR += missedR;
+
+    // Calculate efficiency
+    if (trade.rMultiple !== undefined && trade.rMultiple > 0) {
+      const wouldHaveR = Math.abs(trade.postExitBestPrice! - trade.entryPrice) / trade.stopDistance!;
+      if (wouldHaveR > 0) {
+        const efficiency = (trade.rMultiple / wouldHaveR) * 100;
+        totalEfficiency += efficiency;
+        efficiencyCount++;
+      }
+    }
+
+    // Track reached target
+    if (trade.reachedTargetPostExit !== null) {
+      targetInfoCount++;
+      if (trade.reachedTargetPostExit) {
+        reachedTargetCount++;
+      }
+    }
+  }
+
+  return {
+    totalVoluntaryExits: voluntaryExits.length,
+    withPostExitData: withData.length,
+    avgMissedR: totalMissedR / withData.length,
+    avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
+    reachedTargetPercent: targetInfoCount > 0 ? (reachedTargetCount / targetInfoCount) * 100 : 0,
   };
 }
 
@@ -3268,11 +3486,14 @@ export function getPostExitScatterData(trades: TradeRecord[]): PostExitScatterPo
 
 /**
  * Generate insights from post-exit analysis
+ * @param minRThreshold - Minimum R move to consider thesis validated (default 1.0)
  */
-export function getPostExitInsights(trades: TradeRecord[]): string[] {
+export function getPostExitInsights(trades: TradeRecord[], minRThreshold: number = 1.0): string[] {
   const insights: string[] = [];
 
   const analysis = getPostExitAnalysis(trades);
+  const stopoutAnalysis = getStopoutPostExitAnalysis(trades, minRThreshold);
+  const voluntaryAnalysis = getVoluntaryExitPostExitAnalysis(trades);
   const byStopReason = getMissedRByStopReason(trades);
   const byExitType = getMissedRByExitType(trades);
 
@@ -3284,26 +3505,38 @@ export function getPostExitInsights(trades: TradeRecord[]): string[] {
     return insights;
   }
 
-  // Overall efficiency insight
-  if (analysis.avgExitEfficiency > 0) {
-    const efficiencyDesc = analysis.avgExitEfficiency >= 80 ? 'excellent' :
-                          analysis.avgExitEfficiency >= 60 ? 'good' :
-                          analysis.avgExitEfficiency >= 40 ? 'moderate' : 'low';
+  // Stopout-specific insight (separate from voluntary exits)
+  if (stopoutAnalysis.stopoutsWithPostExitData >= 3) {
+    const percentAbove = stopoutAnalysis.stopoutsAboveThresholdPercent;
     insights.push(
-      `Your average exit efficiency is ${analysis.avgExitEfficiency.toFixed(0)}% (${efficiencyDesc}). ` +
-      `On average, you're leaving ${analysis.avgMissedR.toFixed(2)}R on the table per trade.`
+      `Of ${stopoutAnalysis.stopoutsWithPostExitData} stopouts with post-exit data, ` +
+      `${percentAbove.toFixed(0)}% saw price reach your ${minRThreshold}R threshold afterwards` +
+      (percentAbove > 30
+        ? ` — suggesting stop placement, not thesis, was the issue on those trades.`
+        : `.`)
     );
   }
 
-  // Reached target insight
-  if (analysis.reachedTargetPercent > 30) {
+  // Voluntary exit efficiency insight
+  if (voluntaryAnalysis.withPostExitData >= 3 && voluntaryAnalysis.avgExitEfficiency > 0) {
+    const efficiencyDesc = voluntaryAnalysis.avgExitEfficiency >= 80 ? 'excellent' :
+                          voluntaryAnalysis.avgExitEfficiency >= 60 ? 'good' :
+                          voluntaryAnalysis.avgExitEfficiency >= 40 ? 'moderate' : 'low';
     insights.push(
-      `${analysis.reachedTargetPercent.toFixed(0)}% of your trades reached your target after you exited. ` +
+      `Your voluntary exit efficiency is ${voluntaryAnalysis.avgExitEfficiency.toFixed(0)}% (${efficiencyDesc}). ` +
+      `On average, you're leaving ${voluntaryAnalysis.avgMissedR.toFixed(2)}R on the table.`
+    );
+  }
+
+  // Reached target insight (for voluntary exits only)
+  if (voluntaryAnalysis.reachedTargetPercent > 30) {
+    insights.push(
+      `${voluntaryAnalysis.reachedTargetPercent.toFixed(0)}% of your voluntary exits reached target afterwards. ` +
       `Consider holding longer or using trailing stops.`
     );
-  } else if (analysis.reachedTargetPercent < 10 && analysis.tradesWithData >= 10) {
+  } else if (voluntaryAnalysis.reachedTargetPercent < 10 && voluntaryAnalysis.withPostExitData >= 10) {
     insights.push(
-      `Only ${analysis.reachedTargetPercent.toFixed(0)}% of trades reached target after exit — your exit timing is solid.`
+      `Only ${voluntaryAnalysis.reachedTargetPercent.toFixed(0)}% of voluntary exits reached target after — solid timing.`
     );
   }
 
@@ -3316,15 +3549,18 @@ export function getPostExitInsights(trades: TradeRecord[]): string[] {
     );
   }
 
-  // Exit type insights
-  const worstExitType = byExitType.reduce((worst, current) =>
-    current.avgMissedR > worst.avgMissedR ? current : worst
-  , byExitType[0]);
+  // Exit type insights (excluding stopouts since they're handled separately)
+  const voluntaryExitTypes = byExitType.filter(e => e.exitType.toLowerCase() !== 'sl hit');
+  if (voluntaryExitTypes.length > 0) {
+    const worstExitType = voluntaryExitTypes.reduce((worst, current) =>
+      current.avgMissedR > worst.avgMissedR ? current : worst
+    , voluntaryExitTypes[0]);
 
-  if (worstExitType && worstExitType.tradeCount >= 3 && worstExitType.avgMissedR > 0.5) {
-    insights.push(
-      `"${worstExitType.exitType}" exits leave the most on the table (${worstExitType.avgMissedR.toFixed(2)}R avg missed).`
-    );
+    if (worstExitType && worstExitType.tradeCount >= 3 && worstExitType.avgMissedR > 0.5) {
+      insights.push(
+        `"${worstExitType.exitType}" exits leave the most on the table (${worstExitType.avgMissedR.toFixed(2)}R avg missed).`
+      );
+    }
   }
 
   return insights;

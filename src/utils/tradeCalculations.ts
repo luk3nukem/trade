@@ -1,4 +1,4 @@
-import type { TradingSession, TradeDirection, TradeStatus } from '../types';
+import type { TradingSession, TradeDirection, TradeStatus, ExitType } from '../types';
 
 /**
  * Derive trading session from entry time (UTC)
@@ -355,8 +355,10 @@ export function deriveMfeMetrics(
 // ============================================
 
 /**
- * Calculate "missed R" - how much additional R you would have made if held to post-exit best price
+ * Calculate "missed R" for voluntary exits - how much additional R you would have made if held to post-exit best price
  * missedR = |postExitBestPrice - exitPrice| / stopDistance
+ *
+ * NOTE: This is the original behavior, kept for voluntary exits (tp_hit, manual_close, trail_stop_hit, be_stop_hit, time_exit)
  */
 export function calculateMissedR(
   exitPrice: number | undefined,
@@ -374,6 +376,35 @@ export function calculateMissedR(
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
 
   // Only count as "missed" if it went further in your favor
+  if (signedMove <= 0) return 0;
+
+  return Number((signedMove / stopDistance).toFixed(2));
+}
+
+/**
+ * Calculate post-stop move R for stopouts (sl_hit) - how far price moved in trader's favor after being stopped out
+ * This is measured from entry price, NOT from exit price (since stop was a full loss)
+ * postStopMoveR = |postExitBestPrice - entryPrice| / stopDistance (if in trader's favor)
+ *
+ * This metric answers: "After I got stopped, did price move in my direction?"
+ * A positive value indicates the thesis may have been correct but stop placement was the issue.
+ */
+export function calculatePostStopMoveR(
+  entryPrice: number,
+  postExitBestPrice: number | null,
+  stopDistance: number | undefined,
+  direction: TradeDirection
+): number | undefined {
+  if (postExitBestPrice === null || !stopDistance || stopDistance === 0) {
+    return undefined;
+  }
+
+  const priceDiff = postExitBestPrice - entryPrice;
+  // For longs: positive priceDiff = move in trader's favor
+  // For shorts: negative priceDiff = move in trader's favor
+  const signedMove = direction === 'long' ? priceDiff : -priceDiff;
+
+  // Only count if it moved in trader's favor after the stop
   if (signedMove <= 0) return 0;
 
   return Number((signedMove / stopDistance).toFixed(2));
@@ -424,6 +455,9 @@ export function calculateExitEfficiency(
 
 /**
  * Derive all post-exit metrics from trade data
+ *
+ * For stopouts (sl_hit): missedR uses postStopMoveR - just the post-exit move in trader's favor from entry
+ * For voluntary exits: missedR uses the traditional calculation - move from exit price to best price
  */
 export function derivePostExitMetrics(
   entryPrice: number,
@@ -431,15 +465,28 @@ export function derivePostExitMetrics(
   postExitBestPrice: number | null,
   stopDistance: number | undefined,
   direction: TradeDirection,
-  actualR: number | undefined
+  actualR: number | undefined,
+  exitType?: ExitType
 ): {
   missedR: number | undefined;
   wouldHaveR: number | undefined;
   exitEfficiency: number | undefined;
+  isStopout: boolean;
+  postStopMoveR: number | undefined;
 } {
-  const missedR = calculateMissedR(exitPrice, postExitBestPrice, stopDistance, direction);
   const wouldHaveR = calculateWouldHaveR(entryPrice, postExitBestPrice, stopDistance, direction);
   const exitEfficiency = calculateExitEfficiency(actualR, wouldHaveR);
 
-  return { missedR, wouldHaveR, exitEfficiency };
+  // Check if this is a stopout (sl_hit)
+  const isStopout = exitType === 'sl_hit';
+
+  // Calculate both metrics - let the caller decide which to display
+  const postStopMoveR = calculatePostStopMoveR(entryPrice, postExitBestPrice, stopDistance, direction);
+  const voluntaryMissedR = calculateMissedR(exitPrice, postExitBestPrice, stopDistance, direction);
+
+  // For stopouts: use postStopMoveR (move from entry after stop)
+  // For voluntary exits: use traditional missedR (additional move from exit price)
+  const missedR = isStopout ? postStopMoveR : voluntaryMissedR;
+
+  return { missedR, wouldHaveR, exitEfficiency, isStopout, postStopMoveR };
 }

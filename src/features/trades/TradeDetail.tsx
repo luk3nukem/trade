@@ -4,6 +4,7 @@ import { db } from '../../db';
 import type { TradeRecord } from '../../types';
 import { formatDuration } from '../../utils';
 import { derivePostExitMetrics } from '../../utils/tradeCalculations';
+import { useAppStore } from '../../stores/appStore';
 
 // Emotional state emoji map
 const EMOTIONAL_EMOJIS: Record<number, { emoji: string; label: string }> = {
@@ -16,6 +17,9 @@ const EMOTIONAL_EMOJIS: Record<number, { emoji: string; label: string }> = {
 
 // Component for displaying post-exit review data
 function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
+  const { alertSettings } = useAppStore();
+  const minRThreshold = alertSettings.minRThreshold ?? 1.0;
+
   const postExitMetrics = useMemo(() => {
     if (!trade.postExitBestPrice) return null;
     return derivePostExitMetrics(
@@ -24,7 +28,8 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
       trade.postExitBestPrice,
       trade.stopDistance,
       trade.direction,
-      trade.rMultiple
+      trade.rMultiple,
+      trade.exitType
     );
   }, [trade]);
 
@@ -38,8 +43,57 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
     });
   };
 
+  // Determine stopout insight message
+  const getStopoutInsight = () => {
+    if (!postExitMetrics?.isStopout || postExitMetrics.postStopMoveR === undefined) {
+      return null;
+    }
+
+    const moveR = postExitMetrics.postStopMoveR;
+    if (moveR >= minRThreshold) {
+      return {
+        type: 'thesis_correct' as const,
+        message: `Post-stop move: +${moveR.toFixed(1)}R — thesis was correct, stop placement was the issue`,
+      };
+    } else if (moveR > 0) {
+      return {
+        type: 'below_threshold' as const,
+        message: `Post-stop move: +${moveR.toFixed(1)}R — below your ${minRThreshold}R threshold, thesis not validated`,
+      };
+    }
+    return null;
+  };
+
+  const stopoutInsight = getStopoutInsight();
+
   return (
     <div className="space-y-6">
+      {/* Stopout Insight Banner */}
+      {stopoutInsight && (
+        <div className={`rounded-lg p-4 ${
+          stopoutInsight.type === 'thesis_correct'
+            ? 'bg-amber-500/10 border border-amber-500/30'
+            : 'bg-gray-700/50 border border-gray-600'
+        }`}>
+          <div className="flex items-start gap-3">
+            {stopoutInsight.type === 'thesis_correct' ? (
+              <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            ) : (
+              <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+            <p className={`text-sm ${
+              stopoutInsight.type === 'thesis_correct' ? 'text-amber-300' : 'text-gray-300'
+            }`}>
+              {stopoutInsight.message}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Metrics Grid */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {/* Post-Exit Best Price */}
@@ -58,9 +112,11 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
           </p>
         </div>
 
-        {/* Missed R */}
+        {/* Post-Stop Move R or Missed R */}
         <div className="bg-gray-750 rounded-lg p-4">
-          <span className="text-xs text-gray-400">Missed R</span>
+          <span className="text-xs text-gray-400">
+            {postExitMetrics?.isStopout ? 'Post-Stop Move' : 'Missed R'}
+          </span>
           <p className={`font-mono text-lg ${
             postExitMetrics?.missedR && postExitMetrics.missedR > 0
               ? 'text-yellow-400'
@@ -70,26 +126,37 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
               ? `+${postExitMetrics.missedR.toFixed(2)}R`
               : '-'}
           </p>
-          <span className="text-xs text-gray-500">Additional R available</span>
+          <span className="text-xs text-gray-500">
+            {postExitMetrics?.isStopout ? 'Move in your favour after stop' : 'Additional R available'}
+          </span>
         </div>
 
-        {/* Exit Efficiency */}
+        {/* Exit Efficiency - hide for stopouts since it doesn't make sense */}
         <div className="bg-gray-750 rounded-lg p-4">
           <span className="text-xs text-gray-400">Exit Efficiency</span>
-          <p className={`font-mono text-lg ${
-            postExitMetrics?.exitEfficiency !== undefined
-              ? postExitMetrics.exitEfficiency >= 80
-                ? 'text-green-400'
-                : postExitMetrics.exitEfficiency >= 50
-                  ? 'text-yellow-400'
-                  : 'text-red-400'
-              : 'text-gray-200'
-          }`}>
-            {postExitMetrics?.exitEfficiency !== undefined
-              ? `${postExitMetrics.exitEfficiency.toFixed(0)}%`
-              : '-'}
-          </p>
-          <span className="text-xs text-gray-500">Move captured</span>
+          {postExitMetrics?.isStopout ? (
+            <>
+              <p className="font-mono text-lg text-gray-500">N/A</p>
+              <span className="text-xs text-gray-500">Not applicable for stopouts</span>
+            </>
+          ) : (
+            <>
+              <p className={`font-mono text-lg ${
+                postExitMetrics?.exitEfficiency !== undefined
+                  ? postExitMetrics.exitEfficiency >= 80
+                    ? 'text-green-400'
+                    : postExitMetrics.exitEfficiency >= 50
+                      ? 'text-yellow-400'
+                      : 'text-red-400'
+                  : 'text-gray-200'
+              }`}>
+                {postExitMetrics?.exitEfficiency !== undefined
+                  ? `${postExitMetrics.exitEfficiency.toFixed(0)}%`
+                  : '-'}
+              </p>
+              <span className="text-xs text-gray-500">Move captured</span>
+            </>
+          )}
         </div>
       </div>
 

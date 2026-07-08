@@ -30,6 +30,8 @@ import {
   getRetracementScatterData,
   getPostTPInsights,
   getPostExitAnalysis,
+  getStopoutPostExitAnalysis,
+  getVoluntaryExitPostExitAnalysis,
   getMissedRByStopReason,
   getMissedRByExitType,
   getPostExitScatterData,
@@ -37,6 +39,7 @@ import {
   type SimulationStrategy,
   type SimulationResult,
 } from '../../utils';
+import { useAppStore } from '../../stores/appStore';
 
 interface Props {
   trades: TradeRecord[];
@@ -53,12 +56,14 @@ const STRATEGY_COLORS: Record<string, string> = {
 export function ExitManagement({ trades }: Props) {
   const [activeStrategies, setActiveStrategies] = useState<SimulationStrategy[]>(['actual', 'full_tp1']);
   const [trailR, setTrailR] = useState(0.5);
+  const { alertSettings } = useAppStore();
+  const minRThreshold = alertSettings.minRThreshold ?? 1.0;
 
   const mfeCaptureData = useMemo(() => getMFECaptureData(trades), [trades]);
   const givebackData = useMemo(() => getProfitGivebackData(trades), [trades]);
   const exitTypeStats = useMemo(() => getExitTypeComparison(trades), [trades]);
   const partialsComparison = useMemo(() => getPartialsComparison(trades), [trades]);
-  
+
   const simulations = useMemo(() => {
     const strategies: SimulationStrategy[] = ['actual', 'full_tp1', 'half_tp1_trail', 'three_quarter_runner', 'trailing_only'];
     const results: Record<SimulationStrategy, SimulationResult> = {} as Record<SimulationStrategy, SimulationResult>;
@@ -82,10 +87,12 @@ export function ExitManagement({ trades }: Props) {
 
   // Post-Exit Tracking analysis
   const postExitAnalysis = useMemo(() => getPostExitAnalysis(trades), [trades]);
+  const stopoutAnalysis = useMemo(() => getStopoutPostExitAnalysis(trades, minRThreshold), [trades, minRThreshold]);
+  const voluntaryExitAnalysis = useMemo(() => getVoluntaryExitPostExitAnalysis(trades), [trades]);
   const missedRByStopReason = useMemo(() => getMissedRByStopReason(trades), [trades]);
   const missedRByExitType = useMemo(() => getMissedRByExitType(trades), [trades]);
   const postExitScatter = useMemo(() => getPostExitScatterData(trades), [trades]);
-  const postExitInsights = useMemo(() => getPostExitInsights(trades), [trades]);
+  const postExitInsights = useMemo(() => getPostExitInsights(trades, minRThreshold), [trades, minRThreshold]);
 
   const combinedEquityCurve = useMemo(() => {
     if (!simulations.actual) return [];
@@ -728,10 +735,91 @@ export function ExitManagement({ trades }: Props) {
 
         {postExitAnalysis.tradesWithData >= 3 ? (
           <div className="space-y-6">
-            {/* Exit Efficiency Overview */}
+            {/* Stopouts vs Voluntary Exits Comparison */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Stopout Analysis */}
+              {stopoutAnalysis.stopoutsWithPostExitData >= 1 && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-red-400 mb-3">Stopouts (SL Hit)</h4>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">With post-exit data</span>
+                      <span className="text-white font-medium">
+                        {stopoutAnalysis.stopoutsWithPostExitData} of {stopoutAnalysis.totalStopouts}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">Avg post-stop move</span>
+                      <span className="text-amber-400 font-mono font-medium">
+                        +{stopoutAnalysis.avgPostStopMoveR.toFixed(2)}R
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">Exceeded {minRThreshold}R threshold</span>
+                      <span className={`font-medium ${
+                        stopoutAnalysis.stopoutsAboveThresholdPercent > 30 ? 'text-amber-400' : 'text-gray-300'
+                      }`}>
+                        {stopoutAnalysis.stopoutsAboveThresholdPercent.toFixed(0)}%
+                        <span className="text-gray-500 font-normal ml-1">
+                          ({stopoutAnalysis.stopoutsAboveThreshold} trades)
+                        </span>
+                      </span>
+                    </div>
+                    {stopoutAnalysis.stopoutsAboveThreshold > 0 && (
+                      <div className="text-xs text-amber-400/80 mt-2 p-2 bg-amber-500/10 rounded">
+                        These stopouts saw price move {stopoutAnalysis.avgPostStopMoveAboveThreshold.toFixed(1)}R avg in your favour — thesis was right, stop placement was the issue.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Voluntary Exit Analysis */}
+              {voluntaryExitAnalysis.withPostExitData >= 1 && (
+                <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+                  <h4 className="text-sm font-medium text-blue-400 mb-3">Voluntary Exits</h4>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">With post-exit data</span>
+                      <span className="text-white font-medium">
+                        {voluntaryExitAnalysis.withPostExitData} of {voluntaryExitAnalysis.totalVoluntaryExits}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">Avg missed R</span>
+                      <span className="text-yellow-400 font-mono font-medium">
+                        +{voluntaryExitAnalysis.avgMissedR.toFixed(2)}R
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">Exit efficiency</span>
+                      <span className={`font-medium ${
+                        voluntaryExitAnalysis.avgExitEfficiency >= 70
+                          ? 'text-green-400'
+                          : voluntaryExitAnalysis.avgExitEfficiency >= 50
+                            ? 'text-yellow-400'
+                            : 'text-red-400'
+                      }`}>
+                        {voluntaryExitAnalysis.avgExitEfficiency.toFixed(0)}%
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-gray-400 text-sm">Reached target after</span>
+                      <span className={`font-medium ${
+                        voluntaryExitAnalysis.reachedTargetPercent > 30 ? 'text-red-400' : 'text-green-400'
+                      }`}>
+                        {voluntaryExitAnalysis.reachedTargetPercent.toFixed(0)}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Overall Summary (smaller) */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-gray-750 rounded-lg p-4">
-                <span className="text-xs text-gray-400">Avg Exit Efficiency</span>
+                <span className="text-xs text-gray-400">Overall Exit Efficiency</span>
                 <p className={`text-2xl font-bold ${
                   postExitAnalysis.avgExitEfficiency >= 70
                     ? 'text-green-400'
@@ -744,7 +832,7 @@ export function ExitManagement({ trades }: Props) {
                 <span className="text-xs text-gray-500">of available move captured</span>
               </div>
               <div className="bg-gray-750 rounded-lg p-4">
-                <span className="text-xs text-gray-400">Avg Missed R</span>
+                <span className="text-xs text-gray-400">Overall Missed R</span>
                 <p className="text-2xl font-bold text-yellow-400">
                   +{postExitAnalysis.avgMissedR.toFixed(2)}R
                 </p>

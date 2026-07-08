@@ -282,6 +282,7 @@ export interface AlertSettings {
   dailyTradeLimit: number;
   drawdownWarningThreshold: number;
   revengeTradeWindowMinutes: number;
+  minRThreshold: number; // Minimum R move in trader's favour to validate thesis
   enabledAlerts: Record<AlertType, boolean>;
 }
 

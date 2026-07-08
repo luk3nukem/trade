@@ -14,6 +14,7 @@ const defaultAlertSettings: AlertSettings = {
   dailyTradeLimit: 5,
   drawdownWarningThreshold: 5,
   revengeTradeWindowMinutes: 30,
+  minRThreshold: 1.0, // Minimum R move to validate thesis
   enabledAlerts: {
     revenge_trade: true,
     overtrade: true,

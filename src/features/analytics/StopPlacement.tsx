@@ -28,6 +28,7 @@ import {
   getStopDestinationAnalysis,
   getStopManagementInsights,
 } from '../../utils';
+import { useAppStore } from '../../stores/appStore';
 
 interface Props {
   trades: TradeRecord[];
@@ -35,6 +36,8 @@ interface Props {
 
 export function StopPlacement({ trades }: Props) {
   const [stopAdjustment, setStopAdjustment] = useState(0);
+  const { alertSettings } = useAppStore();
+  const minRThreshold = alertSettings.minRThreshold ?? 1.0;
 
   const summary = useMemo(() => getStopPlacementSummary(trades), [trades]);
   const maeDistribution = useMemo(() => getMAEDistribution(trades, 6), [trades]);
@@ -48,13 +51,13 @@ export function StopPlacement({ trades }: Props) {
     [trades, stopAdjustment]
   );
 
-  // BE & Stop Management Analytics
-  const beAnalysis = useMemo(() => getBEAnalysis(trades), [trades]);
+  // BE & Stop Management Analytics (pass minRThreshold for post-exit validation)
+  const beAnalysis = useMemo(() => getBEAnalysis(trades, minRThreshold), [trades, minRThreshold]);
   const triggerAnalysis = useMemo(() => getStopAdjustmentTriggerAnalysis(trades), [trades]);
   const destinationAnalysis = useMemo(() => getStopDestinationAnalysis(trades), [trades]);
   const stopMgmtInsights = useMemo(
-    () => getStopManagementInsights(beAnalysis, triggerAnalysis, destinationAnalysis),
-    [beAnalysis, triggerAnalysis, destinationAnalysis]
+    () => getStopManagementInsights(beAnalysis, triggerAnalysis, destinationAnalysis, minRThreshold),
+    [beAnalysis, triggerAnalysis, destinationAnalysis, minRThreshold]
   );
 
   if (summary.totalTrades === 0) {
@@ -521,6 +524,42 @@ export function StopPlacement({ trades }: Props) {
                 <div>
                   <p className="text-2xl font-bold text-red-400">{beAnalysis.beOutcomes.missedProfit}</p>
                   <p className="text-xs text-gray-400">Missed Profit (1R+ MFE)</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* BE Post-Exit Validation (uses minRThreshold) */}
+          {beAnalysis.postExitValidation.tradesWithPostExitData > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-6">
+              <h4 className="text-sm font-medium text-amber-400 mb-3">BE Post-Exit Analysis</h4>
+              <p className="text-xs text-gray-400 mb-3">
+                Using your {minRThreshold}R threshold to validate if BE cost you on correct trades
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+                <div>
+                  <p className="text-xl font-bold text-gray-200">
+                    {beAnalysis.postExitValidation.tradesWithPostExitData}
+                  </p>
+                  <p className="text-xs text-gray-400">BE stops reviewed</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-red-400">
+                    {beAnalysis.postExitValidation.thesisCostYou}
+                  </p>
+                  <p className="text-xs text-gray-400">BE cost you ({'>='}{minRThreshold}R after)</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-green-400">
+                    {beAnalysis.postExitValidation.belowThreshold}
+                  </p>
+                  <p className="text-xs text-gray-400">BE was correct ({'<'}{minRThreshold}R after)</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-amber-400">
+                    +{beAnalysis.postExitValidation.avgPostExitMoveR.toFixed(2)}R
+                  </p>
+                  <p className="text-xs text-gray-400">Avg move after BE stop</p>
                 </div>
               </div>
             </div>

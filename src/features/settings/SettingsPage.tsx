@@ -1287,7 +1287,7 @@ export function SettingsPage() {
         <h2 className="text-lg font-medium text-white mb-4">Alert Configuration</h2>
 
         {/* Alert Thresholds */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div>
             <label className="block text-sm text-gray-400 mb-1">Daily Trade Limit</label>
             <input
@@ -1324,6 +1324,19 @@ export function SettingsPage() {
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <p className="text-xs text-gray-500 mt-1">Time window after loss to flag revenge trades</p>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Min R for Valid Thesis</label>
+            <input
+              type="number"
+              min="0.25"
+              max="5"
+              step="0.25"
+              value={alertSettings.minRThreshold}
+              onChange={(e) => setAlertSettings({ minRThreshold: parseFloat(e.target.value) || 1.0 })}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-500 mt-1">Minimum R move in your favour to consider thesis correct</p>
           </div>
         </div>
 
