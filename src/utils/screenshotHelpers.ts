@@ -1,3 +1,5 @@
+import type { Screenshot } from '../types';
+
 /**
  * Screenshot-like object with optional blob and data fields
  */
@@ -6,6 +8,75 @@ interface ScreenshotLike {
   blob?: Blob | Uint8Array | ArrayBuffer | unknown;
   data?: string;
   caption?: string;
+}
+
+/**
+ * Convert a Blob to a base64 data URL string.
+ * This is necessary because Dexie Cloud cannot sync Blob objects.
+ */
+export function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to convert blob to base64'));
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Prepare screenshots for Dexie Cloud persistence.
+ * Converts Blob objects to base64 data URLs since Dexie Cloud cannot sync blobs.
+ * Returns a new array with screenshots ready for persistence.
+ */
+export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Promise<Screenshot[]> {
+  const prepared: Screenshot[] = [];
+
+  for (const screenshot of screenshots) {
+    // If screenshot already has base64 data and no blob, keep as-is
+    if (screenshot.data && !screenshot.blob) {
+      prepared.push(screenshot);
+      continue;
+    }
+
+    // If screenshot has a blob, convert to base64
+    if (screenshot.blob) {
+      try {
+        let blob: Blob;
+
+        // Handle various blob types
+        if (screenshot.blob instanceof Blob) {
+          blob = screenshot.blob;
+        } else if (screenshot.blob instanceof Uint8Array || screenshot.blob instanceof ArrayBuffer) {
+          blob = new Blob([screenshot.blob]);
+        } else if (typeof screenshot.blob === 'object' && screenshot.blob !== null && 'byteLength' in screenshot.blob) {
+          blob = new Blob([screenshot.blob as ArrayBuffer]);
+        } else {
+          // Unknown type, skip this screenshot
+          console.warn('[Screenshot] Unknown blob type, skipping:', screenshot.id);
+          continue;
+        }
+
+        const base64Data = await blobToBase64(blob);
+        prepared.push({
+          id: screenshot.id,
+          data: base64Data, // Store as base64 string
+          // Don't store blob - it won't sync with Dexie Cloud
+          caption: screenshot.caption,
+          createdAt: screenshot.createdAt,
+        });
+      } catch (error) {
+        console.error('[Screenshot] Failed to convert blob to base64:', screenshot.id, error);
+      }
+    }
+  }
+
+  return prepared;
 }
 
 /**
@@ -20,60 +91,38 @@ interface ScreenshotLike {
 export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
   const blob = screenshot.blob;
 
-  // DEBUG: Log what we're working with
-  console.log('[Screenshot Debug] createScreenshotUrl input:', {
-    id: screenshot.id,
-    hasBlob: !!blob,
-    blobType: blob?.constructor?.name,
-    blobInstanceOfBlob: blob instanceof Blob,
-    blobInstanceOfUint8Array: blob instanceof Uint8Array,
-    blobInstanceOfArrayBuffer: blob instanceof ArrayBuffer,
-    hasData: !!screenshot.data,
-    dataLength: screenshot.data?.length || 0,
-    blobKeys: blob && typeof blob === 'object' ? Object.keys(blob as object) : [],
-  });
-
-  // Skip if no blob data
+  // Base64 data URL - primary storage format for Dexie Cloud compatibility
   if (!blob) {
-    // Base64 data URL fallback
     if (screenshot.data && typeof screenshot.data === 'string') {
-      console.log('[Screenshot Debug] createScreenshotUrl: using base64 data fallback (no blob)');
       return screenshot.data;
     }
-    console.log('[Screenshot Debug] createScreenshotUrl: no blob and no data, returning null');
     return null;
   }
 
-  // Native Blob or File - use directly
+  // Native Blob or File - use directly (for in-memory display before save)
   if (blob instanceof Blob) {
-    console.log('[Screenshot Debug] createScreenshotUrl: native Blob detected, creating URL');
     return URL.createObjectURL(blob);
   }
 
   // Uint8Array or ArrayBuffer from Dexie Cloud sync - wrap in Blob
   if (blob instanceof Uint8Array || blob instanceof ArrayBuffer) {
-    console.log('[Screenshot Debug] createScreenshotUrl: Uint8Array/ArrayBuffer detected, wrapping in Blob');
     return URL.createObjectURL(new Blob([blob]));
   }
 
   // Check if blob is an object with byteLength (another ArrayBuffer-like check)
   if (typeof blob === 'object' && blob !== null && 'byteLength' in blob) {
     try {
-      console.log('[Screenshot Debug] createScreenshotUrl: object with byteLength detected, trying to wrap');
       return URL.createObjectURL(new Blob([blob as ArrayBuffer]));
-    } catch (e) {
-      console.log('[Screenshot Debug] createScreenshotUrl: failed to wrap object with byteLength', e);
+    } catch {
       // Fall through to base64 fallback
     }
   }
 
   // Base64 data URL fallback
   if (screenshot.data && typeof screenshot.data === 'string') {
-    console.log('[Screenshot Debug] createScreenshotUrl: using base64 data fallback');
     return screenshot.data;
   }
 
-  console.log('[Screenshot Debug] createScreenshotUrl: no valid data source, returning null');
   return null;
 }
 

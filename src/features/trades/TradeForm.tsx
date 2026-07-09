@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { FormSection } from '../../components/FormSection';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
-import { createScreenshotUrl } from '../../utils/screenshotHelpers';
+import { createScreenshotUrl, prepareScreenshotsForSave } from '../../utils/screenshotHelpers';
 import type {
   TradeFormData,
   TradeRecord,
@@ -286,24 +286,7 @@ export function TradeForm() {
             isOverTrade: trade.isOverTrade ?? false,
             preTradeNotes: trade.preTradeNotes || '',
             postTradeNotes: trade.postTradeNotes || '',
-            screenshots: (() => {
-              // DEBUG: Log screenshots when loading trade
-              const screenshots = trade.screenshots || [];
-              console.log('[Screenshot Debug] LOAD - trade screenshots from DB:', {
-                tradeId: trade.id,
-                screenshotCount: screenshots.length,
-                screenshots: screenshots.map((s) => ({
-                  id: s.id,
-                  hasBlob: !!s.blob,
-                  blobType: s.blob?.constructor?.name,
-                  blobSize: s.blob instanceof Blob ? s.blob.size : typeof s.blob === 'object' && s.blob && 'byteLength' in s.blob ? (s.blob as ArrayBuffer).byteLength : 'N/A',
-                  hasData: !!s.data,
-                  dataLength: s.data?.length || 0,
-                  blobKeys: s.blob && typeof s.blob === 'object' ? Object.keys(s.blob) : [],
-                })),
-              });
-              return screenshots;
-            })(),
+            screenshots: trade.screenshots || [],
             tags: trade.tags || [],
             commissions: trade.commissions ? String(trade.commissions) : '',
             swap: trade.swap ? String(trade.swap) : '',
@@ -597,7 +580,7 @@ export function TradeForm() {
     }));
   };
 
-  // Handle screenshot paste - store Blob directly for Dexie persistence
+  // Handle screenshot paste - store Blob temporarily for display, convert to base64 on save
   const handlePaste = useCallback((e: ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -606,31 +589,12 @@ export function TradeForm() {
       if (item.type.startsWith('image/')) {
         const file = item.getAsFile();
         if (file) {
-          // DEBUG: Log screenshot capture
-          console.log('[Screenshot Debug] PASTE captured:', {
-            id: 'will be generated',
-            fileName: file.name,
-            fileType: file.type,
-            fileSize: file.size,
-            isBlob: file instanceof Blob,
-            isFile: file instanceof File,
-          });
-
-          // Store the Blob directly - Dexie handles binary data natively
           const newScreenshot: Screenshot = {
             id: uuidv4(),
             blob: file,
             caption: '',
             createdAt: new Date(),
           };
-
-          console.log('[Screenshot Debug] PASTE screenshot object:', {
-            id: newScreenshot.id,
-            hasBlob: !!newScreenshot.blob,
-            blobType: newScreenshot.blob?.constructor?.name,
-            blobSize: newScreenshot.blob instanceof Blob ? newScreenshot.blob.size : 'N/A',
-          });
-
           setFormData((prev) => ({
             ...prev,
             screenshots: [...prev.screenshots, newScreenshot],
@@ -640,37 +604,19 @@ export function TradeForm() {
     }
   }, []);
 
-  // Handle screenshot drop - store Blob directly for Dexie persistence
+  // Handle screenshot drop - store Blob temporarily for display, convert to base64 on save
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const files = e.dataTransfer.files;
 
     for (const file of files) {
       if (file.type.startsWith('image/')) {
-        // DEBUG: Log screenshot capture
-        console.log('[Screenshot Debug] DROP captured:', {
-          fileName: file.name,
-          fileType: file.type,
-          fileSize: file.size,
-          isBlob: file instanceof Blob,
-          isFile: file instanceof File,
-        });
-
-        // Store the Blob directly - Dexie handles binary data natively
         const newScreenshot: Screenshot = {
           id: uuidv4(),
           blob: file,
           caption: '',
           createdAt: new Date(),
         };
-
-        console.log('[Screenshot Debug] DROP screenshot object:', {
-          id: newScreenshot.id,
-          hasBlob: !!newScreenshot.blob,
-          blobType: newScreenshot.blob?.constructor?.name,
-          blobSize: newScreenshot.blob instanceof Blob ? newScreenshot.blob.size : 'N/A',
-        });
-
         setFormData((prev) => ({
           ...prev,
           screenshots: [...prev.screenshots, newScreenshot],
@@ -757,6 +703,10 @@ export function TradeForm() {
         mfeR = mfeDistance / stopDistance;
       }
 
+      // Convert screenshots to base64 for Dexie Cloud persistence
+      // Dexie Cloud cannot sync Blob objects, so we store as base64 data URLs
+      const screenshotsForSave = await prepareScreenshotsForSave(formData.screenshots);
+
       // Build trade data without id for new trades (Dexie Cloud generates @id)
       const tradeData = {
         accountId: formData.accountId,
@@ -792,21 +742,7 @@ export function TradeForm() {
         isOverTrade: formData.isOverTrade,
         preTradeNotes: formData.preTradeNotes.trim() || undefined,
         postTradeNotes: formData.postTradeNotes.trim() || undefined,
-        screenshots: (() => {
-          // DEBUG: Log screenshots being saved
-          console.log('[Screenshot Debug] SAVE - screenshots to persist:', {
-            count: formData.screenshots.length,
-            screenshots: formData.screenshots.map((s) => ({
-              id: s.id,
-              hasBlob: !!s.blob,
-              blobType: s.blob?.constructor?.name,
-              blobSize: s.blob instanceof Blob ? s.blob.size : 'N/A',
-              hasData: !!s.data,
-              dataLength: s.data?.length || 0,
-            })),
-          });
-          return formData.screenshots;
-        })(),
+        screenshots: screenshotsForSave,
         tags: formData.tags,
         maePrice,
         mfePrice,
@@ -846,42 +782,10 @@ export function TradeForm() {
       if (isEditMode) {
         // For edits, include the existing id
         await db.trades.put({ ...tradeData, id: id! } as TradeRecord);
-
-        // DEBUG: Verify save by re-reading trade
-        const savedTrade = await db.trades.get(id!);
-        console.log('[Screenshot Debug] AFTER EDIT - re-read trade:', {
-          tradeId: id,
-          screenshotCount: savedTrade?.screenshots?.length || 0,
-          screenshots: savedTrade?.screenshots?.map((s) => ({
-            id: s.id,
-            hasBlob: !!s.blob,
-            blobType: s.blob?.constructor?.name,
-            blobSize: s.blob instanceof Blob ? s.blob.size : typeof s.blob === 'object' && s.blob && 'byteLength' in s.blob ? (s.blob as ArrayBuffer).byteLength : 'N/A',
-            hasData: !!s.data,
-            dataLength: s.data?.length || 0,
-          })),
-        });
-
         navigate(`/trades/${id}`);
       } else {
         // For new trades, let Dexie Cloud generate the id
-        const newId = await db.trades.add(tradeData as TradeRecord);
-
-        // DEBUG: Verify save by re-reading trade
-        const savedTrade = await db.trades.get(newId);
-        console.log('[Screenshot Debug] AFTER ADD - re-read trade:', {
-          tradeId: newId,
-          screenshotCount: savedTrade?.screenshots?.length || 0,
-          screenshots: savedTrade?.screenshots?.map((s) => ({
-            id: s.id,
-            hasBlob: !!s.blob,
-            blobType: s.blob?.constructor?.name,
-            blobSize: s.blob instanceof Blob ? s.blob.size : typeof s.blob === 'object' && s.blob && 'byteLength' in s.blob ? (s.blob as ArrayBuffer).byteLength : 'N/A',
-            hasData: !!s.data,
-            dataLength: s.data?.length || 0,
-          })),
-        });
-
+        await db.trades.add(tradeData as TradeRecord);
         navigate('/trades');
       }
     } catch (error) {
