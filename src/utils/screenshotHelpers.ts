@@ -48,14 +48,16 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
     if (screenshot.blob) {
       try {
         let blob: Blob;
+        // Cast to unknown for type checking - Dexie Cloud may return different types
+        const blobData = screenshot.blob as unknown;
 
         // Handle various blob types
-        if (screenshot.blob instanceof Blob) {
-          blob = screenshot.blob;
-        } else if (screenshot.blob instanceof Uint8Array || screenshot.blob instanceof ArrayBuffer) {
-          blob = new Blob([screenshot.blob]);
-        } else if (typeof screenshot.blob === 'object' && screenshot.blob !== null && 'byteLength' in screenshot.blob) {
-          blob = new Blob([screenshot.blob as ArrayBuffer]);
+        if (blobData instanceof Blob) {
+          blob = blobData;
+        } else if (blobData instanceof Uint8Array || blobData instanceof ArrayBuffer) {
+          blob = new Blob([blobData]);
+        } else if (typeof blobData === 'object' && blobData !== null && 'byteLength' in blobData) {
+          blob = new Blob([blobData as ArrayBuffer]);
         } else {
           // Unknown type, skip this screenshot
           console.warn('[Screenshot] Unknown blob type, skipping:', screenshot.id);
