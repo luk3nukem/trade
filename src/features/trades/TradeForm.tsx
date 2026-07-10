@@ -55,7 +55,7 @@ const getInitialFormData = (): TradeFormData => ({
   exits: [],
   stopAdjustments: [],
   setupTags: [],
-  analysisTF: '',
+  analysisTFs: [],
   entryTF: '',
   htfBias: '',
   marketCondition: '',
@@ -234,7 +234,7 @@ export function TradeForm() {
             exits: trade.exits || [],
             stopAdjustments: trade.stopAdjustments || [],
             setupTags: trade.setupTags || [],
-            analysisTF: trade.analysisTF || '',
+            analysisTFs: trade.analysisTFs || [],
             entryTF: trade.entryTF || '',
             htfBias: trade.htfBias || '',
             marketCondition: trade.marketCondition || '',
@@ -662,7 +662,7 @@ export function TradeForm() {
         exitType: calculated.exitType,
         stopAdjustments: formData.stopAdjustments,
         setupTags: formData.setupTags,
-        analysisTF: formData.analysisTF || undefined,
+        analysisTFs: formData.analysisTFs,
         entryTF: formData.entryTF || undefined,
         htfBias: formData.htfBias || undefined,
         marketCondition: formData.marketCondition || undefined,
@@ -1103,21 +1103,41 @@ export function TradeForm() {
           </div>
 
           {/* Timeframes */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-3">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TF</label>
-              <select
-                value={formData.analysisTF}
-                onChange={(e) => handleChange('analysisTF', e.target.value)}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">Select...</option>
-                {TIMEFRAMES.map((tf) => (
-                  <option key={tf.value} value={tf.value}>
-                    {tf.label}
-                  </option>
-                ))}
-              </select>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TFs</label>
+              <div className="flex flex-wrap gap-2">
+                {TIMEFRAMES.map((tf) => {
+                  const isSelected = formData.analysisTFs.includes(tf.value);
+                  return (
+                    <button
+                      key={tf.value}
+                      type="button"
+                      onClick={() => {
+                        if (isSelected) {
+                          setFormData((prev) => ({
+                            ...prev,
+                            analysisTFs: prev.analysisTFs.filter((t) => t !== tf.value),
+                          }));
+                        } else {
+                          setFormData((prev) => ({
+                            ...prev,
+                            analysisTFs: [...prev.analysisTFs, tf.value],
+                          }));
+                        }
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        isSelected
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      {tf.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Timeframes the setup was identified on</p>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">Entry TF</label>
@@ -2014,25 +2034,45 @@ export function TradeForm() {
                 <p className="text-xs text-gray-500 mt-1">Tag every technical factor present at entry</p>
               </div>
 
-              {/* Timeframe fields side by side */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TF</label>
-                  <select
-                    value={formData.analysisTF}
-                    onChange={(e) => handleChange('analysisTF', e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select...</option>
-                    {TIMEFRAMES.map((tf) => (
-                      <option key={tf.value} value={tf.value}>
+              {/* Analysis TFs - multi-select pills */}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TFs</label>
+                <div className="flex flex-wrap gap-2">
+                  {TIMEFRAMES.map((tf) => {
+                    const isSelected = formData.analysisTFs.includes(tf.value);
+                    return (
+                      <button
+                        key={tf.value}
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) {
+                            setFormData((prev) => ({
+                              ...prev,
+                              analysisTFs: prev.analysisTFs.filter((t) => t !== tf.value),
+                            }));
+                          } else {
+                            setFormData((prev) => ({
+                              ...prev,
+                              analysisTFs: [...prev.analysisTFs, tf.value],
+                            }));
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          isSelected
+                            ? 'bg-blue-500 text-white'
+                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                        }`}
+                      >
                         {tf.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">Setup identified on</p>
+                      </button>
+                    );
+                  })}
                 </div>
+                <p className="text-xs text-gray-500 mt-1">Timeframes the setup was identified on</p>
+              </div>
 
+              {/* Entry TF - single select */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">Entry TF</label>
                   <select

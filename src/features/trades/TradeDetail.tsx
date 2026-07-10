@@ -641,9 +641,22 @@ export function TradeDetail() {
                 <p className="text-gray-200">-</p>
               )}
             </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Analysis TF</span>
-              <span className="text-gray-200">{trade.analysisTF || '-'}</span>
+            <div className="flex justify-between items-start">
+              <span className="text-sm text-gray-400">Analysis TFs</span>
+              <div className="flex flex-wrap gap-1 justify-end">
+                {trade.analysisTFs && trade.analysisTFs.length > 0 ? (
+                  trade.analysisTFs.map((tf) => (
+                    <span
+                      key={tf}
+                      className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm"
+                    >
+                      {tf}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-gray-200">-</span>
+                )}
+              </div>
             </div>
             <div className="flex justify-between">
               <span className="text-sm text-gray-400">Entry TF</span>

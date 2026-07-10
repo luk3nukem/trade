@@ -279,11 +279,19 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     // Select session (weighted, but Asian has worse outcomes)
     const session = weightedRandom(sessions, sessionWeights);
 
-    // Select timeframes (weighted) - entry TF and analysis TF
+    // Select timeframes (weighted) - entry TF and analysis TFs (1-3)
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
-    // Analysis TF is usually higher than entry TF
-    const higherTFs: Timeframe[] = ['4H', 'D1', 'W1'];
-    const analysisTF = Math.random() > 0.3 ? weightedRandom(higherTFs, [0.5, 0.4, 0.1]) : undefined;
+    // Analysis TFs are usually higher than entry TF - generate 1-3 TFs
+    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const analysisTFs: string[] = [];
+    if (Math.random() > 0.2) { // 80% have at least one analysis TF
+      // Determine how many TFs (1-3)
+      const tfCount = Math.random() < 0.5 ? 1 : Math.random() < 0.7 ? 2 : 3;
+      const shuffled = [...higherTFs].sort(() => Math.random() - 0.5);
+      for (let i = 0; i < tfCount && i < shuffled.length; i++) {
+        analysisTFs.push(shuffled[i]);
+      }
+    }
 
     // Direction (50/50)
     const direction: TradeDirection = Math.random() > 0.5 ? 'long' : 'short';
@@ -628,7 +636,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       stopAdjustments: [],
       exitType: hasPartials ? undefined : exitType, // undefined for multi-exit trades
       setupTags: setupConfig.tags,
-      analysisTF,
+      analysisTFs,
       entryTF,
       htfBias,
       marketCondition,
@@ -675,8 +683,16 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     const pairConfig = weightedRandom(PAIRS, PAIRS.map(p => p.weight));
     const setupConfig = weightedRandom(SETUP_TAG_COMBINATIONS, SETUP_TAG_COMBINATIONS.map(s => s.weight));
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
-    const higherTFs: Timeframe[] = ['4H', 'D1', 'W1'];
-    const analysisTF = Math.random() > 0.3 ? weightedRandom(higherTFs, [0.5, 0.4, 0.1]) : undefined;
+    // Analysis TFs - generate 1-3 TFs
+    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const analysisTFs: string[] = [];
+    if (Math.random() > 0.2) {
+      const tfCount = Math.random() < 0.5 ? 1 : Math.random() < 0.7 ? 2 : 3;
+      const shuffled = [...higherTFs].sort(() => Math.random() - 0.5);
+      for (let j = 0; j < tfCount && j < shuffled.length; j++) {
+        analysisTFs.push(shuffled[j]);
+      }
+    }
     const direction: TradeDirection = Math.random() > 0.5 ? 'long' : 'short';
 
     // Recent entry (within last 24 hours)
@@ -723,7 +739,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       exits: [],
       stopAdjustments: [],
       setupTags: setupConfig.tags,
-      analysisTF,
+      analysisTFs,
       entryTF,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),
@@ -774,8 +790,16 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     const setupConfig = weightedRandom(SETUP_TAG_COMBINATIONS, SETUP_TAG_COMBINATIONS.map(s => s.weight));
     const session = weightedRandom(sessions, sessionWeights);
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
-    const higherTFs: Timeframe[] = ['4H', 'D1', 'W1'];
-    const analysisTF = Math.random() > 0.3 ? weightedRandom(higherTFs, [0.5, 0.4, 0.1]) : undefined;
+    // Analysis TFs - generate 1-3 TFs
+    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const analysisTFs: string[] = [];
+    if (Math.random() > 0.2) {
+      const tfCount = Math.random() < 0.5 ? 1 : Math.random() < 0.7 ? 2 : 3;
+      const shuffled = [...higherTFs].sort(() => Math.random() - 0.5);
+      for (let j = 0; j < tfCount && j < shuffled.length; j++) {
+        analysisTFs.push(shuffled[j]);
+      }
+    }
     const direction: TradeDirection = Math.random() > 0.5 ? 'long' : 'short';
 
     const entryTime = generateEntryTime(baseDate, session);
@@ -861,7 +885,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       stopAdjustments: [],
       exitType: rMultiple >= 0 ? 'tp_hit' : 'sl_hit',
       setupTags: setupConfig.tags,
-      analysisTF,
+      analysisTFs,
       entryTF,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),

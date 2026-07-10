@@ -329,6 +329,48 @@ export function TimeAnalysis({ trades }: Props) {
         </div>
       </div>
 
+      {/* Analysis TF Count - Does analyzing more timeframes correlate with better results? */}
+      <div className="bg-gray-800 rounded-lg p-6">
+        <div className="mb-4">
+          <h3 className="text-lg font-medium text-white">Performance by Analysis TF Count</h3>
+          <p className="text-sm text-gray-400">Does analyzing more timeframes improve results?</p>
+        </div>
+        {timeframeData.analysisTFCount.filter(tf => tf.group !== 'None').length > 0 ? (
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart
+              data={timeframeData.analysisTFCount}
+              margin={{ left: 10, right: 10 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
+              <XAxis dataKey="group" stroke="#6b7280" fontSize={12} />
+              <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                formatter={(value: number, name: string) => {
+                  if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
+                  return [value, name];
+                }}
+              />
+              <ReferenceLine y={0} stroke="#6b7280" />
+              <Bar dataKey="avgR" radius={[4, 4, 0, 0]}>
+                {timeframeData.analysisTFCount.map((entry, index) => (
+                  <Cell key={index} fill={entry.avgR >= 0 ? '#22c55e' : '#ef4444'} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-[200px] flex items-center justify-center text-gray-500">
+            No analysis timeframe data recorded
+          </div>
+        )}
+        <div className="flex justify-center gap-4 mt-2 text-xs text-gray-400 flex-wrap">
+          {timeframeData.analysisTFCount.map(tf => (
+            <span key={tf.group}>{tf.group}: {tf.count} trades ({tf.winRate.toFixed(0)}% win)</span>
+          ))}
+        </div>
+      </div>
+
       {/* Insights */}
       {insights.length > 0 && (
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">

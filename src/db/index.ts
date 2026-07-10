@@ -464,6 +464,30 @@ class TradingDiaryDB extends Dexie {
           });
       });
 
+    // Version 17 - Convert analysisTF (single) to analysisTFs (array)
+    this.version(17)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Convert analysisTF to analysisTFs array
+            if (trade.analysisTF !== undefined && trade.analysisTF !== '' && trade.analysisTF !== null) {
+              trade.analysisTFs = [trade.analysisTF];
+            } else {
+              trade.analysisTFs = [];
+            }
+            delete trade.analysisTF;
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

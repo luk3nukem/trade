@@ -146,7 +146,7 @@ export interface TradeRecord {
 
   // === Setup & Market Context ===
   setupTags: string[]; // Multi-tag confluence system
-  analysisTF?: Timeframe; // Timeframe used to identify the setup (e.g. H4, D1)
+  analysisTFs: string[]; // Timeframes used to identify the setup (e.g. W1, D1, H4)
   entryTF?: Timeframe; // Timeframe used to execute entry (e.g. 15m, 1H)
   htfBias?: HTFBias;
   marketCondition?: MarketCondition;
@@ -352,7 +352,7 @@ export interface TradeFormData {
 
   // Setup & Market Context
   setupTags: string[];
-  analysisTF: Timeframe | '';
+  analysisTFs: string[];
   entryTF: Timeframe | '';
   htfBias: HTFBias | '';
   marketCondition: MarketCondition | '';

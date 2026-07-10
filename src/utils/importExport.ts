@@ -184,8 +184,19 @@ export async function importBackup(backup: BackupData): Promise<ImportResult> {
         try {
           // Convert date strings back to Date objects
           // Also migrate old blob/data screenshots to URL format (they'll be empty)
+          // Migrate old analysisTF (single) to analysisTFs (array)
+          let analysisTFs: string[] = [];
+          if (trade.analysisTFs && Array.isArray(trade.analysisTFs)) {
+            analysisTFs = trade.analysisTFs;
+          } else if ((trade as unknown as Record<string, unknown>).analysisTF) {
+            const oldTF = (trade as unknown as Record<string, unknown>).analysisTF as string;
+            if (oldTF && oldTF.trim()) {
+              analysisTFs = [oldTF];
+            }
+          }
           const tradeWithDates: TradeRecord = {
             ...trade,
+            analysisTFs,
             entryTime: new Date(trade.entryTime),
             exitTime: trade.exitTime ? new Date(trade.exitTime) : undefined,
             createdAt: new Date(trade.createdAt),
@@ -291,6 +302,7 @@ export async function exportTradesCSV(accountId?: string, strategyId?: string): 
     'closeNotes',
     'tags',
     'session',
+    'analysisTFs',
     'plannedRR',
     'actualRR',
     'rMultiple',
@@ -327,7 +339,11 @@ export async function exportTradesCSV(accountId?: string, strategyId?: string): 
         }
 
         if (Array.isArray(value)) {
-          // For arrays (tags, partials), serialize as JSON
+          // For analysisTFs, use pipe-separated format
+          if (col === 'analysisTFs') {
+            return `"${value.join('|')}"`;
+          }
+          // For other arrays (tags, partials), serialize as JSON
           return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
         }
 

@@ -258,16 +258,19 @@ export interface TimeframeStats extends GroupStats {
 export function getTimeframeAnalysis(trades: TradeRecord[]): {
   analysisTF: TimeframeStats[];
   entryTF: TimeframeStats[];
+  analysisTFCount: TimeframeStats[]; // TF count analysis - does analyzing more TFs correlate with better results?
 } {
   const closedTrades = trades.filter(t => t.status === 'closed');
 
-  // Group by analysis timeframe
+  // Group by analysis timeframe (trades can appear in multiple groups)
   const analysisTFGroups = new Map<string, TradeRecord[]>();
   for (const trade of closedTrades) {
-    const tf = trade.analysisTF || 'Not set';
-    const existing = analysisTFGroups.get(tf) || [];
-    existing.push(trade);
-    analysisTFGroups.set(tf, existing);
+    const tfs = trade.analysisTFs && trade.analysisTFs.length > 0 ? trade.analysisTFs : ['Not set'];
+    for (const tf of tfs) {
+      const existing = analysisTFGroups.get(tf) || [];
+      existing.push(trade);
+      analysisTFGroups.set(tf, existing);
+    }
   }
 
   const analysisTF: TimeframeStats[] = [];
@@ -290,6 +293,45 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
       losses: losses.length,
       breakevens: breakevens.length,
       winRate: (wins.length / tfTrades.length) * 100,
+      avgR,
+      totalPnl,
+      profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
+      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length : 0,
+      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length : 0,
+      rStdDev: calculateStdDev(rMultiples),
+    });
+  }
+
+  // Group by analysis TF count (how many timeframes were analyzed)
+  const tfCountGroups = new Map<string, TradeRecord[]>();
+  for (const trade of closedTrades) {
+    const tfCount = trade.analysisTFs?.length ?? 0;
+    const label = tfCount === 0 ? 'None' : tfCount === 1 ? '1 TF' : `${tfCount} TFs`;
+    const existing = tfCountGroups.get(label) || [];
+    existing.push(trade);
+    tfCountGroups.set(label, existing);
+  }
+
+  const analysisTFCount: TimeframeStats[] = [];
+  for (const [label, countTrades] of tfCountGroups) {
+    const wins = countTrades.filter(t => (t.rMultiple ?? 0) > 0);
+    const losses = countTrades.filter(t => (t.rMultiple ?? 0) < 0);
+    const breakevens = countTrades.filter(t => (t.rMultiple ?? 0) === 0);
+    const rMultiples = countTrades.map(t => t.rMultiple ?? 0);
+    const avgR = rMultiples.length > 0 ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length : 0;
+    const totalPnl = countTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+    analysisTFCount.push({
+      group: label,
+      timeframe: label,
+      count: countTrades.length,
+      wins: wins.length,
+      losses: losses.length,
+      breakevens: breakevens.length,
+      winRate: (wins.length / countTrades.length) * 100,
       avgR,
       totalPnl,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
@@ -340,8 +382,14 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
   // Sort by count descending
   analysisTF.sort((a, b) => b.count - a.count);
   entryTF.sort((a, b) => b.count - a.count);
+  // Sort TF count by label (None, 1 TF, 2 TFs, etc.)
+  analysisTFCount.sort((a, b) => {
+    const aNum = a.group === 'None' ? 0 : parseInt(a.group);
+    const bNum = b.group === 'None' ? 0 : parseInt(b.group);
+    return aNum - bNum;
+  });
 
-  return { analysisTF, entryTF };
+  return { analysisTF, entryTF, analysisTFCount };
 }
 
 export function getRMultipleDistribution(trades: TradeRecord[]): RDistributionBucket[] {
