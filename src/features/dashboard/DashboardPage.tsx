@@ -25,6 +25,7 @@ import {
   getRecentClosedTrades,
   getTradesForDate,
   calculateTimeHeld,
+  isPostExitReviewComplete,
 } from '../../utils';
 import { AlertsPanel } from './AlertsPanel';
 
@@ -36,13 +37,21 @@ function TradesToReviewSection({
   trades: TradeRecord[];
   navigate: (path: string) => void;
 }) {
-  // Get trades that need review: closed, reviewedAt is null, closed more than 72 hours ago
+  // Get trades that need review: closed, review incomplete, closed more than 72 hours ago
   // Uses full datetime precision (not just date)
+  // Checks actual field completion, not just reviewedAt timestamp
   const tradesToReview = useMemo(() => {
     const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
-      if (t.reviewedAt) return false; // Already reviewed
+      // Check if review is actually complete (all 4 fields filled)
+      const reviewComplete = isPostExitReviewComplete(
+        t.postExitBestPrice,
+        t.postExitWorstPrice,
+        t.reachedTargetPostExit,
+        t.postExitNotes
+      );
+      if (reviewComplete) return false;
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
       return exitTime < seventyTwoHoursAgo;
@@ -59,7 +68,13 @@ function TradesToReviewSection({
     const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
-      if (t.reviewedAt) return false;
+      const reviewComplete = isPostExitReviewComplete(
+        t.postExitBestPrice,
+        t.postExitWorstPrice,
+        t.reachedTargetPostExit,
+        t.postExitNotes
+      );
+      if (reviewComplete) return false;
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
       return exitTime < seventyTwoHoursAgo;
