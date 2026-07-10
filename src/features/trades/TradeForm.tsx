@@ -286,7 +286,18 @@ export function TradeForm() {
             isOverTrade: trade.isOverTrade ?? false,
             preTradeNotes: trade.preTradeNotes || '',
             postTradeNotes: trade.postTradeNotes || '',
-            screenshots: trade.screenshots || [],
+            screenshots: (() => {
+              const ss = trade.screenshots || [];
+              console.log('SCREENSHOTS ON LOAD:', JSON.stringify(ss.map(s => ({
+                id: s.id,
+                hasData: !!s.data,
+                dataType: typeof s.data,
+                dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
+                hasBlob: !!s.blob,
+                caption: s.caption
+              }))));
+              return ss;
+            })(),
             tags: trade.tags || [],
             commissions: trade.commissions ? String(trade.commissions) : '',
             swap: trade.swap ? String(trade.swap) : '',
