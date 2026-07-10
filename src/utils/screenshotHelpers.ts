@@ -38,8 +38,8 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
   const prepared: Screenshot[] = [];
 
   for (const screenshot of screenshots) {
-    // If screenshot already has base64 data and no blob, keep as-is
-    if (screenshot.data && !screenshot.blob) {
+    // If screenshot already has valid base64 data string and no blob, keep as-is
+    if (typeof screenshot.data === 'string' && screenshot.data.startsWith('data:') && !screenshot.blob) {
       prepared.push(screenshot);
       continue;
     }

@@ -713,7 +713,8 @@ export function TradeForm() {
         blobType: s.blob?.constructor?.name,
         blobSize: (s.blob as Blob)?.size,
         hasData: !!s.data,
-        dataLength: s.data?.length,
+        dataType: typeof s.data,
+        dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
         caption: s.caption
       }))));
 
@@ -724,8 +725,9 @@ export function TradeForm() {
         id: s.id,
         hasBlob: !!s.blob,
         hasData: !!s.data,
-        dataLength: s.data?.length,
-        dataPrefix: s.data?.substring(0, 50),
+        dataType: typeof s.data,
+        dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
+        dataPrefix: typeof s.data === 'string' ? s.data.substring(0, 50) : String(s.data).substring(0, 50),
         caption: s.caption
       }))));
 
