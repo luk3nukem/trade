@@ -292,7 +292,10 @@ export function TradeForm() {
                 id: s.id,
                 hasData: !!s.data,
                 dataType: typeof s.data,
+                dataConstructor: s.data?.constructor?.name,
                 dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
+                dataKeys: typeof s.data === 'object' && s.data ? Object.keys(s.data).slice(0, 5) : [],
+                dataByteLength: (s.data as unknown as ArrayBuffer)?.byteLength,
                 hasBlob: !!s.blob,
                 caption: s.caption
               }))));
