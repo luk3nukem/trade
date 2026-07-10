@@ -705,7 +705,29 @@ export function TradeForm() {
 
       // Convert screenshots to base64 for Dexie Cloud persistence
       // Dexie Cloud cannot sync Blob objects, so we store as base64 data URLs
+
+      // DEBUG 1: Before prepareScreenshotsForSave
+      console.log('SCREENSHOTS BEFORE PREPARE:', JSON.stringify(formData.screenshots.map(s => ({
+        id: s.id,
+        hasBlob: !!s.blob,
+        blobType: s.blob?.constructor?.name,
+        blobSize: (s.blob as Blob)?.size,
+        hasData: !!s.data,
+        dataLength: s.data?.length,
+        caption: s.caption
+      }))));
+
       const screenshotsForSave = await prepareScreenshotsForSave(formData.screenshots);
+
+      // DEBUG 2: After prepareScreenshotsForSave but before saving to Dexie
+      console.log('SCREENSHOTS AFTER PREPARE:', JSON.stringify(screenshotsForSave.map(s => ({
+        id: s.id,
+        hasBlob: !!s.blob,
+        hasData: !!s.data,
+        dataLength: s.data?.length,
+        dataPrefix: s.data?.substring(0, 50),
+        caption: s.caption
+      }))));
 
       // Build trade data without id for new trades (Dexie Cloud generates @id)
       const tradeData = {
@@ -779,13 +801,39 @@ export function TradeForm() {
         updatedAt: now,
       };
 
+      // DEBUG 3: Confirm the prepared screenshots are on the trade object being saved
+      console.log('TRADE SCREENSHOTS AT SAVE:', tradeData.screenshots.length,
+        tradeData.screenshots.map(s => ({ hasData: !!s.data, dataLength: s.data?.length })));
+
       if (isEditMode) {
         // For edits, include the existing id
         await db.trades.put({ ...tradeData, id: id! } as TradeRecord);
+
+        // DEBUG 4: After saving, immediately read back from Dexie
+        const savedTrade = await db.trades.get(id!);
+        console.log('SCREENSHOTS READ BACK:', JSON.stringify(savedTrade?.screenshots?.map(s => ({
+          id: s.id,
+          hasData: !!s.data,
+          dataLength: s.data?.length,
+          hasBlob: !!s.blob,
+          caption: s.caption
+        }))));
+
         navigate(`/trades/${id}`);
       } else {
         // For new trades, let Dexie Cloud generate the id
-        await db.trades.add(tradeData as TradeRecord);
+        const newTradeId = await db.trades.add(tradeData as TradeRecord);
+
+        // DEBUG 4: After saving, immediately read back from Dexie
+        const savedTrade = await db.trades.get(newTradeId);
+        console.log('SCREENSHOTS READ BACK:', JSON.stringify(savedTrade?.screenshots?.map(s => ({
+          id: s.id,
+          hasData: !!s.data,
+          dataLength: s.data?.length,
+          hasBlob: !!s.blob,
+          caption: s.caption
+        }))));
+
         navigate('/trades');
       }
     } catch (error) {
