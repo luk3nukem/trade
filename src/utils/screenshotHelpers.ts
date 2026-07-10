@@ -42,11 +42,31 @@ export function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+// Chunk size for splitting base64 - small enough that Dexie Cloud won't convert to blob ref
+const CHUNK_SIZE = 50000;
+
+/**
+ * Split a base64 string into chunks to avoid Dexie Cloud blob detection
+ */
+function splitBase64(base64: string): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < base64.length; i += CHUNK_SIZE) {
+    chunks.push(base64.slice(i, i + CHUNK_SIZE));
+  }
+  return chunks;
+}
+
+/**
+ * Join base64 chunks back into a single string
+ */
+function joinBase64(chunks: string[]): string {
+  return chunks.join('');
+}
+
 /**
  * Prepare screenshots for Dexie Cloud persistence.
- * Converts Blob objects to base64 and stores WITHOUT the data URL prefix.
- * This prevents Dexie Cloud from detecting it as blob data and converting it to a reference.
- * Format stored: { mimeType: "image/png", base64: "iVBORw0KGgo..." }
+ * Converts Blob objects to base64 and splits into chunks to avoid Dexie Cloud blob detection.
+ * Format stored: { mimeType: "image/png", chunks: ["chunk1", "chunk2", ...] }
  * Returns a new array with screenshots ready for persistence.
  */
 export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Promise<Screenshot[]> {
@@ -59,21 +79,31 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
       continue;
     }
 
-    // If screenshot already has valid data (either string or our custom format) and no blob, keep as-is
-    // Check for our new format: object with mimeType and base64
+    // If screenshot already has valid data in our chunked format, keep as-is
     if (!screenshot.blob && screenshot.data) {
-      if (typeof screenshot.data === 'object' && 'mimeType' in (screenshot.data as object) && 'base64' in (screenshot.data as object)) {
-        // Already in our custom format
+      const dataObj = screenshot.data as { mimeType?: string; chunks?: string[]; base64?: string };
+      if (typeof screenshot.data === 'object' && dataObj.mimeType && dataObj.chunks && Array.isArray(dataObj.chunks)) {
+        // Already in our chunked format
         prepared.push(screenshot);
         continue;
       }
+      // Handle old format with base64 string (convert to chunks)
+      if (typeof screenshot.data === 'object' && dataObj.mimeType && typeof dataObj.base64 === 'string') {
+        prepared.push({
+          id: screenshot.id,
+          data: { mimeType: dataObj.mimeType, chunks: splitBase64(dataObj.base64) } as unknown as string,
+          caption: screenshot.caption,
+          createdAt: screenshot.createdAt,
+        });
+        continue;
+      }
+      // Handle legacy data URL string format
       if (typeof screenshot.data === 'string' && screenshot.data.startsWith('data:')) {
-        // Old format data URL - convert to new format to avoid Dexie Cloud blob detection
         const match = screenshot.data.match(/^data:([^;]+);base64,(.+)$/);
         if (match) {
           prepared.push({
             id: screenshot.id,
-            data: { mimeType: match[1], base64: match[2] } as unknown as string,
+            data: { mimeType: match[1], chunks: splitBase64(match[2]) } as unknown as string,
             caption: screenshot.caption,
             createdAt: screenshot.createdAt,
           });
@@ -82,7 +112,7 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
       }
     }
 
-    // If screenshot has a blob, convert to base64
+    // If screenshot has a blob, convert to base64 chunks
     if (screenshot.blob) {
       try {
         let blob: Blob;
@@ -105,14 +135,13 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
         }
 
         const dataUrl = await blobToBase64(blob);
-        // Extract just the base64 part, store mimeType separately
-        // This avoids Dexie Cloud detecting it as blob data
+        // Extract just the base64 part, split into chunks
         const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
         if (match) {
           prepared.push({
             id: screenshot.id,
-            // Store as object to avoid Dexie Cloud blob detection
-            data: { mimeType: match[1], base64: match[2] } as unknown as string,
+            // Store as chunked object to avoid Dexie Cloud blob detection
+            data: { mimeType: match[1], chunks: splitBase64(match[2]) } as unknown as string,
             caption: screenshot.caption,
             createdAt: screenshot.createdAt,
           });
@@ -142,20 +171,25 @@ export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
 
   // Check data field first (for saved screenshots)
   if (screenshot.data) {
-    // Our new custom format: { mimeType, base64 }
+    // Our chunked format: { mimeType, chunks: string[] }
     if (typeof screenshot.data === 'object' && !isDexieCloudBlobRef(screenshot.data)) {
-      const dataObj = screenshot.data as { mimeType?: string; base64?: string };
-      console.log('createScreenshotUrl custom format:', {
-        id: screenshot.id,
-        hasMimeType: !!dataObj.mimeType,
-        mimeType: dataObj.mimeType,
-        hasBase64: !!dataObj.base64,
-        base64Type: typeof dataObj.base64,
-        base64Constructor: dataObj.base64?.constructor?.name,
-        base64Length: typeof dataObj.base64 === 'string' ? dataObj.base64.length : 'N/A',
-        base64Keys: typeof dataObj.base64 === 'object' && dataObj.base64 ? Object.keys(dataObj.base64).slice(0, 5) : [],
-      });
-      if (dataObj.mimeType && dataObj.base64) {
+      const dataObj = screenshot.data as { mimeType?: string; chunks?: string[]; base64?: string };
+
+      // New chunked format
+      if (dataObj.mimeType && dataObj.chunks && Array.isArray(dataObj.chunks)) {
+        // Verify all chunks are strings (not converted by Dexie Cloud)
+        const allStrings = dataObj.chunks.every(c => typeof c === 'string');
+        if (allStrings) {
+          const base64 = joinBase64(dataObj.chunks);
+          return `data:${dataObj.mimeType};base64,${base64}`;
+        } else {
+          console.warn('[Screenshot] Chunks contain non-string data (Dexie Cloud converted them):', screenshot.id);
+          return null;
+        }
+      }
+
+      // Old format with base64 string
+      if (dataObj.mimeType && typeof dataObj.base64 === 'string') {
         return `data:${dataObj.mimeType};base64,${dataObj.base64}`;
       }
     }

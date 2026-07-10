@@ -289,17 +289,18 @@ export function TradeForm() {
             screenshots: (() => {
               const ss = trade.screenshots || [];
               console.log('SCREENSHOTS ON LOAD:', JSON.stringify(ss.map(s => {
-                const dataObj = s.data as { mimeType?: string; base64?: string; _bt?: unknown } | string | undefined;
+                const dataObj = s.data as { mimeType?: string; chunks?: unknown[]; _bt?: unknown } | string | undefined;
                 const isDexieBlobRef = typeof dataObj === 'object' && dataObj && '_bt' in dataObj;
-                const isCustomFormat = typeof dataObj === 'object' && dataObj && 'mimeType' in dataObj && 'base64' in dataObj;
+                const isChunkedFormat = typeof dataObj === 'object' && dataObj && 'chunks' in dataObj && Array.isArray(dataObj.chunks);
                 return {
                   id: s.id,
                   hasData: !!s.data,
                   dataType: typeof s.data,
-                  dataFormat: isDexieBlobRef ? 'dexie-blob-ref' : isCustomFormat ? 'custom' : typeof s.data === 'string' ? 'string' : 'unknown',
+                  dataFormat: isDexieBlobRef ? 'dexie-blob-ref' : isChunkedFormat ? 'chunked' : typeof s.data === 'string' ? 'string' : 'unknown',
                   dataKeys: typeof s.data === 'object' && s.data ? Object.keys(s.data).slice(0, 5) : [],
-                  mimeType: isCustomFormat ? (dataObj as {mimeType: string}).mimeType : undefined,
-                  base64Length: isCustomFormat ? (dataObj as {base64: string}).base64?.length : undefined,
+                  mimeType: isChunkedFormat ? (dataObj as {mimeType: string}).mimeType : undefined,
+                  chunkCount: isChunkedFormat ? (dataObj as {chunks: unknown[]}).chunks.length : undefined,
+                  firstChunkType: isChunkedFormat && (dataObj as {chunks: unknown[]}).chunks[0] ? typeof (dataObj as {chunks: unknown[]}).chunks[0] : undefined,
                   hasBlob: !!s.blob,
                   caption: s.caption
                 };
@@ -741,15 +742,16 @@ export function TradeForm() {
 
       // DEBUG 2: After prepareScreenshotsForSave but before saving to Dexie
       console.log('SCREENSHOTS AFTER PREPARE:', JSON.stringify(screenshotsForSave.map(s => {
-        const dataObj = s.data as { mimeType?: string; base64?: string } | string | undefined;
+        const dataObj = s.data as { mimeType?: string; chunks?: string[] } | string | undefined;
         return {
           id: s.id,
           hasBlob: !!s.blob,
           hasData: !!s.data,
           dataType: typeof s.data,
-          dataFormat: typeof dataObj === 'object' && dataObj?.mimeType ? 'custom' : typeof dataObj === 'string' ? 'string' : 'unknown',
+          dataFormat: typeof dataObj === 'object' && dataObj?.chunks ? 'chunked' : typeof dataObj === 'string' ? 'string' : 'unknown',
           mimeType: typeof dataObj === 'object' ? dataObj?.mimeType : undefined,
-          base64Length: typeof dataObj === 'object' ? dataObj?.base64?.length : typeof dataObj === 'string' ? dataObj.length : undefined,
+          chunkCount: typeof dataObj === 'object' && Array.isArray(dataObj?.chunks) ? dataObj.chunks.length : undefined,
+          totalLength: typeof dataObj === 'object' && Array.isArray(dataObj?.chunks) ? dataObj.chunks.reduce((sum, c) => sum + c.length, 0) : undefined,
           caption: s.caption
         };
       })));
