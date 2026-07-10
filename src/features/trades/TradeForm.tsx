@@ -4,7 +4,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { FormSection } from '../../components/FormSection';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
-import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import type {
   TradeFormData,
   TradeRecord,
@@ -206,46 +205,9 @@ export function TradeForm() {
   const [newStrategyName, setNewStrategyName] = useState('');
   const [isAddingStrategy, setIsAddingStrategy] = useState(false);
 
-  // Screenshot blob URLs for display (created from stored Blobs)
-  const [screenshotUrls, setScreenshotUrls] = useState<Record<string, string>>({});
-
-  // Create blob URLs for screenshots and clean up on unmount
-  useEffect(() => {
-    const newUrls: Record<string, string> = {};
-
-    for (const screenshot of formData.screenshots) {
-      // Skip if we already have a URL for this screenshot
-      if (screenshotUrls[screenshot.id]) {
-        newUrls[screenshot.id] = screenshotUrls[screenshot.id];
-        continue;
-      }
-
-      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
-      const url = createScreenshotUrl(screenshot);
-      if (url) {
-        newUrls[screenshot.id] = url;
-      }
-    }
-
-    // Revoke URLs for removed screenshots (only blob: URLs, not base64)
-    for (const [id, url] of Object.entries(screenshotUrls)) {
-      if (!newUrls[id] && url.startsWith('blob:')) {
-        URL.revokeObjectURL(url);
-      }
-    }
-
-    setScreenshotUrls(newUrls);
-
-    // Cleanup all blob URLs on unmount
-    return () => {
-      for (const url of Object.values(newUrls)) {
-        if (url.startsWith('blob:')) {
-          URL.revokeObjectURL(url);
-        }
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [formData.screenshots]);
+  // Screenshot URL input state
+  const [screenshotUrlInput, setScreenshotUrlInput] = useState('');
+  const [screenshotCaptionInput, setScreenshotCaptionInput] = useState('');
 
   // Load existing trade data for edit mode
   useEffect(() => {
@@ -580,50 +542,32 @@ export function TradeForm() {
     }));
   };
 
-  // Handle screenshot paste - store Blob temporarily for display, convert to base64 on save
-  const handlePaste = useCallback((e: ClipboardEvent) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
+  // Add screenshot URL
+  const addScreenshotUrl = () => {
+    const url = screenshotUrlInput.trim();
+    if (!url) return;
 
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        const file = item.getAsFile();
-        if (file) {
-          const newScreenshot: Screenshot = {
-            id: uuidv4(),
-            blob: file,
-            caption: '',
-            createdAt: new Date(),
-          };
-          setFormData((prev) => ({
-            ...prev,
-            screenshots: [...prev.screenshots, newScreenshot],
-          }));
-        }
-      }
+    // Validate URL format
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      return;
     }
-  }, []);
 
-  // Handle screenshot drop - store Blob temporarily for display, convert to base64 on save
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
+    const newScreenshot: Screenshot = {
+      id: uuidv4(),
+      url,
+      caption: screenshotCaptionInput.trim(),
+      createdAt: new Date(),
+    };
 
-    for (const file of files) {
-      if (file.type.startsWith('image/')) {
-        const newScreenshot: Screenshot = {
-          id: uuidv4(),
-          blob: file,
-          caption: '',
-          createdAt: new Date(),
-        };
-        setFormData((prev) => ({
-          ...prev,
-          screenshots: [...prev.screenshots, newScreenshot],
-        }));
-      }
-    }
-  }, []);
+    setFormData((prev) => ({
+      ...prev,
+      screenshots: [...prev.screenshots, newScreenshot],
+    }));
+
+    // Clear inputs
+    setScreenshotUrlInput('');
+    setScreenshotCaptionInput('');
+  };
 
   const updateScreenshotCaption = (id: string, caption: string) => {
     setFormData((prev) => ({
@@ -638,12 +582,6 @@ export function TradeForm() {
       screenshots: prev.screenshots.filter((s) => s.id !== id),
     }));
   };
-
-  // Add paste listener
-  useEffect(() => {
-    document.addEventListener('paste', handlePaste);
-    return () => document.removeEventListener('paste', handlePaste);
-  }, [handlePaste]);
 
   // Add strategy handler
   const handleAddStrategy = async () => {
@@ -2305,35 +2243,62 @@ export function TradeForm() {
 
               {/* Screenshots */}
               <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Screenshots</label>
-                <div
-                  onDrop={handleDrop}
-                  onDragOver={(e) => e.preventDefault()}
-                  className="border-2 border-dashed border-gray-600 rounded-lg p-6 text-center hover:border-gray-500 transition-colors"
-                >
-                  <svg className="w-10 h-10 mx-auto text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  <p className="mt-2 text-sm text-gray-400">
-                    Drag & drop images here, or paste from clipboard (Ctrl+V)
+                <label className="block text-sm font-medium text-gray-300 mb-2">Screenshots (URLs)</label>
+                <div className="space-y-3">
+                  {/* URL Input */}
+                  <div className="flex gap-2">
+                    <input
+                      type="url"
+                      value={screenshotUrlInput}
+                      onChange={(e) => setScreenshotUrlInput(e.target.value)}
+                      placeholder="https://www.tradingview.com/x/..."
+                      className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={addScreenshotUrl}
+                      disabled={!screenshotUrlInput.trim() || (!screenshotUrlInput.startsWith('http://') && !screenshotUrlInput.startsWith('https://'))}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white transition-colors"
+                    >
+                      Add
+                    </button>
+                  </div>
+                  {/* Optional caption input */}
+                  <input
+                    type="text"
+                    value={screenshotCaptionInput}
+                    onChange={(e) => setScreenshotCaptionInput(e.target.value)}
+                    placeholder="Optional caption..."
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <p className="text-xs text-gray-500">
+                    Paste TradingView snapshot URLs or any image URL
                   </p>
                 </div>
 
                 {/* Screenshot previews */}
                 {formData.screenshots.length > 0 && (
                   <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {formData.screenshots.filter(s => s.blob || (s.data && s.data.length > 0)).map((screenshot) => (
+                    {formData.screenshots.filter(s => s.url).map((screenshot) => (
                       <div key={screenshot.id} className="relative group">
-                        {screenshotUrls[screenshot.id] && (
-                          <img
-                            src={screenshotUrls[screenshot.id]}
-                            alt="Screenshot"
-                            className="w-full h-32 object-cover rounded-lg"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                            }}
-                          />
-                        )}
+                        <img
+                          src={screenshot.url}
+                          alt={screenshot.caption || 'Screenshot'}
+                          className="w-full h-32 object-cover rounded-lg bg-gray-700"
+                          onError={(e) => {
+                            const target = e.target as HTMLImageElement;
+                            target.style.display = 'none';
+                            // Show fallback
+                            const fallback = target.nextElementSibling as HTMLElement;
+                            if (fallback) fallback.style.display = 'flex';
+                          }}
+                        />
+                        {/* Fallback for broken images */}
+                        <div className="hidden w-full h-32 bg-gray-700 rounded-lg items-center justify-center text-gray-400 text-xs p-2 text-center">
+                          <a href={screenshot.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400 underline break-all">
+                            {screenshot.url.length > 50 ? screenshot.url.substring(0, 50) + '...' : screenshot.url}
+                          </a>
+                        </div>
                         <button
                           type="button"
                           onClick={() => removeScreenshot(screenshot.id)}

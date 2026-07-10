@@ -409,15 +409,40 @@ class TradingDiaryDB extends Dexie {
         }
       });
 
+    // Version 15 - Migrate screenshots from blob/data to URL-only storage
+    this.version(15)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Clean up screenshots: remove blob/data fields, keep only URL-based ones
+            if (trade.screenshots && Array.isArray(trade.screenshots)) {
+              trade.screenshots = trade.screenshots
+                .filter((s: { url?: string }) => s.url) // Keep only screenshots with URLs
+                .map((s: { id: string; url: string; caption?: string; createdAt?: Date | string }) => ({
+                  id: s.id,
+                  url: s.url,
+                  caption: s.caption || '',
+                  createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
+                }));
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {
       this.cloud.configure({
         databaseUrl: cloudUrl,
         requireAuth: true, // Require auth for cross-device sync
-        // Eager blob mode ensures blobs are downloaded automatically after sync
-        // This is needed for screenshot data to be available immediately
-        blobMode: 'eager',
       });
     }
   }

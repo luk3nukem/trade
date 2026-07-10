@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
-import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import type { TradeRecord, DailyJournal, Account } from '../../types';
 import { DailyJournalForm } from './DailyJournalForm';
 
@@ -54,12 +53,12 @@ export function JournalPage() {
   const [screenshotFilter, setScreenshotFilter] = useState({ pair: '', dateFrom: '', dateTo: '' });
   const [selectedScreenshot, setSelectedScreenshot] = useState<{
     url: string;
+    caption: string;
     pair: string;
     rMultiple: number;
     tradeId?: string;
     date: string;
   } | null>(null);
-  const [screenshotBlobUrls, setScreenshotBlobUrls] = useState<Record<string, string>>({});
 
   const { dashboardFilters } = useAppStore();
 
@@ -228,8 +227,7 @@ export function JournalPage() {
   const screenshotsData = useMemo(() => {
     const screenshots: Array<{
       id: string;
-      blob?: Blob;
-      data?: string;
+      url: string;
       caption: string;
       pair: string;
       rMultiple: number;
@@ -254,11 +252,10 @@ export function JournalPage() {
       }
 
       for (const ss of trade.screenshots) {
-        if (ss.blob || (ss.data && ss.data.length > 0)) {
+        if (ss.url) {
           screenshots.push({
             id: ss.id,
-            blob: ss.blob,
-            data: ss.data,
+            url: ss.url,
             caption: ss.caption,
             pair: trade.pair,
             rMultiple: trade.rMultiple ?? 0,
@@ -271,38 +268,6 @@ export function JournalPage() {
 
     return screenshots.sort((a, b) => b.date.localeCompare(a.date));
   }, [trades, screenshotFilter]);
-
-  // Create blob URLs for screenshots
-  useEffect(() => {
-    const newUrls: Record<string, string> = {};
-
-    for (const ss of screenshotsData) {
-      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
-      const url = createScreenshotUrl(ss);
-      if (url) {
-        newUrls[ss.id] = url;
-      }
-    }
-
-    // Cleanup old blob URLs
-    for (const [id, url] of Object.entries(screenshotBlobUrls)) {
-      if (!newUrls[id] && url.startsWith('blob:')) {
-        URL.revokeObjectURL(url);
-      }
-    }
-
-    setScreenshotBlobUrls(newUrls);
-
-    // Cleanup on unmount
-    return () => {
-      for (const url of Object.values(newUrls)) {
-        if (url.startsWith('blob:')) {
-          URL.revokeObjectURL(url);
-        }
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [screenshotsData]);
 
   // Get selected day's journal
   const selectedDayJournal = useMemo(() => {
@@ -816,7 +781,8 @@ export function JournalPage() {
             <button
               key={ss.id}
               onClick={() => setSelectedScreenshot({
-                url: screenshotBlobUrls[ss.id] || '',
+                url: ss.url,
+                caption: ss.caption,
                 pair: ss.pair,
                 rMultiple: ss.rMultiple,
                 tradeId: ss.tradeId,
@@ -824,14 +790,28 @@ export function JournalPage() {
               })}
               className="bg-gray-800 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all"
             >
-              <div className="aspect-video bg-gray-900">
-                {screenshotBlobUrls[ss.id] && (
-                  <img
-                    src={screenshotBlobUrls[ss.id]}
-                    alt={`${ss.pair} trade`}
-                    className="w-full h-full object-cover"
-                  />
-                )}
+              <div className="aspect-video bg-gray-900 relative">
+                <img
+                  src={ss.url}
+                  alt={`${ss.pair} trade`}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement;
+                    target.style.display = 'none';
+                    const parent = target.parentElement;
+                    if (parent && !parent.querySelector('.error-placeholder')) {
+                      const placeholder = document.createElement('div');
+                      placeholder.className = 'error-placeholder flex flex-col items-center justify-center w-full h-full p-2 text-center absolute inset-0';
+                      placeholder.innerHTML = `
+                        <svg class="w-8 h-8 text-gray-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span class="text-xs text-gray-400">Image unavailable</span>
+                      `;
+                      parent.appendChild(placeholder);
+                    }
+                  }}
+                />
               </div>
               <div className="p-2">
                 <div className="flex items-center justify-between">
@@ -841,6 +821,7 @@ export function JournalPage() {
                   </span>
                 </div>
                 <p className="text-xs text-gray-400 mt-1">{ss.date}</p>
+                {ss.caption && <p className="text-xs text-gray-500 mt-0.5 truncate">{ss.caption}</p>}
               </div>
             </button>
           ))}
@@ -854,42 +835,62 @@ export function JournalPage() {
       {/* Lightbox */}
       {selectedScreenshot && (
         <div
-          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
           onClick={() => setSelectedScreenshot(null)}
         >
-          <div
-            className="bg-gray-800 rounded-lg max-w-4xl max-h-[90vh] overflow-auto"
-            onClick={(e) => e.stopPropagation()}
+          {/* Close button */}
+          <button
+            onClick={() => setSelectedScreenshot(null)}
+            className="absolute top-4 right-4 p-2 text-white hover:text-gray-300 z-10"
           >
-            <div className="p-4 border-b border-gray-700 flex items-center justify-between">
-              <div>
-                <span className="text-white font-medium">{selectedScreenshot.pair}</span>
-                <span className={`ml-3 ${selectedScreenshot.rMultiple >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {selectedScreenshot.rMultiple >= 0 ? '+' : ''}{selectedScreenshot.rMultiple.toFixed(2)}R
-                </span>
-                <span className="ml-3 text-gray-400">{selectedScreenshot.date}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => navigate(`/trades/${selectedScreenshot.tradeId}`)}
-                  className="text-blue-400 hover:text-blue-300 text-sm"
-                >
-                  View Trade
-                </button>
-                <button
-                  onClick={() => setSelectedScreenshot(null)}
-                  className="text-gray-400 hover:text-white"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <img
-              src={selectedScreenshot.url}
-              alt={`${selectedScreenshot.pair} trade`}
-              className="w-full"
-            />
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+          {/* Header with info and links */}
+          <div className="absolute top-4 left-4 flex items-center gap-4 z-10">
+            <a
+              href={selectedScreenshot.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-3 py-2 bg-gray-800/80 hover:bg-gray-700 rounded-lg text-white text-sm transition-colors"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              Open original
+            </a>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                navigate(`/trades/${selectedScreenshot.tradeId}`);
+              }}
+              className="flex items-center gap-2 px-3 py-2 bg-gray-800/80 hover:bg-gray-700 rounded-lg text-white text-sm transition-colors"
+            >
+              View Trade
+            </button>
           </div>
+          {/* Trade info bar at bottom */}
+          <div className="absolute bottom-4 left-4 right-4 flex items-center justify-center z-10">
+            <div className="bg-gray-800/80 rounded-lg px-4 py-2 flex items-center gap-4">
+              <span className="text-white font-medium">{selectedScreenshot.pair}</span>
+              <span className={selectedScreenshot.rMultiple >= 0 ? 'text-green-400' : 'text-red-400'}>
+                {selectedScreenshot.rMultiple >= 0 ? '+' : ''}{selectedScreenshot.rMultiple.toFixed(2)}R
+              </span>
+              <span className="text-gray-400">{selectedScreenshot.date}</span>
+              {selectedScreenshot.caption && (
+                <span className="text-gray-300">{selectedScreenshot.caption}</span>
+              )}
+            </div>
+          </div>
+          <img
+            src={selectedScreenshot.url}
+            alt={`${selectedScreenshot.pair} trade`}
+            className="max-w-full max-h-full object-contain"
+            onClick={(e) => e.stopPropagation()}
+            onError={() => setSelectedScreenshot(null)}
+          />
         </div>
       )}
     </div>

@@ -4,7 +4,6 @@ import { db } from '../../db';
 import type { TradeRecord } from '../../types';
 import { formatDuration } from '../../utils';
 import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial } from '../../utils/tradeCalculations';
-import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import { useAppStore } from '../../stores/appStore';
 
 // Emotional state emoji map
@@ -214,7 +213,6 @@ export function TradeDetail() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
-  const [screenshotUrls, setScreenshotUrls] = useState<Record<string, string>>({});
 
   // Load trade from database
   useEffect(() => {
@@ -239,30 +237,6 @@ export function TradeDetail() {
     };
     loadTrade();
   }, [id]);
-
-  // Create blob URLs for screenshots and clean up on unmount
-  useEffect(() => {
-    if (!trade?.screenshots) return;
-
-    const newUrls: Record<string, string> = {};
-    for (const screenshot of trade.screenshots) {
-      // Use utility function to safely create URL (handles Blob, Uint8Array, ArrayBuffer, base64)
-      const url = createScreenshotUrl(screenshot);
-      if (url) {
-        newUrls[screenshot.id] = url;
-      }
-    }
-    setScreenshotUrls(newUrls);
-
-    // Cleanup blob URLs on unmount or when trade changes
-    return () => {
-      for (const url of Object.values(newUrls)) {
-        if (url.startsWith('blob:')) {
-          URL.revokeObjectURL(url);
-        }
-      }
-    };
-  }, [trade?.screenshots]);
 
   // Handle delete
   const handleDelete = async () => {
@@ -793,31 +767,53 @@ export function TradeDetail() {
         )}
 
         {/* Screenshots Gallery */}
-        {trade.screenshots && trade.screenshots.length > 0 && (
+        {trade.screenshots && trade.screenshots.filter(s => s.url).length > 0 && (
           <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
             <h3 className="text-lg font-medium text-white mb-4">Screenshots</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-              {trade.screenshots.filter(s => s.blob || (s.data && s.data.length > 0)).map((screenshot) => (
+              {trade.screenshots.filter(s => s.url).map((screenshot) => (
                 <div key={screenshot.id} className="space-y-2">
-                  {screenshotUrls[screenshot.id] && (
-                    <button
-                      onClick={() => setLightboxImage(screenshotUrls[screenshot.id])}
-                      className="w-full aspect-video bg-gray-700 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all"
+                  <button
+                    onClick={() => setLightboxImage(screenshot.url)}
+                    className="w-full aspect-video bg-gray-700 rounded-lg overflow-hidden hover:ring-2 hover:ring-blue-500 transition-all group relative"
+                  >
+                    <img
+                      src={screenshot.url}
+                      alt={screenshot.caption || 'Trade screenshot'}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        // Replace broken image with placeholder
+                        const target = e.target as HTMLImageElement;
+                        target.style.display = 'none';
+                        const parent = target.parentElement;
+                        if (parent && !parent.querySelector('.error-placeholder')) {
+                          const placeholder = document.createElement('div');
+                          placeholder.className = 'error-placeholder flex flex-col items-center justify-center w-full h-full p-2 text-center';
+                          placeholder.innerHTML = `
+                            <svg class="w-8 h-8 text-gray-500 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                            <span class="text-xs text-gray-400">Image unavailable</span>
+                          `;
+                          parent.appendChild(placeholder);
+                        }
+                      }}
+                    />
+                  </button>
+                  <div className="text-center">
+                    {screenshot.caption && (
+                      <p className="text-xs text-gray-400">{screenshot.caption}</p>
+                    )}
+                    <a
+                      href={screenshot.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <img
-                        src={screenshotUrls[screenshot.id]}
-                        alt={screenshot.caption || 'Trade screenshot'}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          // Hide broken images
-                          (e.target as HTMLImageElement).style.display = 'none';
-                        }}
-                      />
-                    </button>
-                  )}
-                  {screenshot.caption && (
-                    <p className="text-xs text-gray-400 text-center">{screenshot.caption}</p>
-                  )}
+                      Open original
+                    </a>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1002,6 +998,7 @@ export function TradeDetail() {
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90"
           onClick={() => setLightboxImage(null)}
         >
+          {/* Close button */}
           <button
             onClick={() => setLightboxImage(null)}
             className="absolute top-4 right-4 p-2 text-white hover:text-gray-300"
@@ -1010,6 +1007,19 @@ export function TradeDetail() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
+          {/* Open original link */}
+          <a
+            href={lightboxImage}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute top-4 left-4 flex items-center gap-2 px-3 py-2 bg-gray-800/80 hover:bg-gray-700 rounded-lg text-white text-sm transition-colors"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+            Open original
+          </a>
           <img
             src={lightboxImage}
             alt="Screenshot"

@@ -66,11 +66,10 @@ export interface StopAdjustment {
   trigger?: string;
 }
 
-// Screenshot with caption
+// Screenshot with URL (e.g., TradingView snapshot)
 export interface Screenshot {
   id: string;
-  blob?: Blob; // Binary data stored directly in Dexie (preferred)
-  data?: string; // Legacy: base64 string (for backward compatibility)
+  url: string; // Image URL (e.g., TradingView snapshot URL)
   caption: string;
   createdAt: Date;
 }
