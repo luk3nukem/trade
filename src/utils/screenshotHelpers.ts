@@ -145,6 +145,14 @@ export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
     // Our new custom format: { mimeType, base64 }
     if (typeof screenshot.data === 'object' && !isDexieCloudBlobRef(screenshot.data)) {
       const dataObj = screenshot.data as { mimeType?: string; base64?: string };
+      console.log('createScreenshotUrl custom format:', {
+        id: screenshot.id,
+        hasMimeType: !!dataObj.mimeType,
+        mimeType: dataObj.mimeType,
+        hasBase64: !!dataObj.base64,
+        base64Length: dataObj.base64?.length,
+        base64Prefix: dataObj.base64?.substring(0, 30),
+      });
       if (dataObj.mimeType && dataObj.base64) {
         return `data:${dataObj.mimeType};base64,${dataObj.base64}`;
       }
