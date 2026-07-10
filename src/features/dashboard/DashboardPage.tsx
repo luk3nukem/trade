@@ -36,16 +36,16 @@ function TradesToReviewSection({
   trades: TradeRecord[];
   navigate: (path: string) => void;
 }) {
-  // Get trades that need review: closed, reviewedAt is null, closed more than 48 hours ago
+  // Get trades that need review: closed, reviewedAt is null, closed more than 72 hours ago
   // Uses full datetime precision (not just date)
   const tradesToReview = useMemo(() => {
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       if (t.reviewedAt) return false; // Already reviewed
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
-      return exitTime < fortyEightHoursAgo;
+      return exitTime < seventyTwoHoursAgo;
     }).sort((a, b) => {
       // Sort by exit time, oldest first
       const aExit = a.exitTime ? new Date(a.exitTime).getTime() : 0;
@@ -56,13 +56,13 @@ function TradesToReviewSection({
 
   // Total count for display
   const totalUnreviewed = useMemo(() => {
-    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       if (t.reviewedAt) return false;
       if (!t.exitTime) return false;
       const exitTime = new Date(t.exitTime);
-      return exitTime < fortyEightHoursAgo;
+      return exitTime < seventyTwoHoursAgo;
     }).length;
   }, [trades]);
 

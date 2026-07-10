@@ -164,8 +164,8 @@ export interface TradeRecord {
   isOverTrade?: boolean;
 
   // === Notes & Screenshots ===
-  preTradeNotes?: string;
-  postTradeNotes?: string;
+  entryNotes?: string;    // Thesis and plan as you execute
+  closeNotes?: string;    // Immediate review as the trade closes
   screenshots: Screenshot[];
   tags: string[];
 
@@ -370,8 +370,8 @@ export interface TradeFormData {
   isOverTrade: boolean;
 
   // Notes & Screenshots
-  preTradeNotes: string;
-  postTradeNotes: string;
+  entryNotes: string;
+  closeNotes: string;
   screenshots: Screenshot[];
   tags: string[];
 

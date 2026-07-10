@@ -746,20 +746,20 @@ export function TradeDetail() {
         </div>
 
         {/* Notes Section */}
-        {(trade.preTradeNotes || trade.postTradeNotes) && (
+        {(trade.entryNotes || trade.closeNotes) && (
           <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
             <h3 className="text-lg font-medium text-white mb-4">Notes</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {trade.preTradeNotes && (
+              {trade.entryNotes && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-400 mb-2">Pre-Trade Analysis</h4>
-                  <p className="text-gray-200 whitespace-pre-wrap">{trade.preTradeNotes}</p>
+                  <h4 className="text-sm font-medium text-gray-400 mb-2">Entry Notes</h4>
+                  <p className="text-gray-200 whitespace-pre-wrap">{trade.entryNotes}</p>
                 </div>
               )}
-              {trade.postTradeNotes && (
+              {trade.closeNotes && (
                 <div>
-                  <h4 className="text-sm font-medium text-gray-400 mb-2">Post-Trade Review</h4>
-                  <p className="text-gray-200 whitespace-pre-wrap">{trade.postTradeNotes}</p>
+                  <h4 className="text-sm font-medium text-gray-400 mb-2">Close Notes</h4>
+                  <p className="text-gray-200 whitespace-pre-wrap">{trade.closeNotes}</p>
                 </div>
               )}
             </div>
@@ -851,9 +851,9 @@ export function TradeDetail() {
             trade.reachedTargetPostExit,
             trade.postExitNotes
           );
-          const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+          const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
           const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
-          const isReviewDue = exitTime && exitTime < fortyEightHoursAgo;
+          const isReviewDue = exitTime && exitTime < seventyTwoHoursAgo;
 
           const formatExitDateTime = (date: Date) => {
             return date.toLocaleDateString('en-US', {
@@ -923,7 +923,7 @@ export function TradeDetail() {
                           <>
                             This trade closed on{' '}
                             <span className="text-gray-300">{formatExitDateTime(exitTime)}</span>.
-                            Review will be due 48 hours after close.
+                            Review will be due 3 days after close.
                           </>
                         ) : (
                           <>Record what happened after your exit.</>

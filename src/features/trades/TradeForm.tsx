@@ -67,8 +67,8 @@ const getInitialFormData = (): TradeFormData => ({
   planDeviation: '',
   isRevengeTrade: false,
   isOverTrade: false,
-  preTradeNotes: '',
-  postTradeNotes: '',
+  entryNotes: '',
+  closeNotes: '',
   screenshots: [],
   tags: [],
   commissions: '',
@@ -246,8 +246,8 @@ export function TradeForm() {
             planDeviation: trade.planDeviation || '',
             isRevengeTrade: trade.isRevengeTrade ?? false,
             isOverTrade: trade.isOverTrade ?? false,
-            preTradeNotes: trade.preTradeNotes || '',
-            postTradeNotes: trade.postTradeNotes || '',
+            entryNotes: trade.entryNotes || '',
+            closeNotes: trade.closeNotes || '',
             screenshots: trade.screenshots || [],
             tags: trade.tags || [],
             commissions: trade.commissions ? String(trade.commissions) : '',
@@ -674,8 +674,8 @@ export function TradeForm() {
         planDeviation: !formData.followedPlan ? formData.planDeviation.trim() : undefined,
         isRevengeTrade: formData.isRevengeTrade,
         isOverTrade: formData.isOverTrade,
-        preTradeNotes: formData.preTradeNotes.trim() || undefined,
-        postTradeNotes: formData.postTradeNotes.trim() || undefined,
+        entryNotes: formData.entryNotes.trim() || undefined,
+        closeNotes: formData.closeNotes.trim() || undefined,
         screenshots: formData.screenshots,
         tags: formData.tags,
         maePrice,
@@ -1258,13 +1258,13 @@ export function TradeForm() {
 
           {/* Notes */}
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Notes</label>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Close Notes</label>
             <textarea
-              value={formData.postTradeNotes}
-              onChange={(e) => handleChange('postTradeNotes', e.target.value)}
+              value={formData.closeNotes}
+              onChange={(e) => handleChange('closeNotes', e.target.value)}
               rows={3}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              placeholder="Quick notes about this trade..."
+              placeholder="Immediate review as the trade closes — how did it play out, how did you manage it?"
             />
           </div>
         </div>
@@ -2219,24 +2219,24 @@ export function TradeForm() {
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Pre-Trade Notes</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Entry Notes</label>
                   <textarea
-                    value={formData.preTradeNotes}
-                    onChange={(e) => handleChange('preTradeNotes', e.target.value)}
+                    value={formData.entryNotes}
+                    onChange={(e) => handleChange('entryNotes', e.target.value)}
                     rows={3}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="Analysis before entering the trade..."
+                    placeholder="Thesis and plan as you execute — why this trade, what's the plan?"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Post-Trade Notes</label>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Close Notes</label>
                   <textarea
-                    value={formData.postTradeNotes}
-                    onChange={(e) => handleChange('postTradeNotes', e.target.value)}
+                    value={formData.closeNotes}
+                    onChange={(e) => handleChange('closeNotes', e.target.value)}
                     rows={3}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="Review after closing the trade..."
+                    placeholder="Immediate review as the trade closes — how did it play out, how did you manage it?"
                   />
                 </div>
               </div>

@@ -434,16 +434,16 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     const marketCondition: MarketCondition = randomElement(MARKET_CONDITIONS);
 
     // Notes for interesting trades
-    let preTradeNotes = '';
-    let postTradeNotes = '';
+    let entryNotes = '';
+    let closeNotes = '';
 
     if (isRevenge) {
-      preTradeNotes = 'Frustrated from previous loss. Need to get it back.';
-      postTradeNotes = 'Should not have taken this trade. Emotions got the better of me.';
+      entryNotes = 'Frustrated from previous loss. Need to get it back.';
+      closeNotes = 'Should not have taken this trade. Emotions got the better of me.';
     } else if (rMultiple >= 2.5) {
-      postTradeNotes = 'Great execution! Let the trade run to full target.';
+      closeNotes = 'Great execution! Let the trade run to full target.';
     } else if (rMultiple === -0.5) {
-      postTradeNotes = 'Moved stop to BE, got stopped on retracement before continuation.';
+      closeNotes = 'Moved stop to BE, got stopped on retracement before continuation.';
     }
 
     // Tags
@@ -638,8 +638,8 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       planDeviation: followedPlan ? undefined : (isRevenge ? 'Revenge trade, not in plan' : 'Entered early'),
       isRevengeTrade: isRevenge,
       isOverTrade: isRevenge,
-      preTradeNotes: preTradeNotes || undefined,
-      postTradeNotes: postTradeNotes || undefined,
+      entryNotes: entryNotes || undefined,
+      closeNotes: closeNotes || undefined,
       screenshots: [],
       tags,
       session: deriveSession(entryTime),
