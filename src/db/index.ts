@@ -415,6 +415,11 @@ class TradingDiaryDB extends Dexie {
       this.cloud.configure({
         databaseUrl: cloudUrl,
         requireAuth: true, // Require auth for cross-device sync
+        // Eager blob mode ensures blobs are downloaded automatically after sync
+        // This is needed for screenshot data to be available immediately
+        fetchOptions: {
+          blobMode: 'eager',
+        },
       });
     }
   }

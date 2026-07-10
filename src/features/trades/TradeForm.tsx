@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { FormSection } from '../../components/FormSection';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
-import { createScreenshotUrl, prepareScreenshotsForSave } from '../../utils/screenshotHelpers';
+import { createScreenshotUrl } from '../../utils/screenshotHelpers';
 import type {
   TradeFormData,
   TradeRecord,
@@ -286,27 +286,7 @@ export function TradeForm() {
             isOverTrade: trade.isOverTrade ?? false,
             preTradeNotes: trade.preTradeNotes || '',
             postTradeNotes: trade.postTradeNotes || '',
-            screenshots: (() => {
-              const ss = trade.screenshots || [];
-              console.log('SCREENSHOTS ON LOAD:', JSON.stringify(ss.map(s => {
-                const dataObj = s.data as { mimeType?: string; chunks?: unknown[]; _bt?: unknown } | string | undefined;
-                const isDexieBlobRef = typeof dataObj === 'object' && dataObj && '_bt' in dataObj;
-                const isChunkedFormat = typeof dataObj === 'object' && dataObj && 'chunks' in dataObj && Array.isArray(dataObj.chunks);
-                return {
-                  id: s.id,
-                  hasData: !!s.data,
-                  dataType: typeof s.data,
-                  dataFormat: isDexieBlobRef ? 'dexie-blob-ref' : isChunkedFormat ? 'chunked' : typeof s.data === 'string' ? 'string' : 'unknown',
-                  dataKeys: typeof s.data === 'object' && s.data ? Object.keys(s.data).slice(0, 5) : [],
-                  mimeType: isChunkedFormat ? (dataObj as {mimeType: string}).mimeType : undefined,
-                  chunkCount: isChunkedFormat ? (dataObj as {chunks: unknown[]}).chunks.length : undefined,
-                  firstChunkType: isChunkedFormat && (dataObj as {chunks: unknown[]}).chunks[0] ? typeof (dataObj as {chunks: unknown[]}).chunks[0] : undefined,
-                  hasBlob: !!s.blob,
-                  caption: s.caption
-                };
-              })));
-              return ss;
-            })(),
+            screenshots: trade.screenshots || [],
             tags: trade.tags || [],
             commissions: trade.commissions ? String(trade.commissions) : '',
             swap: trade.swap ? String(trade.swap) : '',
@@ -723,39 +703,6 @@ export function TradeForm() {
         mfeR = mfeDistance / stopDistance;
       }
 
-      // Convert screenshots to base64 for Dexie Cloud persistence
-      // Dexie Cloud cannot sync Blob objects, so we store as base64 data URLs
-
-      // DEBUG 1: Before prepareScreenshotsForSave
-      console.log('SCREENSHOTS BEFORE PREPARE:', JSON.stringify(formData.screenshots.map(s => ({
-        id: s.id,
-        hasBlob: !!s.blob,
-        blobType: s.blob?.constructor?.name,
-        blobSize: (s.blob as Blob)?.size,
-        hasData: !!s.data,
-        dataType: typeof s.data,
-        dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
-        caption: s.caption
-      }))));
-
-      const screenshotsForSave = await prepareScreenshotsForSave(formData.screenshots);
-
-      // DEBUG 2: After prepareScreenshotsForSave but before saving to Dexie
-      console.log('SCREENSHOTS AFTER PREPARE:', JSON.stringify(screenshotsForSave.map(s => {
-        const dataObj = s.data as { mimeType?: string; chunks?: string[] } | string | undefined;
-        return {
-          id: s.id,
-          hasBlob: !!s.blob,
-          hasData: !!s.data,
-          dataType: typeof s.data,
-          dataFormat: typeof dataObj === 'object' && dataObj?.chunks ? 'chunked' : typeof dataObj === 'string' ? 'string' : 'unknown',
-          mimeType: typeof dataObj === 'object' ? dataObj?.mimeType : undefined,
-          chunkCount: typeof dataObj === 'object' && Array.isArray(dataObj?.chunks) ? dataObj.chunks.length : undefined,
-          totalLength: typeof dataObj === 'object' && Array.isArray(dataObj?.chunks) ? dataObj.chunks.reduce((sum, c) => sum + c.length, 0) : undefined,
-          caption: s.caption
-        };
-      })));
-
       // Build trade data without id for new trades (Dexie Cloud generates @id)
       const tradeData = {
         accountId: formData.accountId,
@@ -791,7 +738,7 @@ export function TradeForm() {
         isOverTrade: formData.isOverTrade,
         preTradeNotes: formData.preTradeNotes.trim() || undefined,
         postTradeNotes: formData.postTradeNotes.trim() || undefined,
-        screenshots: screenshotsForSave,
+        screenshots: formData.screenshots,
         tags: formData.tags,
         maePrice,
         mfePrice,
@@ -828,39 +775,13 @@ export function TradeForm() {
         updatedAt: now,
       };
 
-      // DEBUG 3: Confirm the prepared screenshots are on the trade object being saved
-      console.log('TRADE SCREENSHOTS AT SAVE:', tradeData.screenshots.length,
-        tradeData.screenshots.map(s => ({ hasData: !!s.data, dataLength: s.data?.length })));
-
       if (isEditMode) {
         // For edits, include the existing id
         await db.trades.put({ ...tradeData, id: id! } as TradeRecord);
-
-        // DEBUG 4: After saving, immediately read back from Dexie
-        const savedTrade = await db.trades.get(id!);
-        console.log('SCREENSHOTS READ BACK:', JSON.stringify(savedTrade?.screenshots?.map(s => ({
-          id: s.id,
-          hasData: !!s.data,
-          dataLength: s.data?.length,
-          hasBlob: !!s.blob,
-          caption: s.caption
-        }))));
-
         navigate(`/trades/${id}`);
       } else {
         // For new trades, let Dexie Cloud generate the id
-        const newTradeId = await db.trades.add(tradeData as TradeRecord);
-
-        // DEBUG 4: After saving, immediately read back from Dexie
-        const savedTrade = await db.trades.get(newTradeId);
-        console.log('SCREENSHOTS READ BACK:', JSON.stringify(savedTrade?.screenshots?.map(s => ({
-          id: s.id,
-          hasData: !!s.data,
-          dataLength: s.data?.length,
-          hasBlob: !!s.blob,
-          caption: s.caption
-        }))));
-
+        await db.trades.add(tradeData as TradeRecord);
         navigate('/trades');
       }
     } catch (error) {
