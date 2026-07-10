@@ -240,6 +240,11 @@ export function DashboardPage() {
     return filteredTrades.filter((t) => t.tradeTaken !== false);
   }, [filteredTrades]);
 
+  // All taken trades (unfiltered) - for review section which should show regardless of dashboard filters
+  const allTakenTrades = useMemo(() => {
+    return trades.filter((t) => t.tradeTaken !== false);
+  }, [trades]);
+
   // Calculate stats (only from taken trades)
   const stats = useMemo(() => calculateDashboardStats(takenTrades), [takenTrades]);
 
@@ -424,7 +429,7 @@ export function DashboardPage() {
       <AlertsPanel />
 
       {/* Trades to Review Section */}
-      <TradesToReviewSection trades={takenTrades} navigate={navigate} />
+      <TradesToReviewSection trades={allTakenTrades} navigate={navigate} />
 
       {/* Stat Cards Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
