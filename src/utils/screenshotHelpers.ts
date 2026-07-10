@@ -150,8 +150,10 @@ export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
         hasMimeType: !!dataObj.mimeType,
         mimeType: dataObj.mimeType,
         hasBase64: !!dataObj.base64,
-        base64Length: dataObj.base64?.length,
-        base64Prefix: dataObj.base64?.substring(0, 30),
+        base64Type: typeof dataObj.base64,
+        base64Constructor: dataObj.base64?.constructor?.name,
+        base64Length: typeof dataObj.base64 === 'string' ? dataObj.base64.length : 'N/A',
+        base64Keys: typeof dataObj.base64 === 'object' && dataObj.base64 ? Object.keys(dataObj.base64).slice(0, 5) : [],
       });
       if (dataObj.mimeType && dataObj.base64) {
         return `data:${dataObj.mimeType};base64,${dataObj.base64}`;
