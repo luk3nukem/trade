@@ -288,17 +288,22 @@ export function TradeForm() {
             postTradeNotes: trade.postTradeNotes || '',
             screenshots: (() => {
               const ss = trade.screenshots || [];
-              console.log('SCREENSHOTS ON LOAD:', JSON.stringify(ss.map(s => ({
-                id: s.id,
-                hasData: !!s.data,
-                dataType: typeof s.data,
-                dataConstructor: s.data?.constructor?.name,
-                dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
-                dataKeys: typeof s.data === 'object' && s.data ? Object.keys(s.data).slice(0, 5) : [],
-                dataByteLength: (s.data as unknown as ArrayBuffer)?.byteLength,
-                hasBlob: !!s.blob,
-                caption: s.caption
-              }))));
+              console.log('SCREENSHOTS ON LOAD:', JSON.stringify(ss.map(s => {
+                const dataObj = s.data as { mimeType?: string; base64?: string; _bt?: unknown } | string | undefined;
+                const isDexieBlobRef = typeof dataObj === 'object' && dataObj && '_bt' in dataObj;
+                const isCustomFormat = typeof dataObj === 'object' && dataObj && 'mimeType' in dataObj && 'base64' in dataObj;
+                return {
+                  id: s.id,
+                  hasData: !!s.data,
+                  dataType: typeof s.data,
+                  dataFormat: isDexieBlobRef ? 'dexie-blob-ref' : isCustomFormat ? 'custom' : typeof s.data === 'string' ? 'string' : 'unknown',
+                  dataKeys: typeof s.data === 'object' && s.data ? Object.keys(s.data).slice(0, 5) : [],
+                  mimeType: isCustomFormat ? (dataObj as {mimeType: string}).mimeType : undefined,
+                  base64Length: isCustomFormat ? (dataObj as {base64: string}).base64?.length : undefined,
+                  hasBlob: !!s.blob,
+                  caption: s.caption
+                };
+              })));
               return ss;
             })(),
             tags: trade.tags || [],
@@ -735,15 +740,19 @@ export function TradeForm() {
       const screenshotsForSave = await prepareScreenshotsForSave(formData.screenshots);
 
       // DEBUG 2: After prepareScreenshotsForSave but before saving to Dexie
-      console.log('SCREENSHOTS AFTER PREPARE:', JSON.stringify(screenshotsForSave.map(s => ({
-        id: s.id,
-        hasBlob: !!s.blob,
-        hasData: !!s.data,
-        dataType: typeof s.data,
-        dataLength: typeof s.data === 'string' ? s.data.length : 'N/A',
-        dataPrefix: typeof s.data === 'string' ? s.data.substring(0, 50) : String(s.data).substring(0, 50),
-        caption: s.caption
-      }))));
+      console.log('SCREENSHOTS AFTER PREPARE:', JSON.stringify(screenshotsForSave.map(s => {
+        const dataObj = s.data as { mimeType?: string; base64?: string } | string | undefined;
+        return {
+          id: s.id,
+          hasBlob: !!s.blob,
+          hasData: !!s.data,
+          dataType: typeof s.data,
+          dataFormat: typeof dataObj === 'object' && dataObj?.mimeType ? 'custom' : typeof dataObj === 'string' ? 'string' : 'unknown',
+          mimeType: typeof dataObj === 'object' ? dataObj?.mimeType : undefined,
+          base64Length: typeof dataObj === 'object' ? dataObj?.base64?.length : typeof dataObj === 'string' ? dataObj.length : undefined,
+          caption: s.caption
+        };
+      })));
 
       // Build trade data without id for new trades (Dexie Cloud generates @id)
       const tradeData = {

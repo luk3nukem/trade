@@ -6,8 +6,21 @@ import type { Screenshot } from '../types';
 interface ScreenshotLike {
   id: string;
   blob?: Blob | Uint8Array | ArrayBuffer | unknown;
-  data?: string;
+  data?: string | unknown; // May be a Dexie Cloud blob reference object
   caption?: string;
+}
+
+/**
+ * Check if a value is a Dexie Cloud blob reference object
+ */
+function isDexieCloudBlobRef(value: unknown): value is { _bt: unknown; ref: string; size: number; ct: string } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    '_bt' in value &&
+    'ref' in value &&
+    'size' in value
+  );
 }
 
 /**
@@ -31,29 +44,56 @@ export function blobToBase64(blob: Blob): Promise<string> {
 
 /**
  * Prepare screenshots for Dexie Cloud persistence.
- * Converts Blob objects to base64 data URLs since Dexie Cloud cannot sync blobs.
+ * Converts Blob objects to base64 and stores WITHOUT the data URL prefix.
+ * This prevents Dexie Cloud from detecting it as blob data and converting it to a reference.
+ * Format stored: { mimeType: "image/png", base64: "iVBORw0KGgo..." }
  * Returns a new array with screenshots ready for persistence.
  */
 export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Promise<Screenshot[]> {
   const prepared: Screenshot[] = [];
 
   for (const screenshot of screenshots) {
-    // If screenshot already has valid base64 data string and no blob, keep as-is
-    if (typeof screenshot.data === 'string' && screenshot.data.startsWith('data:') && !screenshot.blob) {
-      prepared.push(screenshot);
+    // Skip Dexie Cloud blob references - these are corrupted and can't be recovered
+    if (screenshot.data && isDexieCloudBlobRef(screenshot.data)) {
+      console.warn('[Screenshot] Skipping Dexie Cloud blob reference (unrecoverable):', screenshot.id);
       continue;
+    }
+
+    // If screenshot already has valid data (either string or our custom format) and no blob, keep as-is
+    // Check for our new format: object with mimeType and base64
+    if (!screenshot.blob && screenshot.data) {
+      if (typeof screenshot.data === 'object' && 'mimeType' in (screenshot.data as object) && 'base64' in (screenshot.data as object)) {
+        // Already in our custom format
+        prepared.push(screenshot);
+        continue;
+      }
+      if (typeof screenshot.data === 'string' && screenshot.data.startsWith('data:')) {
+        // Old format data URL - convert to new format to avoid Dexie Cloud blob detection
+        const match = screenshot.data.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          prepared.push({
+            id: screenshot.id,
+            data: { mimeType: match[1], base64: match[2] } as unknown as string,
+            caption: screenshot.caption,
+            createdAt: screenshot.createdAt,
+          });
+          continue;
+        }
+      }
     }
 
     // If screenshot has a blob, convert to base64
     if (screenshot.blob) {
       try {
         let blob: Blob;
+        let mimeType = 'image/png'; // default
         // Cast to unknown for type checking - Dexie Cloud may return different types
         const blobData = screenshot.blob as unknown;
 
         // Handle various blob types
         if (blobData instanceof Blob) {
           blob = blobData;
+          mimeType = blob.type || mimeType;
         } else if (blobData instanceof Uint8Array || blobData instanceof ArrayBuffer) {
           blob = new Blob([blobData]);
         } else if (typeof blobData === 'object' && blobData !== null && 'byteLength' in blobData) {
@@ -64,14 +104,19 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
           continue;
         }
 
-        const base64Data = await blobToBase64(blob);
-        prepared.push({
-          id: screenshot.id,
-          data: base64Data, // Store as base64 string
-          // Don't store blob - it won't sync with Dexie Cloud
-          caption: screenshot.caption,
-          createdAt: screenshot.createdAt,
-        });
+        const dataUrl = await blobToBase64(blob);
+        // Extract just the base64 part, store mimeType separately
+        // This avoids Dexie Cloud detecting it as blob data
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          prepared.push({
+            id: screenshot.id,
+            // Store as object to avoid Dexie Cloud blob detection
+            data: { mimeType: match[1], base64: match[2] } as unknown as string,
+            caption: screenshot.caption,
+            createdAt: screenshot.createdAt,
+          });
+        }
       } catch (error) {
         console.error('[Screenshot] Failed to convert blob to base64:', screenshot.id, error);
       }
@@ -87,17 +132,38 @@ export async function prepareScreenshotsForSave(screenshots: Screenshot[]): Prom
  * - Native Blob objects
  * - Uint8Array or ArrayBuffer (from sync)
  * - Base64 data URLs (legacy format)
+ * - Our custom format: { mimeType: string, base64: string }
+ * - Dexie Cloud blob references (returns null - these need cloud resolution)
  *
  * @returns A URL string (either blob URL or base64 data URL) or null if no valid data
  */
 export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
   const blob = screenshot.blob;
 
-  // Base64 data URL - primary storage format for Dexie Cloud compatibility
-  if (!blob) {
-    if (screenshot.data && typeof screenshot.data === 'string') {
+  // Check data field first (for saved screenshots)
+  if (screenshot.data) {
+    // Our new custom format: { mimeType, base64 }
+    if (typeof screenshot.data === 'object' && !isDexieCloudBlobRef(screenshot.data)) {
+      const dataObj = screenshot.data as { mimeType?: string; base64?: string };
+      if (dataObj.mimeType && dataObj.base64) {
+        return `data:${dataObj.mimeType};base64,${dataObj.base64}`;
+      }
+    }
+
+    // Legacy format: base64 data URL string
+    if (typeof screenshot.data === 'string' && screenshot.data.startsWith('data:')) {
       return screenshot.data;
     }
+
+    // Dexie Cloud blob reference - can't resolve locally, return null
+    if (isDexieCloudBlobRef(screenshot.data)) {
+      console.warn('[Screenshot] Dexie Cloud blob reference detected, cannot display:', screenshot.id);
+      return null;
+    }
+  }
+
+  // If no data, check blob field (for in-memory screenshots before save)
+  if (!blob) {
     return null;
   }
 
@@ -116,13 +182,8 @@ export function createScreenshotUrl(screenshot: ScreenshotLike): string | null {
     try {
       return URL.createObjectURL(new Blob([blob as ArrayBuffer]));
     } catch {
-      // Fall through to base64 fallback
+      // Fall through
     }
-  }
-
-  // Base64 data URL fallback
-  if (screenshot.data && typeof screenshot.data === 'string') {
-    return screenshot.data;
   }
 
   return null;
