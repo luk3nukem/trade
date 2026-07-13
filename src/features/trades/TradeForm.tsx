@@ -2496,14 +2496,14 @@ export function TradeForm() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Post-Exit Notes
+                    Post-Exit Reflection
                   </label>
                   <textarea
                     value={formData.postExitNotes}
                     onChange={(e) => handleChange('postExitNotes', e.target.value)}
                     rows={3}
                     className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="What happened after you exited? What would you do differently?"
+                    placeholder="Review this trade 3 days after closing. What happened? What would you do differently?"
                   />
                 </div>
 

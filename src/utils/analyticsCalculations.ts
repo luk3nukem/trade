@@ -1143,6 +1143,112 @@ export function simulateExitStrategy(
   };
 }
 
+// Fixed R Target Simulation Types
+export interface FixedRTargetResult extends SimulationResult {
+  targetR: number;
+  tradesSimulated: number;
+  tradesExcluded: number;
+}
+
+/**
+ * Simulate exiting at a fixed R target regardless of the trade's actual target.
+ *
+ * Logic for each trade:
+ * - If mfeR >= targetR: trade reached the fixed target, result = +targetR
+ * - If mfeR < targetR AND maeR >= 1: trade never reached target and hit stop, result = -1R
+ * - Otherwise (rare): exclude from simulation (e.g., manually closed before either)
+ */
+export function simulateFixedRTarget(
+  trades: TradeRecord[],
+  targetR: number
+): FixedRTargetResult {
+  const closedTrades = trades
+    .filter(t => t.status === 'closed' && t.mfeR !== undefined)
+    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+
+  const equityCurve: { tradeIndex: number; cumulative: number }[] = [];
+  let cumulative = 0;
+  let peak = 0;
+  let maxDrawdown = 0;
+  const rMultiples: number[] = [];
+  let excluded = 0;
+
+  for (let i = 0; i < closedTrades.length; i++) {
+    const trade = closedTrades[i];
+    const mfeR = trade.mfeR ?? 0;
+    const maeR = trade.maeR ?? 0;
+
+    let simulatedR: number | null = null;
+
+    if (mfeR >= targetR) {
+      // Trade reached the fixed target - full exit at targetR
+      simulatedR = targetR;
+    } else if (maeR >= 1) {
+      // Trade never reached target and hit the stop - loss
+      simulatedR = -1;
+    } else {
+      // Trade never reached target OR stop (rare: manual close, time exit, etc.)
+      // Exclude from simulation
+      excluded++;
+      continue;
+    }
+
+    rMultiples.push(simulatedR);
+    cumulative += simulatedR;
+
+    if (cumulative > peak) peak = cumulative;
+    const drawdown = peak - cumulative;
+    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+
+    equityCurve.push({ tradeIndex: rMultiples.length, cumulative });
+  }
+
+  const wins = rMultiples.filter(r => r > 0);
+  const losses = rMultiples.filter(r => r <= 0);
+  const grossWins = wins.reduce((a, b) => a + b, 0);
+  const grossLosses = Math.abs(losses.reduce((a, b) => a + b, 0));
+
+  return {
+    strategyName: `Fixed ${targetR.toFixed(2)}R Target`,
+    equityCurve,
+    totalPnl: cumulative,
+    profitFactor: grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0,
+    avgR: rMultiples.length > 0 ? cumulative / rMultiples.length : 0,
+    maxDrawdown,
+    winRate: rMultiples.length > 0 ? (wins.length / rMultiples.length) * 100 : 0,
+    targetR,
+    tradesSimulated: rMultiples.length,
+    tradesExcluded: excluded,
+  };
+}
+
+/**
+ * Find the optimal fixed R target by sweeping from 0.5R to 5R in 0.25R increments.
+ * Returns the targetR that maximizes total R.
+ */
+export function findOptimalFixedRTarget(trades: TradeRecord[]): {
+  optimalR: number;
+  optimalTotalR: number;
+  results: FixedRTargetResult[];
+} {
+  const results: FixedRTargetResult[] = [];
+  let optimalR = 1.0;
+  let optimalTotalR = -Infinity;
+
+  // Sweep from 0.5R to 5R in 0.25R increments
+  for (let r = 0.5; r <= 5; r += 0.25) {
+    const result = simulateFixedRTarget(trades, r);
+    results.push(result);
+
+    if (result.totalPnl > optimalTotalR) {
+      optimalTotalR = result.totalPnl;
+      optimalR = r;
+    }
+  }
+
+  return { optimalR, optimalTotalR, results };
+}
+
 export function getExitManagementInsights(
   mfeCaptureData: MFECapturePoint[],
   givebackData: { avgGiveback: number; tradesOverOneR: number },

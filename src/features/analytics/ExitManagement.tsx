@@ -23,6 +23,8 @@ import {
   getExitTypeComparison,
   getPartialsComparison,
   simulateExitStrategy,
+  simulateFixedRTarget,
+  findOptimalFixedRTarget,
   getExitManagementInsights,
   getPostTPBehaviourAnalysis,
   getBEJustificationAnalysis,
@@ -51,11 +53,16 @@ const STRATEGY_COLORS: Record<string, string> = {
   '50% TP1, Trail Rest': '#f59e0b',
   '75% TP1, 25% Runner': '#8b5cf6',
   'Trailing Stop Only': '#ec4899',
+  'Fixed R Target': '#14b8a6', // Teal for fixed R target
 };
 
 export function ExitManagement({ trades }: Props) {
   const [activeStrategies, setActiveStrategies] = useState<SimulationStrategy[]>(['actual', 'full_tp1']);
   const [trailR, setTrailR] = useState(0.5);
+  const [fixedRTarget, setFixedRTarget] = useState(1.0);
+  const [showFixedR, setShowFixedR] = useState(false);
+  const [optimalR, setOptimalR] = useState<{ r: number; totalR: number } | null>(null);
+  const [isSearchingOptimal, setIsSearchingOptimal] = useState(false);
   const { alertSettings } = useAppStore();
   const minRThreshold = alertSettings.minRThreshold ?? 1.0;
 
@@ -72,6 +79,23 @@ export function ExitManagement({ trades }: Props) {
     }
     return results;
   }, [trades, trailR]);
+
+  // Fixed R Target simulation
+  const fixedRSimulation = useMemo(() => {
+    return simulateFixedRTarget(trades, fixedRTarget);
+  }, [trades, fixedRTarget]);
+
+  // Handle finding optimal R
+  const handleFindOptimal = () => {
+    setIsSearchingOptimal(true);
+    // Use setTimeout to allow UI to update before computation
+    setTimeout(() => {
+      const result = findOptimalFixedRTarget(trades);
+      setOptimalR({ r: result.optimalR, totalR: result.optimalTotalR });
+      setFixedRTarget(result.optimalR);
+      setIsSearchingOptimal(false);
+    }, 10);
+  };
 
   const insights = useMemo(
     () => getExitManagementInsights(mfeCaptureData, givebackData, partialsComparison),
@@ -96,17 +120,36 @@ export function ExitManagement({ trades }: Props) {
 
   const combinedEquityCurve = useMemo(() => {
     if (!simulations.actual) return [];
-    return simulations.actual.equityCurve.map((point, i) => {
-      const combined: Record<string, number> = { tradeIndex: point.tradeIndex };
+
+    // Use the larger of actual or fixed R curve length
+    const maxLength = Math.max(
+      simulations.actual.equityCurve.length,
+      showFixedR ? fixedRSimulation.equityCurve.length : 0
+    );
+
+    const result: Record<string, number>[] = [];
+
+    for (let i = 0; i < maxLength; i++) {
+      const combined: Record<string, number> = { tradeIndex: i + 1 };
+
+      // Add standard strategies
       for (const strategy of activeStrategies) {
         const sim = simulations[strategy];
         if (sim && sim.equityCurve[i]) {
           combined[sim.strategyName] = sim.equityCurve[i].cumulative;
         }
       }
-      return combined;
-    });
-  }, [simulations, activeStrategies]);
+
+      // Add fixed R target if enabled
+      if (showFixedR && fixedRSimulation.equityCurve[i]) {
+        combined['Fixed R Target'] = fixedRSimulation.equityCurve[i].cumulative;
+      }
+
+      result.push(combined);
+    }
+
+    return result;
+  }, [simulations, activeStrategies, showFixedR, fixedRSimulation]);
 
   const tradesWithMFE = trades.filter(t => t.status === 'closed' && t.mfeR !== undefined).length;
   const totalClosed = trades.filter(t => t.status === 'closed').length;
@@ -344,6 +387,17 @@ export function ExitManagement({ trades }: Props) {
               </button>
             );
           })}
+          {/* Fixed R Target toggle */}
+          <button
+            onClick={() => setShowFixedR(!showFixedR)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${showFixedR ? 'ring-2 ring-offset-2 ring-offset-gray-800' : 'opacity-50 hover:opacity-75'}`}
+            style={{
+              backgroundColor: showFixedR ? STRATEGY_COLORS['Fixed R Target'] + '33' : '#374151',
+              color: STRATEGY_COLORS['Fixed R Target'],
+            }}
+          >
+            Fixed R Target
+          </button>
         </div>
 
         <div className="flex items-center gap-4 mb-4 p-3 bg-gray-750 rounded-lg">
@@ -359,6 +413,69 @@ export function ExitManagement({ trades }: Props) {
           />
           <span className="text-sm text-white w-12">{trailR}R</span>
         </div>
+
+        {/* Fixed R Target Controls */}
+        {showFixedR && (
+          <div className="mb-4 p-4 bg-teal-500/10 border border-teal-500/30 rounded-lg space-y-3">
+            <div className="flex items-center gap-4">
+              <label className="text-sm text-teal-400 whitespace-nowrap">Target R:</label>
+              <input
+                type="range"
+                min="0.5"
+                max="5"
+                step="0.25"
+                value={fixedRTarget}
+                onChange={(e) => {
+                  setFixedRTarget(parseFloat(e.target.value));
+                  setOptimalR(null); // Clear optimal when manually changed
+                }}
+                className="flex-1 accent-teal-500"
+              />
+              <span className="text-sm text-white font-medium w-16">
+                Full exit at {fixedRTarget.toFixed(2)}R
+              </span>
+              <button
+                onClick={handleFindOptimal}
+                disabled={isSearchingOptimal}
+                className="px-3 py-1 text-xs bg-teal-600 hover:bg-teal-500 disabled:bg-teal-800 text-white rounded transition-colors"
+              >
+                {isSearchingOptimal ? 'Searching...' : 'Find Optimal'}
+              </button>
+            </div>
+
+            {/* Sample size warning */}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-gray-400">
+                Based on {fixedRSimulation.tradesSimulated} trades with MFE data
+                {fixedRSimulation.tradesExcluded > 0 && (
+                  <span className="text-gray-500"> ({fixedRSimulation.tradesExcluded} excluded)</span>
+                )}
+              </span>
+              {fixedRSimulation.tradesSimulated < 20 && (
+                <span className="px-2 py-0.5 bg-amber-500/20 text-amber-400 rounded">
+                  Low confidence (need 20+ trades)
+                </span>
+              )}
+            </div>
+
+            {/* Optimal R result */}
+            {optimalR && (
+              <div className="text-sm text-teal-300">
+                Taking full profit at exactly {optimalR.r.toFixed(2)}R would have produced{' '}
+                <span className={optimalR.totalR >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {optimalR.totalR >= 0 ? '+' : ''}{optimalR.totalR.toFixed(2)}R
+                </span>{' '}
+                vs your actual{' '}
+                <span className={simulations.actual?.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}>
+                  {simulations.actual?.totalPnl >= 0 ? '+' : ''}{simulations.actual?.totalPnl.toFixed(2)}R
+                </span>.
+                {optimalR.r !== fixedRTarget && (
+                  <span className="text-gray-400"> (Slider set to optimal)</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {combinedEquityCurve.length > 0 && (
           <ResponsiveContainer width="100%" height={300}>
@@ -385,6 +502,17 @@ export function ExitManagement({ trades }: Props) {
                   />
                 );
               })}
+              {/* Fixed R Target line */}
+              {showFixedR && (
+                <Line
+                  type="monotone"
+                  dataKey="Fixed R Target"
+                  stroke={STRATEGY_COLORS['Fixed R Target']}
+                  strokeWidth={2}
+                  dot={false}
+                  strokeDasharray="5 5"
+                />
+              )}
               <Legend />
             </LineChart>
           </ResponsiveContainer>
@@ -425,6 +553,25 @@ export function ExitManagement({ trades }: Props) {
                     </tr>
                   );
                 })}
+              {/* Fixed R Target row */}
+              {showFixedR && (
+                <tr className="border-b border-gray-700 bg-teal-500/5">
+                  <td className="px-4 py-2 text-sm font-medium" style={{ color: STRATEGY_COLORS['Fixed R Target'] }}>
+                    Fixed {fixedRTarget.toFixed(2)}R Target
+                  </td>
+                  <td className={`px-4 py-2 text-sm text-right ${fixedRSimulation.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {fixedRSimulation.totalPnl >= 0 ? '+' : ''}{fixedRSimulation.totalPnl.toFixed(2)}R
+                  </td>
+                  <td className={`px-4 py-2 text-sm text-right ${fixedRSimulation.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {fixedRSimulation.avgR >= 0 ? '+' : ''}{fixedRSimulation.avgR.toFixed(2)}R
+                  </td>
+                  <td className="px-4 py-2 text-sm text-right text-gray-300">{fixedRSimulation.winRate.toFixed(1)}%</td>
+                  <td className="px-4 py-2 text-sm text-right text-gray-300">
+                    {Number.isFinite(fixedRSimulation.profitFactor) ? fixedRSimulation.profitFactor.toFixed(2) : '∞'}
+                  </td>
+                  <td className="px-4 py-2 text-sm text-right text-red-400">{fixedRSimulation.maxDrawdown.toFixed(2)}R</td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
