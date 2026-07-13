@@ -4,6 +4,7 @@ import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import type { TradeRecord, DailyJournal, Account } from '../../types';
 import { DailyJournalForm } from './DailyJournalForm';
+import { isReviewDue } from '../../utils/tradeCalculations';
 
 type JournalTab = 'timeline' | 'daily' | 'weekly' | 'screenshots';
 
@@ -1037,13 +1038,16 @@ function WeeklyPostExitSection({
 }) {
   const navigate = useNavigate();
 
-  // Get unreviewed closed trades from this week
+  // Get unreviewed closed trades from this week that are due for review
   const unreviewedTrades = useMemo(() => {
-    return weekTrades.filter(t =>
-      t.status === 'closed' &&
-      t.tradeTaken !== false &&
-      !t.reviewedAt
-    );
+    return weekTrades.filter(t => {
+      if (t.status !== 'closed') return false;
+      if (t.tradeTaken === false) return false;
+      if (t.reviewedAt) return false;
+      if (!t.exitTime) return false;
+      // Use market-hours-aware calculation (skips weekends for non-crypto)
+      return isReviewDue(new Date(t.exitTime), t.assetClass);
+    });
   }, [weekTrades]);
 
   // Calculate post-exit stats for reviewed trades

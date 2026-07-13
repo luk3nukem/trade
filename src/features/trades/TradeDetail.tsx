@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord } from '../../types';
 import { formatDuration } from '../../utils';
-import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial } from '../../utils/tradeCalculations';
+import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial, getReviewDueDate, isReviewDue } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
 // Emotional state emoji map
@@ -864,9 +864,10 @@ export function TradeDetail() {
             trade.reachedTargetPostExit,
             trade.postExitNotes
           );
-          const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
           const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
-          const isReviewDue = exitTime && exitTime < seventyTwoHoursAgo;
+          // Use market-hours-aware calculation (skips weekends for non-crypto)
+          const reviewDue = exitTime ? isReviewDue(exitTime, trade.assetClass) : false;
+          const reviewDueDate = exitTime ? getReviewDueDate(exitTime, trade.assetClass) : null;
 
           const formatExitDateTime = (date: Date) => {
             return date.toLocaleDateString('en-US', {
@@ -875,6 +876,17 @@ export function TradeDetail() {
               year: 'numeric'
             }) + ' at ' + date.toLocaleTimeString('en-US', {
               hour: 'numeric',
+              minute: '2-digit'
+            });
+          };
+
+          const formatDueDate = (date: Date) => {
+            return date.toLocaleDateString('en-US', {
+              weekday: 'long',
+              day: 'numeric',
+              month: 'short'
+            }) + ', ' + date.toLocaleTimeString('en-US', {
+              hour: '2-digit',
               minute: '2-digit'
             });
           };
@@ -891,7 +903,7 @@ export function TradeDetail() {
                 <div className={`rounded-lg p-6 ${
                   isPartialReview
                     ? 'bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30'
-                    : isReviewDue
+                    : reviewDue
                       ? 'bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30'
                       : 'bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30'
                 }`}>
@@ -899,14 +911,14 @@ export function TradeDetail() {
                     <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center ${
                       isPartialReview
                         ? 'bg-amber-500/20'
-                        : isReviewDue
+                        : reviewDue
                           ? 'bg-red-500/20'
                           : 'bg-blue-500/20'
                     }`}>
                       <svg className={`w-6 h-6 ${
                         isPartialReview
                           ? 'text-amber-400'
-                          : isReviewDue
+                          : reviewDue
                             ? 'text-red-400'
                             : 'text-blue-400'
                       }`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -917,26 +929,26 @@ export function TradeDetail() {
                       <h4 className={`text-lg font-medium mb-1 ${
                         isPartialReview
                           ? 'text-amber-300'
-                          : isReviewDue
+                          : reviewDue
                             ? 'text-red-300'
                             : 'text-white'
                       }`}>
                         {isPartialReview
                           ? 'Review incomplete'
-                          : isReviewDue
+                          : reviewDue
                             ? 'Post-exit review is due'
                             : 'Post-exit review scheduled'}
                       </h4>
                       <p className="text-gray-400 mb-4">
                         {isPartialReview ? (
                           <>Fill in all fields to complete your review — best price, worst price, reached target, and notes.</>
-                        ) : isReviewDue ? (
+                        ) : reviewDue ? (
                           <>Record what happened after your exit to improve your exit strategy.</>
-                        ) : exitTime ? (
+                        ) : exitTime && reviewDueDate ? (
                           <>
                             This trade closed on{' '}
                             <span className="text-gray-300">{formatExitDateTime(exitTime)}</span>.
-                            Review will be due 3 days after close.
+                            Review due <span className="text-gray-300">{formatDueDate(reviewDueDate)}</span>.
                           </>
                         ) : (
                           <>Record what happened after your exit.</>
@@ -947,7 +959,7 @@ export function TradeDetail() {
                         className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white font-medium transition-colors ${
                           isPartialReview
                             ? 'bg-amber-600 hover:bg-amber-500'
-                            : isReviewDue
+                            : reviewDue
                               ? 'bg-red-600 hover:bg-red-500'
                               : 'bg-blue-600 hover:bg-blue-500'
                         }`}
@@ -955,7 +967,7 @@ export function TradeDetail() {
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
-                        {isPartialReview ? 'Complete Review' : isReviewDue ? 'Add Review Now' : 'Add Post-Exit Review'}
+                        {isPartialReview ? 'Complete Review' : reviewDue ? 'Add Review Now' : 'Add Post-Exit Review'}
                       </Link>
                     </div>
                   </div>

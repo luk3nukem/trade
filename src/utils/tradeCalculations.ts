@@ -1,4 +1,4 @@
-import type { TradingSession, TradeDirection, TradeStatus, ExitType } from '../types';
+import type { TradingSession, TradeDirection, TradeStatus, ExitType, AssetClass } from '../types';
 
 /**
  * Derive trading session from entry time (UTC)
@@ -546,4 +546,83 @@ export function isPostExitReviewPartial(
 
   // Partial means at least one field but not all four
   return filledCount > 0 && filledCount < 4;
+}
+
+// ============================================
+// REVIEW DUE DATE CALCULATION
+// ============================================
+
+/**
+ * Calculate when a post-exit review is due, accounting for market hours.
+ *
+ * - Crypto: 24/7 market, so review due = exitTime + 72 hours flat
+ * - All other asset classes (forex, commodities, indices, equities):
+ *   Review due = exitTime + 72 hours of market time, skipping Saturdays and Sundays entirely.
+ *
+ * This means weekday hours count normally, but Saturday and Sunday are skipped.
+ * Example: Trade closed Friday 09:00 → due Wednesday 09:00
+ *   - Fri 09:00→Sat 00:00 = 15 weekday hours
+ *   - Sat/Sun = skipped
+ *   - Mon 00:00→Tue 00:00 = 24 weekday hours (total: 39)
+ *   - Tue 00:00→Wed 00:00 = 24 weekday hours (total: 63)
+ *   - Wed 00:00→Wed 09:00 = 9 weekday hours (total: 72)
+ */
+export function getReviewDueDate(exitTime: Date, assetClass: AssetClass): Date {
+  const REVIEW_HOURS = 72;
+  const MS_IN_HOUR = 60 * 60 * 1000;
+
+  // Crypto is 24/7, no adjustment needed
+  if (assetClass === 'crypto') {
+    return new Date(exitTime.getTime() + REVIEW_HOURS * MS_IN_HOUR);
+  }
+
+  // For all other asset classes, skip weekends entirely
+  let hoursRemaining = REVIEW_HOURS;
+  let current = new Date(exitTime);
+
+  while (hoursRemaining > 0) {
+    const dayOfWeek = current.getDay(); // 0 = Sunday, 6 = Saturday
+
+    // If we're on a weekend, skip to Monday (keep same time of day)
+    if (dayOfWeek === 0) {
+      // Sunday → skip to Monday
+      current.setDate(current.getDate() + 1);
+      continue;
+    }
+    if (dayOfWeek === 6) {
+      // Saturday → skip to Monday
+      current.setDate(current.getDate() + 2);
+      continue;
+    }
+
+    // We're on a weekday (Mon=1, Tue=2, Wed=3, Thu=4, Fri=5)
+    // Calculate hours until midnight (start of next day)
+    const startOfNextDay = new Date(current);
+    startOfNextDay.setDate(startOfNextDay.getDate() + 1);
+    startOfNextDay.setHours(0, 0, 0, 0);
+
+    const msUntilMidnight = startOfNextDay.getTime() - current.getTime();
+    const hoursUntilMidnight = msUntilMidnight / MS_IN_HOUR;
+
+    if (hoursRemaining <= hoursUntilMidnight) {
+      // We'll finish within this day
+      current = new Date(current.getTime() + hoursRemaining * MS_IN_HOUR);
+      hoursRemaining = 0;
+    } else {
+      // Move to start of next day, subtract the hours we used
+      current = startOfNextDay;
+      hoursRemaining -= hoursUntilMidnight;
+    }
+  }
+
+  return current;
+}
+
+/**
+ * Check if a trade's post-exit review is due.
+ * Uses market-hours-aware calculation based on asset class.
+ */
+export function isReviewDue(exitTime: Date, assetClass: AssetClass): boolean {
+  const dueDate = getReviewDueDate(exitTime, assetClass);
+  return new Date() >= dueDate;
 }

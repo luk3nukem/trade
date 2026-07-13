@@ -26,6 +26,7 @@ import {
   getTradesForDate,
   calculateTimeHeld,
   isPostExitReviewComplete,
+  isReviewDue,
 } from '../../utils';
 import { AlertsPanel } from './AlertsPanel';
 
@@ -37,11 +38,10 @@ function TradesToReviewSection({
   trades: TradeRecord[];
   navigate: (path: string) => void;
 }) {
-  // Get trades that need review: closed, review incomplete, closed more than 72 hours ago
+  // Get trades that need review: closed, review incomplete, review due (market-hours-aware)
   // Uses full datetime precision (not just date)
   // Checks actual field completion, not just reviewedAt timestamp
   const tradesToReview = useMemo(() => {
-    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       // Check if review is actually complete (all 4 fields filled)
@@ -53,8 +53,8 @@ function TradesToReviewSection({
       );
       if (reviewComplete) return false;
       if (!t.exitTime) return false;
-      const exitTime = new Date(t.exitTime);
-      return exitTime < seventyTwoHoursAgo;
+      // Use market-hours-aware calculation (skips weekends for non-crypto)
+      return isReviewDue(new Date(t.exitTime), t.assetClass);
     }).sort((a, b) => {
       // Sort by exit time, oldest first
       const aExit = a.exitTime ? new Date(a.exitTime).getTime() : 0;
@@ -65,7 +65,6 @@ function TradesToReviewSection({
 
   // Total count for display
   const totalUnreviewed = useMemo(() => {
-    const seventyTwoHoursAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
     return trades.filter((t) => {
       if (t.status !== 'closed') return false;
       const reviewComplete = isPostExitReviewComplete(
@@ -76,8 +75,8 @@ function TradesToReviewSection({
       );
       if (reviewComplete) return false;
       if (!t.exitTime) return false;
-      const exitTime = new Date(t.exitTime);
-      return exitTime < seventyTwoHoursAgo;
+      // Use market-hours-aware calculation (skips weekends for non-crypto)
+      return isReviewDue(new Date(t.exitTime), t.assetClass);
     }).length;
   }, [trades]);
 
