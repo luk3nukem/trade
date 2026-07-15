@@ -69,12 +69,18 @@ export interface StopAdjustment {
 // Level reaction type
 export type LevelReaction = 'bounced' | 'front_run' | 'swept_then_bounced' | 'broken' | null;
 
+// Zone-type levels (have two edges: near and far)
+export const ZONE_LEVEL_TYPES = ['HOB', 'LOB', 'DHOB', 'DLOB', 'OB', 'FVG', 'BB', 'IMB'] as const;
+
 // Level entry in a sequence (ordered shallowest to deepest)
 export interface LevelEntry {
   id: string;
   levelType: string;      // "LCPB", "HOB", "fib", "S/R", ... autocomplete, user-extendable
   timeframe: string;      // "H1", "H4", "D1", "W1", "MTF", ""
-  price: number;
+  price: number;          // for zones: the near edge (where price enters)
+  priceFar: number | null; // for zones: the far edge. null = single-line level
+  deepestPrice?: number | null; // zones only: extreme price reached inside zone before turn
+  penetrationPercent?: number | null; // derived, zones only: |deepestPrice - nearEdge| / |farEdge - nearEdge| × 100
   reaction: LevelReaction; // "bounced" | "front_run" | "swept_then_bounced" | "broken" | null (unresolved)
 }
 

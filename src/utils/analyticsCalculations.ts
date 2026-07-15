@@ -4628,3 +4628,368 @@ function getOrdinal(n: number): string {
   const v = n % 100;
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
+
+// ============================================================================
+// Zone Penetration Analytics
+// ============================================================================
+
+// Zone level types constant
+const ZONE_LEVEL_TYPES = ['HOB', 'LOB', 'DHOB', 'DLOB', 'OB', 'FVG', 'BB', 'IMB'] as const;
+
+export interface ZonePenetrationBucket {
+  bucket: string;
+  bucketMin: number;
+  bucketMax: number;
+  count: number;
+  percent: number;
+}
+
+export interface ZonePenetrationByType {
+  zoneType: string;
+  count: number;
+  avgPenetration: number;
+  heldCount: number;
+  brokenCount: number;
+  distribution: ZonePenetrationBucket[];
+}
+
+export interface ZonePenetrationStats {
+  totalZones: number;
+  zonesWithPenetration: number;
+  byType: ZonePenetrationByType[];
+  overall: ZonePenetrationBucket[];
+}
+
+/**
+ * Analyze zone penetration distribution
+ */
+export function getZonePenetrationStats(trades: TradeRecord[]): ZonePenetrationStats {
+  const buckets = [
+    { label: '0-25%', min: 0, max: 25 },
+    { label: '25-50%', min: 25, max: 50 },
+    { label: '50-75%', min: 50, max: 75 },
+    { label: '75-100%', min: 75, max: 100 },
+  ];
+
+  // Collect all zone levels with penetration data
+  const allZones: Array<{
+    zoneType: string;
+    penetration: number;
+    reaction: string | null;
+    rMultiple: number | undefined;
+  }> = [];
+
+  for (const trade of trades) {
+    if (!trade.levelSequence) continue;
+    for (const level of trade.levelSequence) {
+      if (
+        ZONE_LEVEL_TYPES.includes(level.levelType as typeof ZONE_LEVEL_TYPES[number]) &&
+        level.priceFar !== null &&
+        level.penetrationPercent !== null &&
+        level.penetrationPercent !== undefined
+      ) {
+        allZones.push({
+          zoneType: level.levelType,
+          penetration: level.penetrationPercent,
+          reaction: level.reaction,
+          rMultiple: trade.rMultiple,
+        });
+      }
+    }
+  }
+
+  // Build overall distribution
+  const overallDistribution: ZonePenetrationBucket[] = buckets.map(b => ({
+    bucket: b.label,
+    bucketMin: b.min,
+    bucketMax: b.max,
+    count: allZones.filter(z =>
+      z.penetration >= b.min && z.penetration < (b.max === 100 ? 101 : b.max)
+    ).length,
+    percent: 0,
+  }));
+
+  const total = allZones.length;
+  for (const bucket of overallDistribution) {
+    bucket.percent = total > 0 ? (bucket.count / total) * 100 : 0;
+  }
+
+  // Build by-type breakdown
+  const typeMap = new Map<string, typeof allZones>();
+  for (const zone of allZones) {
+    if (!typeMap.has(zone.zoneType)) {
+      typeMap.set(zone.zoneType, []);
+    }
+    typeMap.get(zone.zoneType)!.push(zone);
+  }
+
+  const byType: ZonePenetrationByType[] = [];
+  for (const [zoneType, zones] of typeMap.entries()) {
+    const avgPen = zones.reduce((sum, z) => sum + z.penetration, 0) / zones.length;
+    const held = zones.filter(z => z.reaction === 'bounced' || z.reaction === 'swept_then_bounced' || z.reaction === 'front_run');
+    const broken = zones.filter(z => z.reaction === 'broken');
+
+    const typeDist: ZonePenetrationBucket[] = buckets.map(b => ({
+      bucket: b.label,
+      bucketMin: b.min,
+      bucketMax: b.max,
+      count: zones.filter(z =>
+        z.penetration >= b.min && z.penetration < (b.max === 100 ? 101 : b.max)
+      ).length,
+      percent: zones.length > 0
+        ? (zones.filter(z =>
+            z.penetration >= b.min && z.penetration < (b.max === 100 ? 101 : b.max)
+          ).length / zones.length) * 100
+        : 0,
+    }));
+
+    byType.push({
+      zoneType,
+      count: zones.length,
+      avgPenetration: Number(avgPen.toFixed(1)),
+      heldCount: held.length,
+      brokenCount: broken.length,
+      distribution: typeDist,
+    });
+  }
+
+  // Sort by count descending
+  byType.sort((a, b) => b.count - a.count);
+
+  return {
+    totalZones: allZones.filter(z => ZONE_LEVEL_TYPES.includes(z.zoneType as typeof ZONE_LEVEL_TYPES[number])).length,
+    zonesWithPenetration: allZones.length,
+    byType,
+    overall: overallDistribution,
+  };
+}
+
+export interface PenetrationVsOutcome {
+  penetration: number;
+  rMultiple: number;
+  zoneType: string;
+  reaction: string | null;
+}
+
+/**
+ * Get penetration vs outcome data for scatter plot
+ */
+export function getPenetrationVsOutcome(trades: TradeRecord[]): PenetrationVsOutcome[] {
+  const results: PenetrationVsOutcome[] = [];
+
+  for (const trade of trades) {
+    if (!trade.levelSequence || trade.rMultiple === undefined) continue;
+    for (const level of trade.levelSequence) {
+      if (
+        ZONE_LEVEL_TYPES.includes(level.levelType as typeof ZONE_LEVEL_TYPES[number]) &&
+        level.priceFar !== null &&
+        level.penetrationPercent !== null &&
+        level.penetrationPercent !== undefined
+      ) {
+        results.push({
+          penetration: level.penetrationPercent,
+          rMultiple: trade.rMultiple,
+          zoneType: level.levelType,
+          reaction: level.reaction,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+export interface EntryPlacementInsight {
+  zoneType: string;
+  avgEntryDepthPercent: number;
+  avgTurnDepthPercent: number;
+  count: number;
+  shouldEnterDeeper: boolean;
+  potentialImprovement: number;
+}
+
+/**
+ * Analyze where trader enters vs where price typically turns in zones
+ */
+export function getZoneEntryPlacementInsights(trades: TradeRecord[]): EntryPlacementInsight[] {
+  const typeData = new Map<string, {
+    entryDepths: number[];
+    turnDepths: number[];
+  }>();
+
+  for (const trade of trades) {
+    if (!trade.levelSequence) continue;
+
+    for (const level of trade.levelSequence) {
+      if (
+        !ZONE_LEVEL_TYPES.includes(level.levelType as typeof ZONE_LEVEL_TYPES[number]) ||
+        level.priceFar === null ||
+        level.price === 0 ||
+        level.priceFar === 0
+      ) continue;
+
+      const zoneWidth = Math.abs(level.priceFar - level.price);
+      if (zoneWidth === 0) continue;
+
+      // Calculate entry position within zone
+      const entryInZone = Math.abs(trade.entryPrice - level.price);
+      const entryDepthPercent = Math.min(100, Math.max(0, (entryInZone / zoneWidth) * 100));
+
+      // Calculate turn depth (if we have penetration data)
+      const turnDepthPercent = level.penetrationPercent ?? entryDepthPercent;
+
+      if (!typeData.has(level.levelType)) {
+        typeData.set(level.levelType, { entryDepths: [], turnDepths: [] });
+      }
+      const data = typeData.get(level.levelType)!;
+      data.entryDepths.push(entryDepthPercent);
+      if (level.penetrationPercent !== null && level.penetrationPercent !== undefined) {
+        data.turnDepths.push(turnDepthPercent);
+      }
+    }
+  }
+
+  const insights: EntryPlacementInsight[] = [];
+  for (const [zoneType, data] of typeData.entries()) {
+    if (data.entryDepths.length < 3) continue;
+
+    const avgEntry = data.entryDepths.reduce((a, b) => a + b, 0) / data.entryDepths.length;
+    const avgTurn = data.turnDepths.length > 0
+      ? data.turnDepths.reduce((a, b) => a + b, 0) / data.turnDepths.length
+      : avgEntry;
+
+    const shouldDeeper = avgTurn > avgEntry + 5;
+    const improvement = Math.max(0, avgTurn - avgEntry);
+
+    insights.push({
+      zoneType,
+      avgEntryDepthPercent: Number(avgEntry.toFixed(1)),
+      avgTurnDepthPercent: Number(avgTurn.toFixed(1)),
+      count: data.entryDepths.length,
+      shouldEnterDeeper: shouldDeeper,
+      potentialImprovement: Number(improvement.toFixed(1)),
+    });
+  }
+
+  return insights.sort((a, b) => b.count - a.count);
+}
+
+export interface LevelsInsideZoneStats {
+  zoneType: string;
+  innerLevelType: string;
+  count: number;
+  turnAtInnerPercent: number;
+  turnAtZoneEdgePercent: number;
+  turnElsewherePercent: number;
+}
+
+/**
+ * Analyze when line levels sit inside zones
+ */
+export function getLevelsInsideZonesAnalysis(trades: TradeRecord[]): LevelsInsideZoneStats[] {
+  const results = new Map<string, {
+    count: number;
+    turnAtInner: number;
+    turnAtEdge: number;
+    turnElsewhere: number;
+  }>();
+
+  const LINE_TYPES = ['LCPB', 'fib', 'S/R', 'EQ'];
+
+  for (const trade of trades) {
+    if (!trade.levelSequence || trade.levelSequence.length < 2) continue;
+
+    // Find zones and lines in this trade
+    const zones = trade.levelSequence.filter(l =>
+      ZONE_LEVEL_TYPES.includes(l.levelType as typeof ZONE_LEVEL_TYPES[number]) &&
+      l.priceFar !== null
+    );
+    const lines = trade.levelSequence.filter(l =>
+      LINE_TYPES.includes(l.levelType)
+    );
+
+    // Check which lines sit inside which zones
+    for (const zone of zones) {
+      const zoneMin = Math.min(zone.price, zone.priceFar!);
+      const zoneMax = Math.max(zone.price, zone.priceFar!);
+
+      for (const line of lines) {
+        if (line.price >= zoneMin && line.price <= zoneMax) {
+          // Line is inside zone
+          const key = `${zone.levelType}|${line.levelType}`;
+          if (!results.has(key)) {
+            results.set(key, { count: 0, turnAtInner: 0, turnAtEdge: 0, turnElsewhere: 0 });
+          }
+          const data = results.get(key)!;
+          data.count++;
+
+          // Determine where price turned
+          if (line.reaction === 'bounced' || line.reaction === 'front_run' || line.reaction === 'swept_then_bounced') {
+            data.turnAtInner++;
+          } else if (zone.reaction === 'bounced' || zone.reaction === 'front_run' || zone.reaction === 'swept_then_bounced') {
+            data.turnAtEdge++;
+          } else {
+            data.turnElsewhere++;
+          }
+        }
+      }
+    }
+  }
+
+  const stats: LevelsInsideZoneStats[] = [];
+  for (const [key, data] of results.entries()) {
+    const [zoneType, innerLevelType] = key.split('|');
+    const total = data.count;
+    stats.push({
+      zoneType,
+      innerLevelType,
+      count: total,
+      turnAtInnerPercent: total > 0 ? (data.turnAtInner / total) * 100 : 0,
+      turnAtZoneEdgePercent: total > 0 ? (data.turnAtEdge / total) * 100 : 0,
+      turnElsewherePercent: total > 0 ? (data.turnElsewhere / total) * 100 : 0,
+    });
+  }
+
+  return stats.filter(s => s.count >= 3).sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Generate zone penetration insights
+ */
+export function getZonePenetrationInsights(
+  penetrationStats: ZonePenetrationStats,
+  entryPlacement: EntryPlacementInsight[],
+  levelsInside: LevelsInsideZoneStats[]
+): string[] {
+  const insights: string[] = [];
+
+  // Zone type penetration insight
+  for (const zt of penetrationStats.byType) {
+    if (zt.count >= 5 && zt.heldCount > 0) {
+      const holdRate = ((zt.heldCount / zt.count) * 100).toFixed(0);
+      insights.push(
+        `Your ${zt.zoneType}s that hold get penetrated an average of ${zt.avgPenetration}% before the turn (n=${zt.count}, hold rate: ${holdRate}%).`
+      );
+    }
+  }
+
+  // Entry placement insight
+  for (const ep of entryPlacement) {
+    if (ep.count >= 5 && ep.shouldEnterDeeper && ep.potentialImprovement > 10) {
+      insights.push(
+        `You typically enter at ${ep.avgEntryDepthPercent.toFixed(0)}% into your ${ep.zoneType}s, but price penetrates to ${ep.avgTurnDepthPercent.toFixed(0)}% on average before turning — entering deeper would improve your average entry.`
+      );
+    }
+  }
+
+  // Levels inside zones insight
+  for (const li of levelsInside) {
+    if (li.count >= 5 && li.turnAtInnerPercent > 50) {
+      insights.push(
+        `When a ${li.innerLevelType} sits inside a ${li.zoneType} (n=${li.count}), the turn happens at the ${li.innerLevelType} ${li.turnAtInnerPercent.toFixed(0)}% of the time — the ${li.innerLevelType}, not the block edge, is your real level.`
+      );
+    }
+  }
+
+  return insights;
+}

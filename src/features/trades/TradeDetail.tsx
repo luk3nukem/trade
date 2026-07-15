@@ -2,7 +2,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord } from '../../types';
+import { ZONE_LEVEL_TYPES } from '../../types';
 import { formatDuration } from '../../utils';
+
+// Helper to check if a level type is a zone
+const isZoneLevelType = (levelType: string): boolean => {
+  return ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
+};
 import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial, getReviewDueDate, isReviewDue } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
@@ -702,36 +708,76 @@ export function TradeDetail() {
               <div className="mt-4 pt-4 border-t border-gray-700">
                 <span className="text-sm text-gray-400">Level Sequence</span>
                 <div className="mt-2 space-y-1">
-                  {trade.levelSequence.map((level, index) => (
-                    <div
-                      key={level.id}
-                      className="flex items-center gap-2 py-1.5 px-2 bg-gray-750 rounded"
-                    >
-                      <span className="text-xs text-gray-500 w-4">{index + 1}</span>
-                      <span className="text-sm text-gray-200 font-medium">{level.levelType || '—'}</span>
-                      {level.timeframe && (
-                        <span className="text-xs text-gray-500">({level.timeframe})</span>
-                      )}
-                      <span className="text-xs text-gray-400 font-mono">@ {level.price || '—'}</span>
-                      <span className="flex-1" />
-                      {level.reaction && (
-                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                          level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400' :
-                          level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400' :
-                          level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400' :
-                          'bg-red-500/20 text-red-400'
-                        }`}>
-                          {level.reaction === 'bounced' ? 'Bounced' :
-                           level.reaction === 'front_run' ? 'Front-run' :
-                           level.reaction === 'swept_then_bounced' ? 'SFP' :
-                           'Broken'}
-                        </span>
-                      )}
-                      {!level.reaction && (
-                        <span className="text-xs text-gray-600">—</span>
-                      )}
-                    </div>
-                  ))}
+                  {trade.levelSequence.map((level, index) => {
+                    const isZone = isZoneLevelType(level.levelType) && level.priceFar;
+                    const penetration = level.penetrationPercent;
+
+                    return (
+                      <div
+                        key={level.id}
+                        className="py-1.5 px-2 bg-gray-750 rounded"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500 w-4">{index + 1}</span>
+                          <span className="text-sm text-gray-200 font-medium">{level.levelType || '—'}</span>
+                          {level.timeframe && (
+                            <span className="text-xs text-gray-500">({level.timeframe})</span>
+                          )}
+                          {isZone ? (
+                            <span className="text-xs text-gray-400 font-mono">
+                              {level.price} → {level.priceFar}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400 font-mono">@ {level.price || '—'}</span>
+                          )}
+                          <span className="flex-1" />
+                          {level.reaction && (
+                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                              level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400' :
+                              level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400' :
+                              level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400' :
+                              'bg-red-500/20 text-red-400'
+                            }`}>
+                              {level.reaction === 'bounced' ? 'Bounced' :
+                               level.reaction === 'front_run' ? 'Front-run' :
+                               level.reaction === 'swept_then_bounced' ? 'SFP' :
+                               'Broken'}
+                            </span>
+                          )}
+                          {!level.reaction && (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
+                        </div>
+
+                        {/* Zone penetration bar */}
+                        {isZone && penetration !== null && penetration !== undefined && (
+                          <div className="mt-1.5 ml-6">
+                            <div className="flex items-center gap-2">
+                              <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${
+                                    penetration >= 75 ? 'bg-red-500' :
+                                    penetration >= 50 ? 'bg-orange-500' :
+                                    penetration >= 25 ? 'bg-yellow-500' :
+                                    'bg-green-500'
+                                  }`}
+                                  style={{ width: `${Math.min(100, penetration)}%` }}
+                                />
+                              </div>
+                              <span className={`text-xs ${
+                                penetration >= 75 ? 'text-red-400' :
+                                penetration >= 50 ? 'text-orange-400' :
+                                penetration >= 25 ? 'text-yellow-400' :
+                                'text-green-400'
+                              }`}>
+                                {penetration}%
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

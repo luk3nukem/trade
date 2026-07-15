@@ -22,6 +22,7 @@ import type {
   LevelEntry,
   LevelReaction,
 } from '../../types';
+import { ZONE_LEVEL_TYPES } from '../../types';
 import {
   deriveSession,
   calculateStopDistance,
@@ -165,6 +166,24 @@ const CONFIDENCE_LEVELS: { value: ConfidenceLevel; label: string }[] = [
 // Tags will be learned from previous trades - no hardcoded defaults
 const DEFAULT_SETUP_TAGS: string[] = [];
 
+// Helper to check if a level type is a zone (has two edges)
+const isZoneLevelType = (levelType: string): boolean => {
+  return ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
+};
+
+// Helper to calculate penetration percent for zone levels
+const calculatePenetrationPercent = (
+  nearEdge: number,
+  farEdge: number,
+  deepestPrice: number | null | undefined
+): number | null => {
+  if (!deepestPrice || !nearEdge || !farEdge || nearEdge === farEdge) return null;
+  const zoneWidth = Math.abs(farEdge - nearEdge);
+  const penetration = Math.abs(deepestPrice - nearEdge);
+  const percent = (penetration / zoneWidth) * 100;
+  return Math.min(100, Math.max(0, Math.round(percent)));
+};
+
 interface ValidationErrors {
   pair?: string;
   direction?: string;
@@ -175,6 +194,12 @@ interface ValidationErrors {
 
 interface ValidationWarnings {
   riskPercent?: string;
+  stopLoss?: string;
+  targetPrice?: string;
+  maePrice?: string;
+  mfePrice?: string;
+  firstTouchWorstPrice?: string;
+  exitWarnings?: Record<string, string>; // keyed by exit id
 }
 
 export function TradeForm() {
@@ -427,7 +452,7 @@ export function TradeForm() {
       newErrors.entryTime = 'Entry time is required';
     }
 
-    // Stop loss validation
+    // Stop loss validation (direction consistency - existing)
     if (formData.entryPrice && formData.stopLoss) {
       const entryPrice = parseFloat(formData.entryPrice);
       const stopLoss = parseFloat(formData.stopLoss);
@@ -442,6 +467,107 @@ export function TradeForm() {
       const riskPct = parseFloat(formData.riskPercent);
       if (riskPct > 2) {
         newWarnings.riskPercent = 'Risk exceeds 2% of account';
+      }
+    }
+
+    // === Price Sanity Checks (non-blocking warnings) ===
+    const entryPrice = parseFloat(formData.entryPrice) || 0;
+    const stopLoss = parseFloat(formData.stopLoss) || 0;
+
+    if (entryPrice > 0 && stopLoss > 0) {
+      // A) Stop distance plausibility
+      const stopDistance = Math.abs(stopLoss - entryPrice);
+      const stopDistancePercent = stopDistance / entryPrice;
+      const threshold = formData.assetClass === 'crypto' ? 0.25 : 0.10;
+      if (stopDistancePercent > threshold) {
+        const pctFormatted = (stopDistancePercent * 100).toFixed(1);
+        newWarnings.stopLoss = `Stop is ${pctFormatted}% away from entry — check for a typo`;
+      }
+
+      // B) Magnitude mismatch helper
+      const checkMagnitudeMismatch = (price: number): string | undefined => {
+        if (price > 0 && Math.abs(price - entryPrice) / entryPrice > 0.5) {
+          return `This price looks very different from your entry (${entryPrice}) — check for a typo`;
+        }
+        return undefined;
+      };
+
+      // Check stop loss magnitude (only if not already warned)
+      if (!newWarnings.stopLoss) {
+        const slMagnitudeWarning = checkMagnitudeMismatch(stopLoss);
+        if (slMagnitudeWarning) newWarnings.stopLoss = slMagnitudeWarning;
+      }
+
+      // Check target price
+      const targetPrice = parseFloat(formData.targetPrice) || 0;
+      if (targetPrice > 0) {
+        const tpWarning = checkMagnitudeMismatch(targetPrice);
+        if (tpWarning) newWarnings.targetPrice = tpWarning;
+      }
+
+      // Check worst price (MAE)
+      const maePrice = parseFloat(formData.maePrice) || 0;
+      if (maePrice > 0) {
+        const maeWarning = checkMagnitudeMismatch(maePrice);
+        if (maeWarning) {
+          newWarnings.maePrice = maeWarning;
+        } else {
+          // C) Direction consistency - worst price
+          if (formData.direction === 'long' && maePrice > entryPrice) {
+            newWarnings.maePrice = 'Worst price is above your entry on a long — did you swap the fields?';
+          } else if (formData.direction === 'short' && maePrice < entryPrice) {
+            newWarnings.maePrice = 'Worst price is below your entry on a short — did you swap the fields?';
+          }
+        }
+      }
+
+      // Check best price (MFE)
+      const mfePrice = parseFloat(formData.mfePrice) || 0;
+      if (mfePrice > 0) {
+        const mfeWarning = checkMagnitudeMismatch(mfePrice);
+        if (mfeWarning) {
+          newWarnings.mfePrice = mfeWarning;
+        } else {
+          // C) Direction consistency - best price
+          if (formData.direction === 'long' && mfePrice < entryPrice) {
+            newWarnings.mfePrice = 'Best price is below your entry on a long — did you swap the fields?';
+          } else if (formData.direction === 'short' && mfePrice > entryPrice) {
+            newWarnings.mfePrice = 'Best price is above your entry on a short — did you swap the fields?';
+          }
+        }
+      }
+
+      // Check first-touch worst price
+      const firstTouchWorstPrice = parseFloat(formData.firstTouchWorstPrice) || 0;
+      if (firstTouchWorstPrice > 0) {
+        const ftWarning = checkMagnitudeMismatch(firstTouchWorstPrice);
+        if (ftWarning) newWarnings.firstTouchWorstPrice = ftWarning;
+      }
+
+      // D) Exit price sanity (R-multiple beyond ±20R)
+      if (formData.exits && formData.exits.length > 0) {
+        const exitWarnings: Record<string, string> = {};
+        for (const exit of formData.exits) {
+          if (exit.price > 0) {
+            // Check magnitude mismatch
+            const exitMagnitudeWarning = checkMagnitudeMismatch(exit.price);
+            if (exitMagnitudeWarning) {
+              exitWarnings[exit.id] = exitMagnitudeWarning;
+            } else {
+              // Check R-multiple
+              const exitPnlDirection = formData.direction === 'long'
+                ? exit.price - entryPrice
+                : entryPrice - exit.price;
+              const rMultiple = exitPnlDirection / stopDistance;
+              if (Math.abs(rMultiple) > 20) {
+                exitWarnings[exit.id] = `This exit implies ${rMultiple.toFixed(1)}R — check the price`;
+              }
+            }
+          }
+        }
+        if (Object.keys(exitWarnings).length > 0) {
+          newWarnings.exitWarnings = exitWarnings;
+        }
       }
     }
 
@@ -1523,10 +1649,11 @@ export function TradeForm() {
                   value={formData.stopLoss}
                   onChange={(e) => handleChange('stopLoss', e.target.value)}
                   className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    errors.stopLoss ? 'border-red-500' : 'border-gray-600'
+                    errors.stopLoss ? 'border-red-500' : warnings.stopLoss ? 'border-yellow-500' : 'border-gray-600'
                   }`}
                 />
                 {errors.stopLoss && <p className="text-red-400 text-xs mt-1">{errors.stopLoss}</p>}
+                {!errors.stopLoss && warnings.stopLoss && <p className="text-yellow-400 text-xs mt-1">{warnings.stopLoss}</p>}
               </div>
 
               <div>
@@ -1537,9 +1664,12 @@ export function TradeForm() {
                   value={formData.targetPrice}
                   onChange={(e) => handleChange('targetPrice', e.target.value)}
                   placeholder="Primary profit target"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    warnings.targetPrice ? 'border-yellow-500' : 'border-gray-600'
+                  }`}
                 />
-                <p className="text-xs text-gray-500 mt-1">Primary profit target for planned R:R</p>
+                {warnings.targetPrice && <p className="text-yellow-400 text-xs mt-1">{warnings.targetPrice}</p>}
+                {!warnings.targetPrice && <p className="text-xs text-gray-500 mt-1">Primary profit target for planned R:R</p>}
               </div>
 
               <div>
@@ -1550,9 +1680,12 @@ export function TradeForm() {
                   value={formData.maePrice}
                   onChange={(e) => handleChange('maePrice', e.target.value)}
                   placeholder="Worst price reached"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    warnings.maePrice ? 'border-yellow-500' : 'border-gray-600'
+                  }`}
                 />
-                <p className="text-xs text-gray-500 mt-1">Lowest price reached (longs) / highest price reached (shorts)</p>
+                {warnings.maePrice && <p className="text-yellow-400 text-xs mt-1">{warnings.maePrice}</p>}
+                {!warnings.maePrice && <p className="text-xs text-gray-500 mt-1">Lowest price reached (longs) / highest price reached (shorts)</p>}
               </div>
 
               <div>
@@ -1563,9 +1696,12 @@ export function TradeForm() {
                   value={formData.mfePrice}
                   onChange={(e) => handleChange('mfePrice', e.target.value)}
                   placeholder="Best price reached"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    warnings.mfePrice ? 'border-yellow-500' : 'border-gray-600'
+                  }`}
                 />
-                <p className="text-xs text-gray-500 mt-1">Best price reached in your favour</p>
+                {warnings.mfePrice && <p className="text-yellow-400 text-xs mt-1">{warnings.mfePrice}</p>}
+                {!warnings.mfePrice && <p className="text-xs text-gray-500 mt-1">Best price reached in your favour</p>}
               </div>
 
               <div>
@@ -1576,9 +1712,12 @@ export function TradeForm() {
                   value={formData.firstTouchWorstPrice}
                   onChange={(e) => handleChange('firstTouchWorstPrice', e.target.value)}
                   placeholder="Worst before reaction"
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    warnings.firstTouchWorstPrice ? 'border-yellow-500' : 'border-gray-600'
+                  }`}
                 />
-                <p className="text-xs text-gray-500 mt-1">Worst price before the initial move in your favour (leave empty if price never moved in your favour)</p>
+                {warnings.firstTouchWorstPrice && <p className="text-yellow-400 text-xs mt-1">{warnings.firstTouchWorstPrice}</p>}
+                {!warnings.firstTouchWorstPrice && <p className="text-xs text-gray-500 mt-1">Worst price before the initial move in your favour (leave empty if price never moved in your favour)</p>}
               </div>
 
               {/* Auto-derived exit price (read-only) */}
@@ -1758,8 +1897,13 @@ export function TradeForm() {
                                 value={exit.price || ''}
                                 onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
                                 placeholder="Exit price"
-                                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                                className={`w-full px-2 py-1.5 bg-gray-700 border rounded text-white text-sm ${
+                                  warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
+                                }`}
                               />
+                              {warnings.exitWarnings?.[exit.id] && (
+                                <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
+                              )}
                             </div>
                             <div className="w-24">
                               <label className="block text-xs text-gray-400 mb-1">Size</label>
@@ -2158,6 +2302,9 @@ export function TradeForm() {
                         levelType: '',
                         timeframe: '',
                         price: 0,
+                        priceFar: null,
+                        deepestPrice: null,
+                        penetrationPercent: null,
                         reaction: null,
                       };
                       setFormData((prev) => ({
@@ -2176,162 +2323,258 @@ export function TradeForm() {
 
                 {formData.levelSequence.length > 0 && (
                   <div className="space-y-2">
-                    {formData.levelSequence.map((level, index) => (
-                      <div
-                        key={level.id}
-                        className="flex items-center gap-2 p-2 bg-gray-750 rounded-lg"
-                      >
-                        {/* Position indicator */}
-                        <span className="text-xs text-gray-500 w-5 text-center">{index + 1}</span>
+                    {formData.levelSequence.map((level, index) => {
+                      const isZone = isZoneLevelType(level.levelType);
+                      const penetration = isZone && level.priceFar
+                        ? calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice)
+                        : null;
 
-                        {/* Level Type - autocomplete input */}
-                        <input
-                          type="text"
-                          value={level.levelType}
-                          onChange={(e) => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              levelSequence: prev.levelSequence.map((l, i) =>
-                                i === index ? { ...l, levelType: e.target.value } : l
-                              ),
-                            }));
-                          }}
-                          list="level-types-list"
-                          placeholder="Type"
-                          className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                        <datalist id="level-types-list">
-                          <option value="LCPB" />
-                          <option value="HOB" />
-                          <option value="LOB" />
-                          <option value="DHOB" />
-                          <option value="DLOB" />
-                          <option value="fib" />
-                          <option value="S/R" />
-                          <option value="EQ" />
-                          <option value="FVG" />
-                          <option value="OB" />
-                          <option value="BB" />
-                          <option value="IMB" />
-                        </datalist>
-
-                        {/* Timeframe select */}
-                        <select
-                          value={level.timeframe}
-                          onChange={(e) => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              levelSequence: prev.levelSequence.map((l, i) =>
-                                i === index ? { ...l, timeframe: e.target.value } : l
-                              ),
-                            }));
-                          }}
-                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      return (
+                        <div
+                          key={level.id}
+                          className="p-2 bg-gray-750 rounded-lg"
                         >
-                          <option value="">TF</option>
-                          <option value="M1">M1</option>
-                          <option value="M5">M5</option>
-                          <option value="M15">M15</option>
-                          <option value="M30">M30</option>
-                          <option value="H1">H1</option>
-                          <option value="H4">H4</option>
-                          <option value="D1">D1</option>
-                          <option value="W1">W1</option>
-                          <option value="MTF">MTF</option>
-                        </select>
+                          {/* Main row */}
+                          <div className="flex items-center gap-2">
+                            {/* Position indicator */}
+                            <span className="text-xs text-gray-500 w-5 text-center">{index + 1}</span>
 
-                        {/* Price input */}
-                        <input
-                          type="number"
-                          step="any"
-                          value={level.price || ''}
-                          onChange={(e) => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              levelSequence: prev.levelSequence.map((l, i) =>
-                                i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
-                              ),
-                            }));
-                          }}
-                          placeholder="Price"
-                          className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        />
+                            {/* Level Type - autocomplete input */}
+                            <input
+                              type="text"
+                              value={level.levelType}
+                              onChange={(e) => {
+                                const newType = e.target.value;
+                                const nowZone = isZoneLevelType(newType);
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? {
+                                      ...l,
+                                      levelType: newType,
+                                      // Clear zone fields if switching from zone to line
+                                      priceFar: nowZone ? l.priceFar : null,
+                                      deepestPrice: nowZone ? l.deepestPrice : null,
+                                      penetrationPercent: nowZone ? l.penetrationPercent : null,
+                                    } : l
+                                  ),
+                                }));
+                              }}
+                              list="level-types-list"
+                              placeholder="Type"
+                              className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            <datalist id="level-types-list">
+                              <option value="LCPB" />
+                              <option value="HOB" />
+                              <option value="LOB" />
+                              <option value="DHOB" />
+                              <option value="DLOB" />
+                              <option value="fib" />
+                              <option value="S/R" />
+                              <option value="EQ" />
+                              <option value="FVG" />
+                              <option value="OB" />
+                              <option value="BB" />
+                              <option value="IMB" />
+                            </datalist>
 
-                        {/* Reaction select */}
-                        <select
-                          value={level.reaction || ''}
-                          onChange={(e) => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              levelSequence: prev.levelSequence.map((l, i) =>
-                                i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
-                              ),
-                            }));
-                          }}
-                          className="flex-1 min-w-[100px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        >
-                          <option value="">— Reaction</option>
-                          <option value="bounced">Bounced</option>
-                          <option value="front_run">Front-run</option>
-                          <option value="swept_then_bounced">Swept then bounced</option>
-                          <option value="broken">Broken through</option>
-                        </select>
+                            {/* Timeframe select */}
+                            <select
+                              value={level.timeframe}
+                              onChange={(e) => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? { ...l, timeframe: e.target.value } : l
+                                  ),
+                                }));
+                              }}
+                              className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            >
+                              <option value="">TF</option>
+                              <option value="M1">M1</option>
+                              <option value="M5">M5</option>
+                              <option value="M15">M15</option>
+                              <option value="M30">M30</option>
+                              <option value="H1">H1</option>
+                              <option value="H4">H4</option>
+                              <option value="D1">D1</option>
+                              <option value="W1">W1</option>
+                              <option value="MTF">MTF</option>
+                            </select>
 
-                        {/* Reorder buttons */}
-                        <div className="flex flex-col">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (index === 0) return;
-                              setFormData((prev) => {
-                                const newSeq = [...prev.levelSequence];
-                                [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
-                                return { ...prev, levelSequence: newSeq };
-                              });
-                            }}
-                            disabled={index === 0}
-                            className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                          >
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                            </svg>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (index === formData.levelSequence.length - 1) return;
-                              setFormData((prev) => {
-                                const newSeq = [...prev.levelSequence];
-                                [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
-                                return { ...prev, levelSequence: newSeq };
-                              });
-                            }}
-                            disabled={index === formData.levelSequence.length - 1}
-                            className={`p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                          >
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                            </svg>
-                          </button>
+                            {/* Price inputs - different for zones vs lines */}
+                            {isZone ? (
+                              <>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={level.price || ''}
+                                  onChange={(e) => {
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.map((l, i) =>
+                                        i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                      ),
+                                    }));
+                                  }}
+                                  placeholder="Near edge"
+                                  title="Near edge (where price enters)"
+                                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                                <span className="text-gray-500 text-xs">→</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={level.priceFar || ''}
+                                  onChange={(e) => {
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.map((l, i) =>
+                                        i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
+                                      ),
+                                    }));
+                                  }}
+                                  placeholder="Far edge"
+                                  title="Far edge (opposite side of zone)"
+                                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                              </>
+                            ) : (
+                              <input
+                                type="number"
+                                step="any"
+                                value={level.price || ''}
+                                onChange={(e) => {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                    ),
+                                  }));
+                                }}
+                                placeholder="Price"
+                                className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                            )}
+
+                            {/* Reaction select */}
+                            <select
+                              value={level.reaction || ''}
+                              onChange={(e) => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
+                                  ),
+                                }));
+                              }}
+                              className="flex-1 min-w-[90px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            >
+                              <option value="">— Reaction</option>
+                              <option value="bounced">Bounced</option>
+                              <option value="front_run">Front-run</option>
+                              <option value="swept_then_bounced">Swept then bounced</option>
+                              <option value="broken">Broken through</option>
+                            </select>
+
+                            {/* Reorder buttons */}
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (index === 0) return;
+                                  setFormData((prev) => {
+                                    const newSeq = [...prev.levelSequence];
+                                    [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
+                                    return { ...prev, levelSequence: newSeq };
+                                  });
+                                }}
+                                disabled={index === 0}
+                                className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                              >
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (index === formData.levelSequence.length - 1) return;
+                                  setFormData((prev) => {
+                                    const newSeq = [...prev.levelSequence];
+                                    [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
+                                    return { ...prev, levelSequence: newSeq };
+                                  });
+                                }}
+                                disabled={index === formData.levelSequence.length - 1}
+                                className={`p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                              >
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </button>
+                            </div>
+
+                            {/* Remove button */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.filter((_, i) => i !== index),
+                                }));
+                              }}
+                              className="p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+
+                          {/* Zone-only: Deepest price row */}
+                          {isZone && level.priceFar && (
+                            <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-gray-600">
+                              <span className="text-xs text-gray-400 w-20">Deepest price:</span>
+                              <input
+                                type="number"
+                                step="any"
+                                value={level.deepestPrice || ''}
+                                onChange={(e) => {
+                                  const deepest = parseFloat(e.target.value) || null;
+                                  const newPenetration = calculatePenetrationPercent(level.price, level.priceFar!, deepest);
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? {
+                                        ...l,
+                                        deepestPrice: deepest,
+                                        penetrationPercent: newPenetration,
+                                      } : l
+                                    ),
+                                  }));
+                                }}
+                                placeholder="Deepest in zone"
+                                title="Extreme price reached inside zone before turn"
+                                className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                              {penetration !== null && (
+                                <span className={`text-xs px-2 py-0.5 rounded ${
+                                  penetration >= 75 ? 'bg-red-500/20 text-red-400' :
+                                  penetration >= 50 ? 'bg-orange-500/20 text-orange-400' :
+                                  penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
+                                  'bg-green-500/20 text-green-400'
+                                }`}>
+                                  {penetration}% penetrated
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
-
-                        {/* Remove button */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              levelSequence: prev.levelSequence.filter((_, i) => i !== index),
-                            }));
-                          }}
-                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 

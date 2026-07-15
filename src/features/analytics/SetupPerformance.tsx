@@ -22,6 +22,10 @@ import {
   getPairwiseOrderAnalysis,
   getEntryDepthAnalysis,
   getLevelSequenceInsights,
+  getZonePenetrationStats,
+  getZoneEntryPlacementInsights,
+  getLevelsInsideZonesAnalysis,
+  getZonePenetrationInsights,
 } from '../../utils';
 
 interface Props {
@@ -64,6 +68,16 @@ export function SetupPerformance({ trades }: Props) {
   const levelSequenceInsights = useMemo(
     () => getLevelSequenceInsights(levelTypeStats, pairwiseStats, entryDepthAnalysis),
     [levelTypeStats, pairwiseStats, entryDepthAnalysis]
+  );
+
+  // Zone Penetration Analytics
+  const zonePenetrationStats = useMemo(() => getZonePenetrationStats(trades), [trades]);
+  // Note: getPenetrationVsOutcome is available for scatter plot visualization
+  const zoneEntryPlacement = useMemo(() => getZoneEntryPlacementInsights(trades), [trades]);
+  const levelsInsideZones = useMemo(() => getLevelsInsideZonesAnalysis(trades), [trades]);
+  const zonePenetrationInsights = useMemo(
+    () => getZonePenetrationInsights(zonePenetrationStats, zoneEntryPlacement, levelsInsideZones),
+    [zonePenetrationStats, zoneEntryPlacement, levelsInsideZones]
   );
 
   const sortedTagStats = useMemo(() => {
@@ -613,6 +627,197 @@ export function SetupPerformance({ trades }: Props) {
               <h4 className="text-sm font-medium text-cyan-400 mb-2">Level Sequence Insights</h4>
               <ul className="space-y-1">
                 {levelSequenceInsights.map((insight, i) => (
+                  <li key={i} className="text-sm text-gray-300">{insight}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Section 5: Zone Penetration Analysis */}
+      {zonePenetrationStats.zonesWithPenetration > 0 && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-medium text-white">Zone Penetration</h3>
+            <p className="text-sm text-gray-400">
+              How deep does price penetrate into your zones before turning?
+            </p>
+          </div>
+
+          {/* Zone Penetration Distribution */}
+          {zonePenetrationStats.overall.some(b => b.count > 0) && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Penetration Distribution</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                Based on {zonePenetrationStats.zonesWithPenetration} zones with penetration data
+              </p>
+              <div className="flex gap-2 h-24">
+                {zonePenetrationStats.overall.map((bucket) => (
+                  <div key={bucket.bucket} className="flex-1 flex flex-col items-center">
+                    <div className="flex-1 w-full flex items-end justify-center">
+                      <div
+                        className={`w-full max-w-12 rounded-t ${
+                          bucket.bucketMax <= 25 ? 'bg-green-500' :
+                          bucket.bucketMax <= 50 ? 'bg-yellow-500' :
+                          bucket.bucketMax <= 75 ? 'bg-orange-500' :
+                          'bg-red-500'
+                        }`}
+                        style={{ height: `${Math.max(4, bucket.percent)}%` }}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-400 mt-1">{bucket.bucket}</div>
+                    <div className="text-xs text-gray-500">{bucket.count}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Zone Type Breakdown */}
+          {zonePenetrationStats.byType.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">By Zone Type</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-700 bg-gray-750">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Zone Type</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Count</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Avg Penetration</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Held</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Broken</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {zonePenetrationStats.byType.slice(0, 8).map((zt) => (
+                      <tr
+                        key={zt.zoneType}
+                        className={`border-b border-gray-700 hover:bg-gray-750 ${zt.count < 5 ? 'opacity-50' : ''}`}
+                      >
+                        <td className="px-4 py-2 text-sm font-medium text-white">{zt.zoneType}</td>
+                        <td className="px-4 py-2 text-sm text-gray-300 text-right">
+                          {zt.count}
+                          {zt.count < 5 && <span className="text-gray-500 ml-1">*</span>}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-right">
+                          <span className={`${
+                            zt.avgPenetration >= 75 ? 'text-red-400' :
+                            zt.avgPenetration >= 50 ? 'text-orange-400' :
+                            zt.avgPenetration >= 25 ? 'text-yellow-400' :
+                            'text-green-400'
+                          }`}>
+                            {zt.avgPenetration}%
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-sm text-green-400 text-right">{zt.heldCount}</td>
+                        <td className="px-4 py-2 text-sm text-red-400 text-right">{zt.brokenCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {zonePenetrationStats.byType.some(zt => zt.count < 5) && (
+                <p className="text-xs text-gray-500 mt-2">* Low sample size (n &lt; 5) - stats may not be reliable</p>
+              )}
+            </div>
+          )}
+
+          {/* Entry Placement in Zones */}
+          {zoneEntryPlacement.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Entry vs Turn Depth</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                Where you enter vs where price typically turns in each zone type
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {zoneEntryPlacement.slice(0, 6).map((ep) => (
+                  <div
+                    key={ep.zoneType}
+                    className={`bg-gray-750 rounded-lg p-3 ${ep.count < 5 ? 'opacity-50' : ''}`}
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-medium text-white">{ep.zoneType}</span>
+                      <span className="text-xs text-gray-500">n={ep.count}</span>
+                    </div>
+                    <div className="flex gap-4 text-sm">
+                      <div>
+                        <span className="text-xs text-gray-400">Entry:</span>
+                        <span className="ml-1 text-amber-400">{ep.avgEntryDepthPercent}%</span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-gray-400">Turn:</span>
+                        <span className="ml-1 text-blue-400">{ep.avgTurnDepthPercent}%</span>
+                      </div>
+                      {ep.shouldEnterDeeper && ep.count >= 5 && (
+                        <div className="text-xs text-yellow-400">
+                          ↓ Enter {ep.potentialImprovement}% deeper
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Levels Inside Zones */}
+          {levelsInsideZones.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Levels Inside Zones</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                When a line level sits inside a zone, where does the turn happen?
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-700 bg-gray-750">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Zone</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Inner Level</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">n</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Turn @ Inner</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Turn @ Edge</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Elsewhere</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {levelsInsideZones.slice(0, 6).map((li, idx) => (
+                      <tr
+                        key={idx}
+                        className={`border-b border-gray-700 hover:bg-gray-750 ${li.count < 5 ? 'opacity-50' : ''}`}
+                      >
+                        <td className="px-4 py-2 text-sm text-gray-300">{li.zoneType}</td>
+                        <td className="px-4 py-2 text-sm text-gray-300">{li.innerLevelType}</td>
+                        <td className="px-4 py-2 text-sm text-gray-400 text-right">
+                          {li.count}
+                          {li.count < 5 && <span className="text-gray-500 ml-1">*</span>}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-green-400 text-right">
+                          {li.turnAtInnerPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-blue-400 text-right">
+                          {li.turnAtZoneEdgePercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-400 text-right">
+                          {li.turnElsewherePercent.toFixed(0)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {levelsInsideZones.some(li => li.count < 5) && (
+                <p className="text-xs text-gray-500 mt-2">* Low sample size (n &lt; 5) - stats may not be reliable</p>
+              )}
+            </div>
+          )}
+
+          {/* Zone Penetration Insights */}
+          {zonePenetrationInsights.length > 0 && (
+            <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-purple-400 mb-2">Zone Penetration Insights</h4>
+              <ul className="space-y-1">
+                {zonePenetrationInsights.map((insight, i) => (
                   <li key={i} className="text-sm text-gray-300">{insight}</li>
                 ))}
               </ul>

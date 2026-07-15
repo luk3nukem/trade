@@ -530,6 +530,30 @@ class TradingDiaryDB extends Dexie {
           });
       });
 
+    // Version 20 - Add priceFar field to level entries for zone levels
+    this.version(20)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Add priceFar to all existing level entries
+            if (trade.levelSequence && Array.isArray(trade.levelSequence)) {
+              trade.levelSequence = trade.levelSequence.map((level: { priceFar?: number | null }) => ({
+                ...level,
+                priceFar: level.priceFar ?? null,
+              }));
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

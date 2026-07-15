@@ -14,6 +14,7 @@ import type {
   LevelEntry,
   LevelReaction,
 } from '../types';
+import { ZONE_LEVEL_TYPES } from '../types';
 import { deriveSession, calculateHoldDuration } from './tradeCalculations';
 
 // Pair configuration with weights and pip values
@@ -147,11 +148,56 @@ function generateLevelSequence(
       reaction = Math.random() > 0.3 ? 'bounced' : 'front_run';
     }
 
+    // Pick level type
+    const levelType = randomElement(LEVEL_TYPES);
+
+    // Determine if this is a zone type (has priceFar)
+    const isZone = ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
+
+    // For zones, generate far edge and penetration data
+    let priceFar: number | null = null;
+    let deepestPrice: number | null = null;
+    let penetrationPercent: number | null = null;
+
+    if (isZone) {
+      // Zone width is typically 10-40% of stop distance
+      const zoneWidth = stopDistance * randomBetween(0.1, 0.4);
+
+      // Far edge is deeper than near edge
+      priceFar = direction === 'long'
+        ? roundToDecimals(levelPrice - zoneWidth, priceDecimals)
+        : roundToDecimals(levelPrice + zoneWidth, priceDecimals);
+
+      // If this level was tested (has a reaction), generate penetration data
+      if (reaction !== null && reaction !== 'front_run') {
+        // Penetration varies based on reaction
+        let penetrationPct: number;
+        if (reaction === 'bounced') {
+          penetrationPct = randomBetween(5, 45); // Shallow penetration for clean bounce
+        } else if (reaction === 'swept_then_bounced') {
+          penetrationPct = randomBetween(40, 90); // Deep penetration before turn
+        } else {
+          penetrationPct = 100; // Broken = full penetration
+        }
+
+        penetrationPercent = Math.round(penetrationPct);
+
+        // Calculate deepest price from penetration
+        const actualPenetration = zoneWidth * (penetrationPct / 100);
+        deepestPrice = direction === 'long'
+          ? roundToDecimals(levelPrice - actualPenetration, priceDecimals)
+          : roundToDecimals(levelPrice + actualPenetration, priceDecimals);
+      }
+    }
+
     levels.push({
       id: uuidv4(),
-      levelType: randomElement(LEVEL_TYPES),
+      levelType,
       timeframe: randomElement(LEVEL_TIMEFRAMES),
       price: levelPrice,
+      priceFar,
+      deepestPrice,
+      penetrationPercent,
       reaction,
     });
   }
