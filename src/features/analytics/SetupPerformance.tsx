@@ -18,6 +18,10 @@ import {
   getConfluenceCountAnalysis,
   getTagCombinationAnalysis,
   getSetupTagInsights,
+  getLevelTypeReactionStats,
+  getPairwiseOrderAnalysis,
+  getEntryDepthAnalysis,
+  getLevelSequenceInsights,
 } from '../../utils';
 
 interface Props {
@@ -51,6 +55,15 @@ export function SetupPerformance({ trades }: Props) {
   const insights = useMemo(
     () => getSetupTagInsights(tagStats, confluenceStats, combinationStats),
     [tagStats, confluenceStats, combinationStats]
+  );
+
+  // Level Sequence Analytics
+  const levelTypeStats = useMemo(() => getLevelTypeReactionStats(trades), [trades]);
+  const pairwiseStats = useMemo(() => getPairwiseOrderAnalysis(trades), [trades]);
+  const entryDepthAnalysis = useMemo(() => getEntryDepthAnalysis(trades), [trades]);
+  const levelSequenceInsights = useMemo(
+    () => getLevelSequenceInsights(levelTypeStats, pairwiseStats, entryDepthAnalysis),
+    [levelTypeStats, pairwiseStats, entryDepthAnalysis]
   );
 
   const sortedTagStats = useMemo(() => {
@@ -384,10 +397,234 @@ export function SetupPerformance({ trades }: Props) {
         )}
       </div>
 
+      {/* Section 4: Level Sequences Analysis */}
+      {entryDepthAnalysis.tradesWithData > 0 && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-medium text-white">Level Sequences</h3>
+            <p className="text-sm text-gray-400">
+              How price interacts with levels in your zones
+            </p>
+          </div>
+
+          {/* Data count note */}
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-6">
+            <p className="text-sm text-amber-400">
+              Showing {entryDepthAnalysis.tradesWithData} of {entryDepthAnalysis.totalTrades} trades with level sequence data.
+              {entryDepthAnalysis.tradesWithData < entryDepthAnalysis.totalTrades &&
+                ' Log level sequences on more trades for better analysis.'}
+            </p>
+          </div>
+
+          {/* Level Type × Timeframe Reaction Table */}
+          {levelTypeStats.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Level Type × Timeframe Reactions</h4>
+              <p className="text-xs text-gray-500 mb-3">Which of your level types actually hold?</p>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-700 bg-gray-750">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Level</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Count</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
+                        <span className="text-green-400">Bounced</span>
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
+                        <span className="text-blue-400">Front-run</span>
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
+                        <span className="text-amber-400">Swept</span>
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
+                        <span className="text-red-400">Broken</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {levelTypeStats.slice(0, 10).map((stat) => (
+                      <tr
+                        key={stat.key}
+                        className={`border-b border-gray-700 hover:bg-gray-750 ${stat.count < 5 ? 'opacity-50' : ''}`}
+                      >
+                        <td className="px-4 py-2 text-sm font-medium text-white">{stat.key}</td>
+                        <td className="px-4 py-2 text-sm text-gray-300 text-right">
+                          {stat.count}
+                          {stat.count < 5 && <span className="text-gray-500 ml-1">*</span>}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-green-400 text-right">
+                          {stat.bouncedPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-blue-400 text-right">
+                          {stat.frontRunPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-amber-400 text-right">
+                          {stat.sweptPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-red-400 text-right">
+                          {stat.brokenPercent.toFixed(0)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {levelTypeStats.some(s => s.count < 5) && (
+                <p className="text-xs text-gray-500 mt-2">* Low sample size - stats may not be reliable</p>
+              )}
+            </div>
+          )}
+
+          {/* Pairwise Order Analysis */}
+          {pairwiseStats.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Pairwise Order Analysis</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                When level A sits in front of level B, what happens?
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-700 bg-gray-750">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Front Level</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Behind Level</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">n</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Front Holds</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Behind Holds</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Both Broken</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pairwiseStats.slice(0, 8).map((stat, idx) => (
+                      <tr
+                        key={idx}
+                        className={`border-b border-gray-700 hover:bg-gray-750 ${stat.count < 5 ? 'opacity-50' : ''}`}
+                      >
+                        <td className="px-4 py-2 text-sm text-gray-300">{stat.frontLevel}</td>
+                        <td className="px-4 py-2 text-sm text-gray-300">{stat.behindLevel}</td>
+                        <td className="px-4 py-2 text-sm text-gray-400 text-right">
+                          {stat.count}
+                          {stat.count < 5 && <span className="text-gray-500 ml-1">*</span>}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-green-400 text-right">
+                          {stat.frontHoldsPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-blue-400 text-right">
+                          {stat.behindHoldsPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-red-400 text-right">
+                          {stat.bothBrokenPercent.toFixed(0)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {pairwiseStats.some(s => s.count < 5) && (
+                <p className="text-xs text-gray-500 mt-2">* Low sample size (n &lt; 5) - stats may not be reliable</p>
+              )}
+            </div>
+          )}
+
+          {/* Entry Depth Analysis */}
+          {entryDepthAnalysis.depthDistribution.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Entry Depth Analysis</h4>
+              <p className="text-xs text-gray-500 mb-4">
+                Where does price actually turn vs. where do you enter?
+              </p>
+
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Avg Turn Position</p>
+                  <p className="text-xl font-bold text-blue-400">
+                    {entryDepthAnalysis.avgTurnPosition.toFixed(1)}
+                  </p>
+                  <p className="text-xs text-gray-500">level in sequence</p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Avg Entry Position</p>
+                  <p className="text-xl font-bold text-amber-400">
+                    {entryDepthAnalysis.avgEntryPosition.toFixed(1)}
+                  </p>
+                  <p className="text-xs text-gray-500">level in sequence</p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Position Gap</p>
+                  <p className={`text-xl font-bold ${entryDepthAnalysis.positionGap > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    {entryDepthAnalysis.positionGap > 0 ? '+' : ''}{entryDepthAnalysis.positionGap.toFixed(1)}
+                  </p>
+                  <p className="text-xs text-gray-500">{entryDepthAnalysis.positionGap > 0 ? 'entering too shallow' : 'well-timed'}</p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Could Improve</p>
+                  <p className="text-xl font-bold text-purple-400">
+                    {entryDepthAnalysis.couldImprovePercent.toFixed(0)}%
+                  </p>
+                  <p className="text-xs text-gray-500">of trades</p>
+                </div>
+              </div>
+
+              {/* Turn Depth Distribution */}
+              <div className="mb-4">
+                <p className="text-xs text-gray-400 mb-2">Turn Depth Distribution</p>
+                <div className="flex gap-2">
+                  {entryDepthAnalysis.depthDistribution.filter(d => d.turnCount > 0 || d.entryCount > 0).slice(0, 5).map((d) => (
+                    <div key={d.position} className="flex-1 text-center">
+                      <div className="text-xs text-gray-500 mb-1">{d.position === 1 ? '1st' : d.position === 2 ? '2nd' : d.position === 3 ? '3rd' : `${d.position}th`}</div>
+                      <div className="relative h-24 bg-gray-700 rounded overflow-hidden">
+                        {/* Turn bar */}
+                        <div
+                          className="absolute bottom-0 left-0 w-1/2 bg-blue-500"
+                          style={{ height: `${d.turnPercent}%` }}
+                        />
+                        {/* Entry bar */}
+                        <div
+                          className="absolute bottom-0 right-0 w-1/2 bg-amber-500"
+                          style={{ height: `${d.entryPercent}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-gray-400 mt-1">
+                        <span className="text-blue-400">{d.turnPercent.toFixed(0)}%</span>
+                        {' / '}
+                        <span className="text-amber-400">{d.entryPercent.toFixed(0)}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-center gap-4 mt-2 text-xs">
+                  <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 bg-blue-500 rounded" />
+                    <span className="text-gray-400">Turns here</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <div className="w-3 h-3 bg-amber-500 rounded" />
+                    <span className="text-gray-400">You enter here</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Level Sequence Insights */}
+          {levelSequenceInsights.length > 0 && (
+            <div className="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-cyan-400 mb-2">Level Sequence Insights</h4>
+              <ul className="space-y-1">
+                {levelSequenceInsights.map((insight, i) => (
+                  <li key={i} className="text-sm text-gray-300">{insight}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Insights */}
       {insights.length > 0 && (
         <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
-          <h4 className="text-sm font-medium text-blue-400 mb-2">Insights</h4>
+          <h4 className="text-sm font-medium text-blue-400 mb-2">Setup Tag Insights</h4>
           <ul className="space-y-1">
             {insights.map((insight, i) => (
               <li key={i} className="text-sm text-gray-300">

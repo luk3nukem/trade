@@ -4224,3 +4224,407 @@ export function getFirstTouchInsights(
 
   return insights;
 }
+
+// ============================================
+// LEVEL SEQUENCE ANALYSIS
+// ============================================
+
+/**
+ * Level type + timeframe reaction statistics
+ */
+export interface LevelTypeReactionStats {
+  levelType: string;
+  timeframe: string;
+  key: string; // Combined levelType + timeframe for display
+  count: number;
+  bouncedCount: number;
+  frontRunCount: number;
+  sweptCount: number;
+  brokenCount: number;
+  bouncedPercent: number;
+  frontRunPercent: number;
+  sweptPercent: number;
+  brokenPercent: number;
+}
+
+/**
+ * Pairwise order analysis for front/behind level patterns
+ */
+export interface PairwiseOrderStats {
+  frontLevel: string;
+  behindLevel: string;
+  count: number;
+  frontHoldsCount: number;
+  behindHoldsCount: number;
+  bothBrokenCount: number;
+  frontHoldsPercent: number;
+  behindHoldsPercent: number;
+  bothBrokenPercent: number;
+}
+
+/**
+ * Entry depth analysis stats
+ */
+export interface EntryDepthStats {
+  position: number;
+  turnCount: number;
+  turnPercent: number;
+  entryCount: number;
+  entryPercent: number;
+}
+
+/**
+ * Entry vs turn depth analysis
+ */
+export interface EntryVsTurnAnalysis {
+  avgTurnPosition: number;
+  avgEntryPosition: number;
+  positionGap: number;
+  tradesWithData: number;
+  totalTrades: number;
+  depthDistribution: EntryDepthStats[];
+  couldImprovePercent: number;
+  avgAdverseReduction: number | null;
+}
+
+/**
+ * Get level type × timeframe reaction statistics
+ */
+export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReactionStats[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.levelSequence &&
+    t.levelSequence.length > 0
+  );
+
+  // Group by levelType + timeframe
+  const statsMap = new Map<string, {
+    levelType: string;
+    timeframe: string;
+    total: number;
+    bounced: number;
+    frontRun: number;
+    swept: number;
+    broken: number;
+  }>();
+
+  for (const trade of relevantTrades) {
+    for (const level of trade.levelSequence) {
+      if (!level.reaction) continue;
+
+      const key = `${level.timeframe || '—'} ${level.levelType || 'Unknown'}`;
+      if (!statsMap.has(key)) {
+        statsMap.set(key, {
+          levelType: level.levelType || 'Unknown',
+          timeframe: level.timeframe || '—',
+          total: 0,
+          bounced: 0,
+          frontRun: 0,
+          swept: 0,
+          broken: 0,
+        });
+      }
+
+      const stats = statsMap.get(key)!;
+      stats.total++;
+
+      switch (level.reaction) {
+        case 'bounced': stats.bounced++; break;
+        case 'front_run': stats.frontRun++; break;
+        case 'swept_then_bounced': stats.swept++; break;
+        case 'broken': stats.broken++; break;
+      }
+    }
+  }
+
+  const results: LevelTypeReactionStats[] = [];
+  for (const [key, stats] of statsMap.entries()) {
+    results.push({
+      levelType: stats.levelType,
+      timeframe: stats.timeframe,
+      key,
+      count: stats.total,
+      bouncedCount: stats.bounced,
+      frontRunCount: stats.frontRun,
+      sweptCount: stats.swept,
+      brokenCount: stats.broken,
+      bouncedPercent: (stats.bounced / stats.total) * 100,
+      frontRunPercent: (stats.frontRun / stats.total) * 100,
+      sweptPercent: (stats.swept / stats.total) * 100,
+      brokenPercent: (stats.broken / stats.total) * 100,
+    });
+  }
+
+  return results.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Get pairwise order analysis - when level A is in front of level B
+ */
+export function getPairwiseOrderAnalysis(trades: TradeRecord[]): PairwiseOrderStats[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.levelSequence &&
+    t.levelSequence.length >= 2
+  );
+
+  // Track pairwise stats
+  const pairMap = new Map<string, {
+    frontLevel: string;
+    behindLevel: string;
+    count: number;
+    frontHolds: number;
+    behindHolds: number;
+    bothBroken: number;
+  }>();
+
+  for (const trade of relevantTrades) {
+    const seq = trade.levelSequence;
+
+    // For each pair of adjacent levels
+    for (let i = 0; i < seq.length - 1; i++) {
+      const front = seq[i];
+      const behind = seq[i + 1];
+
+      const frontKey = `${front.timeframe || ''} ${front.levelType || 'Unknown'}`.trim();
+      const behindKey = `${behind.timeframe || ''} ${behind.levelType || 'Unknown'}`.trim();
+      const pairKey = `${frontKey} → ${behindKey}`;
+
+      if (!pairMap.has(pairKey)) {
+        pairMap.set(pairKey, {
+          frontLevel: frontKey,
+          behindLevel: behindKey,
+          count: 0,
+          frontHolds: 0,
+          behindHolds: 0,
+          bothBroken: 0,
+        });
+      }
+
+      const stats = pairMap.get(pairKey)!;
+      stats.count++;
+
+      // Determine outcome
+      const frontHeld = front.reaction === 'bounced' || front.reaction === 'front_run';
+      const behindHeld = behind.reaction === 'bounced' || behind.reaction === 'swept_then_bounced';
+      const frontBroken = front.reaction === 'broken' || front.reaction === 'swept_then_bounced';
+      const behindBroken = behind.reaction === 'broken';
+
+      if (frontHeld) {
+        stats.frontHolds++;
+      } else if (frontBroken && behindHeld) {
+        stats.behindHolds++;
+      } else if (frontBroken && behindBroken) {
+        stats.bothBroken++;
+      }
+    }
+  }
+
+  const results: PairwiseOrderStats[] = [];
+  for (const [, stats] of pairMap.entries()) {
+    if (stats.count >= 2) { // Minimum sample size
+      results.push({
+        frontLevel: stats.frontLevel,
+        behindLevel: stats.behindLevel,
+        count: stats.count,
+        frontHoldsCount: stats.frontHolds,
+        behindHoldsCount: stats.behindHolds,
+        bothBrokenCount: stats.bothBroken,
+        frontHoldsPercent: (stats.frontHolds / stats.count) * 100,
+        behindHoldsPercent: (stats.behindHolds / stats.count) * 100,
+        bothBrokenPercent: (stats.bothBroken / stats.count) * 100,
+      });
+    }
+  }
+
+  return results.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Get entry depth analysis - where price turns vs where trader enters
+ */
+export function getEntryDepthAnalysis(trades: TradeRecord[]): EntryVsTurnAnalysis {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.levelSequence &&
+    t.levelSequence.length > 0
+  );
+
+  const totalTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false).length;
+
+  if (relevantTrades.length === 0) {
+    return {
+      avgTurnPosition: 0,
+      avgEntryPosition: 0,
+      positionGap: 0,
+      tradesWithData: 0,
+      totalTrades,
+      depthDistribution: [],
+      couldImprovePercent: 0,
+      avgAdverseReduction: null,
+    };
+  }
+
+  // Track turn positions and entry positions
+  const turnPositions: number[] = [];
+  const entryPositions: number[] = [];
+  const depthCounts: { [pos: number]: { turns: number; entries: number } } = {};
+  let couldImproveCount = 0;
+  let totalAdverseReduction = 0;
+  let adverseReductionCount = 0;
+
+  for (const trade of relevantTrades) {
+    const seq = trade.levelSequence;
+
+    // Find turn position (first level that bounced or swept_then_bounced)
+    let turnPos = -1;
+    for (let i = 0; i < seq.length; i++) {
+      if (seq[i].reaction === 'bounced' || seq[i].reaction === 'swept_then_bounced') {
+        turnPos = i + 1; // 1-indexed
+        break;
+      }
+    }
+
+    if (turnPos > 0) {
+      turnPositions.push(turnPos);
+      if (!depthCounts[turnPos]) depthCounts[turnPos] = { turns: 0, entries: 0 };
+      depthCounts[turnPos].turns++;
+    }
+
+    // Find entry position (closest level to entry price)
+    let entryPos = 1;
+    let minDistance = Infinity;
+    for (let i = 0; i < seq.length; i++) {
+      const distance = Math.abs(trade.entryPrice - seq[i].price);
+      if (distance < minDistance) {
+        minDistance = distance;
+        entryPos = i + 1;
+      }
+    }
+
+    entryPositions.push(entryPos);
+    if (!depthCounts[entryPos]) depthCounts[entryPos] = { turns: 0, entries: 0 };
+    depthCounts[entryPos].entries++;
+
+    // Check if entering deeper would have helped
+    if (turnPos > entryPos) {
+      couldImproveCount++;
+
+      // Calculate potential adverse reduction using first-touch data
+      if (trade.firstTouchWorstPrice !== null && trade.stopDistance) {
+        const currentAdverse = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice) / trade.stopDistance;
+        // Estimate reduced adverse (assume entering at turn level reduces adverse proportionally)
+        const estimatedReduction = currentAdverse * ((turnPos - entryPos) / turnPos);
+        totalAdverseReduction += estimatedReduction;
+        adverseReductionCount++;
+      }
+    }
+  }
+
+  // Calculate averages
+  const avgTurnPosition = turnPositions.length > 0
+    ? turnPositions.reduce((a, b) => a + b, 0) / turnPositions.length
+    : 0;
+  const avgEntryPosition = entryPositions.length > 0
+    ? entryPositions.reduce((a, b) => a + b, 0) / entryPositions.length
+    : 0;
+
+  // Build depth distribution
+  const maxPos = Math.max(...Object.keys(depthCounts).map(Number), 5);
+  const depthDistribution: EntryDepthStats[] = [];
+  for (let pos = 1; pos <= maxPos; pos++) {
+    const data = depthCounts[pos] || { turns: 0, entries: 0 };
+    depthDistribution.push({
+      position: pos,
+      turnCount: data.turns,
+      turnPercent: turnPositions.length > 0 ? (data.turns / turnPositions.length) * 100 : 0,
+      entryCount: data.entries,
+      entryPercent: entryPositions.length > 0 ? (data.entries / entryPositions.length) * 100 : 0,
+    });
+  }
+
+  return {
+    avgTurnPosition: Number(avgTurnPosition.toFixed(1)),
+    avgEntryPosition: Number(avgEntryPosition.toFixed(1)),
+    positionGap: Number((avgTurnPosition - avgEntryPosition).toFixed(1)),
+    tradesWithData: relevantTrades.length,
+    totalTrades,
+    depthDistribution,
+    couldImprovePercent: relevantTrades.length > 0 ? (couldImproveCount / relevantTrades.length) * 100 : 0,
+    avgAdverseReduction: adverseReductionCount > 0 ? totalAdverseReduction / adverseReductionCount : null,
+  };
+}
+
+/**
+ * Generate insights from level sequence analysis
+ */
+export function getLevelSequenceInsights(
+  levelTypeStats: LevelTypeReactionStats[],
+  pairwiseStats: PairwiseOrderStats[],
+  entryDepthAnalysis: EntryVsTurnAnalysis
+): string[] {
+  const insights: string[] = [];
+
+  // Level type insight - find best performing level type
+  const goodLevels = levelTypeStats.filter(l => l.count >= 5 && (l.bouncedPercent + l.sweptPercent) >= 60);
+  if (goodLevels.length > 0) {
+    const best = goodLevels.sort((a, b) =>
+      (b.bouncedPercent + b.sweptPercent) - (a.bouncedPercent + a.sweptPercent)
+    )[0];
+    const holdRate = (best.bouncedPercent + best.sweptPercent).toFixed(0);
+    insights.push(
+      `Your ${best.key} levels hold ${holdRate}% of the time (${best.bouncedCount} bounced, ${best.sweptCount} swept then bounced).`
+    );
+  }
+
+  // Pairwise insight
+  const significantPairs = pairwiseStats.filter(p => p.count >= 5);
+  if (significantPairs.length > 0) {
+    const bestPair = significantPairs.sort((a, b) => b.behindHoldsPercent - a.behindHoldsPercent)[0];
+    if (bestPair.behindHoldsPercent > 40 && bestPair.frontHoldsPercent < 40) {
+      insights.push(
+        `When ${bestPair.frontLevel} sits in front of ${bestPair.behindLevel} (n=${bestPair.count}): ` +
+        `the front holds ${bestPair.frontHoldsPercent.toFixed(0)}%, price sweeps and bounces from behind ` +
+        `${bestPair.behindHoldsPercent.toFixed(0)}%, both break ${bestPair.bothBrokenPercent.toFixed(0)}%. ` +
+        `Consider entering at the ${bestPair.behindLevel}, not the ${bestPair.frontLevel}.`
+      );
+    }
+  }
+
+  // Entry depth insight
+  if (entryDepthAnalysis.tradesWithData >= 10 && entryDepthAnalysis.positionGap > 0.3) {
+    const mostCommonTurn = entryDepthAnalysis.depthDistribution
+      .filter(d => d.turnCount > 0)
+      .sort((a, b) => b.turnPercent - a.turnPercent)[0];
+
+    if (mostCommonTurn) {
+      insights.push(
+        `Your zones most often resolve at the ${getOrdinal(mostCommonTurn.position)} level ` +
+        `(${mostCommonTurn.turnPercent.toFixed(0)}% of trades), but you typically enter at the ` +
+        `${getOrdinal(Math.round(entryDepthAnalysis.avgEntryPosition))} — you're entering too shallow. ` +
+        `Entering one level deeper would have improved entry price on ${entryDepthAnalysis.couldImprovePercent.toFixed(0)}% of trades.`
+      );
+
+      if (entryDepthAnalysis.avgAdverseReduction !== null) {
+        insights.push(
+          `Entering at the typical turn depth would reduce your first-touch adverse move by approximately ` +
+          `${(entryDepthAnalysis.avgAdverseReduction * 100).toFixed(0)}%.`
+        );
+      }
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * Helper to get ordinal suffix
+ */
+function getOrdinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}

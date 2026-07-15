@@ -19,6 +19,8 @@ import type {
   Screenshot,
   Account,
   Strategy,
+  LevelEntry,
+  LevelReaction,
 } from '../../types';
 import {
   deriveSession,
@@ -60,6 +62,7 @@ const getInitialFormData = (): TradeFormData => ({
   entryTF: '',
   htfBias: '',
   marketCondition: '',
+  levelSequence: [],
   tradeTaken: true,
   notTakenReason: '',
   emotionalState: null,
@@ -240,6 +243,7 @@ export function TradeForm() {
             entryTF: trade.entryTF || '',
             htfBias: trade.htfBias || '',
             marketCondition: trade.marketCondition || '',
+            levelSequence: trade.levelSequence || [],
             tradeTaken: trade.tradeTaken ?? true,
             notTakenReason: trade.notTakenReason || '',
             emotionalState: trade.emotionalState ?? null,
@@ -669,6 +673,7 @@ export function TradeForm() {
         entryTF: formData.entryTF || undefined,
         htfBias: formData.htfBias || undefined,
         marketCondition: formData.marketCondition || undefined,
+        levelSequence: formData.levelSequence,
         tradeTaken: formData.tradeTaken,
         notTakenReason: !formData.tradeTaken ? formData.notTakenReason.trim() : '',
         emotionalState: formData.emotionalState ?? undefined,
@@ -2140,6 +2145,202 @@ export function TradeForm() {
                   <p className="text-xs text-gray-500 mt-1">Overall HTF conditions</p>
                 </div>
               </div>
+
+              {/* Level Sequence */}
+              <div className="border-t border-gray-700 pt-4 mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-gray-300">Level Sequence</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newLevel: LevelEntry = {
+                        id: uuidv4(),
+                        levelType: '',
+                        timeframe: '',
+                        price: 0,
+                        reaction: null,
+                      };
+                      setFormData((prev) => ({
+                        ...prev,
+                        levelSequence: [...prev.levelSequence, newLevel],
+                      }));
+                    }}
+                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg"
+                  >
+                    + Add Level
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mb-3">
+                  Optional — the levels in your zone, ordered shallowest to deepest (the order price meets them)
+                </p>
+
+                {formData.levelSequence.length > 0 && (
+                  <div className="space-y-2">
+                    {formData.levelSequence.map((level, index) => (
+                      <div
+                        key={level.id}
+                        className="flex items-center gap-2 p-2 bg-gray-750 rounded-lg"
+                      >
+                        {/* Position indicator */}
+                        <span className="text-xs text-gray-500 w-5 text-center">{index + 1}</span>
+
+                        {/* Level Type - autocomplete input */}
+                        <input
+                          type="text"
+                          value={level.levelType}
+                          onChange={(e) => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              levelSequence: prev.levelSequence.map((l, i) =>
+                                i === index ? { ...l, levelType: e.target.value } : l
+                              ),
+                            }));
+                          }}
+                          list="level-types-list"
+                          placeholder="Type"
+                          className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                        <datalist id="level-types-list">
+                          <option value="LCPB" />
+                          <option value="HOB" />
+                          <option value="LOB" />
+                          <option value="DHOB" />
+                          <option value="DLOB" />
+                          <option value="fib" />
+                          <option value="S/R" />
+                          <option value="EQ" />
+                          <option value="FVG" />
+                          <option value="OB" />
+                          <option value="BB" />
+                          <option value="IMB" />
+                        </datalist>
+
+                        {/* Timeframe select */}
+                        <select
+                          value={level.timeframe}
+                          onChange={(e) => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              levelSequence: prev.levelSequence.map((l, i) =>
+                                i === index ? { ...l, timeframe: e.target.value } : l
+                              ),
+                            }));
+                          }}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="">TF</option>
+                          <option value="M1">M1</option>
+                          <option value="M5">M5</option>
+                          <option value="M15">M15</option>
+                          <option value="M30">M30</option>
+                          <option value="H1">H1</option>
+                          <option value="H4">H4</option>
+                          <option value="D1">D1</option>
+                          <option value="W1">W1</option>
+                          <option value="MTF">MTF</option>
+                        </select>
+
+                        {/* Price input */}
+                        <input
+                          type="number"
+                          step="any"
+                          value={level.price || ''}
+                          onChange={(e) => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              levelSequence: prev.levelSequence.map((l, i) =>
+                                i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                              ),
+                            }));
+                          }}
+                          placeholder="Price"
+                          className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+
+                        {/* Reaction select */}
+                        <select
+                          value={level.reaction || ''}
+                          onChange={(e) => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              levelSequence: prev.levelSequence.map((l, i) =>
+                                i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
+                              ),
+                            }));
+                          }}
+                          className="flex-1 min-w-[100px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          <option value="">— Reaction</option>
+                          <option value="bounced">Bounced</option>
+                          <option value="front_run">Front-run</option>
+                          <option value="swept_then_bounced">Swept then bounced</option>
+                          <option value="broken">Broken through</option>
+                        </select>
+
+                        {/* Reorder buttons */}
+                        <div className="flex flex-col">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (index === 0) return;
+                              setFormData((prev) => {
+                                const newSeq = [...prev.levelSequence];
+                                [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
+                                return { ...prev, levelSequence: newSeq };
+                              });
+                            }}
+                            disabled={index === 0}
+                            className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (index === formData.levelSequence.length - 1) return;
+                              setFormData((prev) => {
+                                const newSeq = [...prev.levelSequence];
+                                [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
+                                return { ...prev, levelSequence: newSeq };
+                              });
+                            }}
+                            disabled={index === formData.levelSequence.length - 1}
+                            className={`p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                          >
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {/* Remove button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormData((prev) => ({
+                              ...prev,
+                              levelSequence: prev.levelSequence.filter((_, i) => i !== index),
+                            }));
+                          }}
+                          className="p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {formData.levelSequence.length === 0 && (
+                  <div className="text-center py-4 text-gray-500 text-sm border border-dashed border-gray-700 rounded-lg">
+                    No levels added. Click "Add Level" to track price interaction at key levels.
+                  </div>
+                )}
+              </div>
             </div>
           </FormSection>
 
@@ -2437,6 +2638,56 @@ export function TradeForm() {
                     <p className="text-blue-400 text-sm">
                       Record what happened after you exited this trade. This data helps you analyze whether your exits were optimal.
                     </p>
+                  </div>
+                )}
+
+                {/* Level Sequence Review Nudge */}
+                {formData.levelSequence.length > 0 && formData.levelSequence.some(l => l.reaction === null) && (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-4">
+                    <p className="text-amber-400 text-sm font-medium mb-2">
+                      Record what price did at each level
+                    </p>
+                    <div className="space-y-2">
+                      {formData.levelSequence.map((level, index) => (
+                        <div
+                          key={level.id}
+                          className="flex items-center gap-2 text-sm"
+                        >
+                          <span className="text-gray-400 w-4">{index + 1}.</span>
+                          <span className="text-gray-300">{level.levelType || 'Level'}</span>
+                          {level.timeframe && (
+                            <span className="text-gray-500">({level.timeframe})</span>
+                          )}
+                          <span className="text-gray-500">@ {level.price || '—'}</span>
+                          <span className="flex-1" />
+                          <select
+                            value={level.reaction || ''}
+                            onChange={(e) => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                levelSequence: prev.levelSequence.map((l, i) =>
+                                  i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
+                                ),
+                              }));
+                            }}
+                            className={`w-40 px-2 py-1 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-500 ${
+                              level.reaction
+                                ? level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400 border-green-500/50' :
+                                  level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400 border-blue-500/50' :
+                                  level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400 border-amber-500/50' :
+                                  'bg-red-500/20 text-red-400 border-red-500/50'
+                                : 'bg-gray-700 text-gray-300 border-gray-600'
+                            } border`}
+                          >
+                            <option value="">— Select</option>
+                            <option value="bounced">Bounced</option>
+                            <option value="front_run">Front-run</option>
+                            <option value="swept_then_bounced">Swept then bounced</option>
+                            <option value="broken">Broken</option>
+                          </select>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 

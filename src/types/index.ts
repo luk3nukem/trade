@@ -66,6 +66,18 @@ export interface StopAdjustment {
   trigger?: string;
 }
 
+// Level reaction type
+export type LevelReaction = 'bounced' | 'front_run' | 'swept_then_bounced' | 'broken' | null;
+
+// Level entry in a sequence (ordered shallowest to deepest)
+export interface LevelEntry {
+  id: string;
+  levelType: string;      // "LCPB", "HOB", "fib", "S/R", ... autocomplete, user-extendable
+  timeframe: string;      // "H1", "H4", "D1", "W1", "MTF", ""
+  price: number;
+  reaction: LevelReaction; // "bounced" | "front_run" | "swept_then_bounced" | "broken" | null (unresolved)
+}
+
 // Screenshot with URL (e.g., TradingView snapshot)
 export interface Screenshot {
   id: string;
@@ -150,6 +162,7 @@ export interface TradeRecord {
   entryTF?: Timeframe; // Timeframe used to execute entry (e.g. 15m, 1H)
   htfBias?: HTFBias;
   marketCondition?: MarketCondition;
+  levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
 
   // === Trade Taken / Missed ===
   tradeTaken: boolean; // false = missed/paper trade, excluded from live stats
@@ -358,6 +371,7 @@ export interface TradeFormData {
   entryTF: Timeframe | '';
   htfBias: HTFBias | '';
   marketCondition: MarketCondition | '';
+  levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
 
   // Trade Taken / Missed
   tradeTaken: boolean;

@@ -696,6 +696,45 @@ export function TradeDetail() {
                   : '-'}
               </span>
             </div>
+
+            {/* Level Sequence Mini-Ladder */}
+            {trade.levelSequence && trade.levelSequence.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-700">
+                <span className="text-sm text-gray-400">Level Sequence</span>
+                <div className="mt-2 space-y-1">
+                  {trade.levelSequence.map((level, index) => (
+                    <div
+                      key={level.id}
+                      className="flex items-center gap-2 py-1.5 px-2 bg-gray-750 rounded"
+                    >
+                      <span className="text-xs text-gray-500 w-4">{index + 1}</span>
+                      <span className="text-sm text-gray-200 font-medium">{level.levelType || '—'}</span>
+                      {level.timeframe && (
+                        <span className="text-xs text-gray-500">({level.timeframe})</span>
+                      )}
+                      <span className="text-xs text-gray-400 font-mono">@ {level.price || '—'}</span>
+                      <span className="flex-1" />
+                      {level.reaction && (
+                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                          level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400' :
+                          level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400' :
+                          level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400' :
+                          'bg-red-500/20 text-red-400'
+                        }`}>
+                          {level.reaction === 'bounced' ? 'Bounced' :
+                           level.reaction === 'front_run' ? 'Front-run' :
+                           level.reaction === 'swept_then_bounced' ? 'SFP' :
+                           'Broken'}
+                        </span>
+                      )}
+                      {!level.reaction && (
+                        <span className="text-xs text-gray-600">—</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

@@ -11,6 +11,8 @@ import type {
   EmotionalState,
   ConfidenceLevel,
   TradeExit,
+  LevelEntry,
+  LevelReaction,
 } from '../types';
 import { deriveSession, calculateHoldDuration } from './tradeCalculations';
 
@@ -61,6 +63,10 @@ const SETUP_TAG_COMBINATIONS: { tags: string[]; weight: number; winBias: number 
 ];
 
 const TIMEFRAMES: Timeframe[] = ['15m', '1H', '4H'];
+
+// Level types for level sequence generation
+const LEVEL_TYPES = ['LCPB', 'HOB', 'LOB', 'DHOB', 'DLOB', 'fib', 'S/R', 'EQ', 'FVG', 'OB'];
+const LEVEL_TIMEFRAMES = ['M15', 'H1', 'H4', 'D1', 'MTF', ''];
 const TIMEFRAME_WEIGHTS = [35, 45, 20]; // 15m, 1H, 4H
 
 const HTF_BIASES: HTFBias[] = ['bullish', 'bearish', 'neutral', 'ranging'];
@@ -92,6 +98,65 @@ function randomElement<T>(arr: T[]): T {
 function roundToDecimals(value: number, decimals: number): number {
   const factor = Math.pow(10, decimals);
   return Math.round(value * factor) / factor;
+}
+
+// Generate a realistic level sequence for a trade
+function generateLevelSequence(
+  entryPrice: number,
+  stopLoss: number,
+  direction: TradeDirection,
+  isWinner: boolean,
+  priceDecimals: number
+): LevelEntry[] {
+  // Only generate sequence on ~40% of trades
+  if (Math.random() > 0.4) return [];
+
+  const stopDistance = Math.abs(entryPrice - stopLoss);
+  const levelCount = randomInt(2, 4);
+  const levels: LevelEntry[] = [];
+
+  // Determine which level price turns at (for winners)
+  const turnPosition = isWinner ? randomInt(1, levelCount) : levelCount + 1; // losers break all
+
+  for (let i = 0; i < levelCount; i++) {
+    // Calculate level price - levels are ordered from shallowest to deepest
+    // For longs: entry is above stop, so levels are below entry going towards stop
+    // For shorts: entry is below stop, so levels are above entry going towards stop
+    const depthRatio = (i + 1) / (levelCount + 1); // Spread levels evenly between entry and stop
+    const distanceFromEntry = stopDistance * depthRatio * 0.9; // Leave some buffer to stop
+
+    const levelPrice = direction === 'long'
+      ? roundToDecimals(entryPrice - distanceFromEntry, priceDecimals)
+      : roundToDecimals(entryPrice + distanceFromEntry, priceDecimals);
+
+    // Determine reaction based on position
+    let reaction: LevelReaction;
+    if (i + 1 < turnPosition) {
+      // Levels before the turn point are broken or swept
+      reaction = Math.random() > 0.5 ? 'broken' : 'swept_then_bounced';
+    } else if (i + 1 === turnPosition) {
+      // This is where price turns
+      reaction = Math.random() > 0.3 ? 'bounced' : 'swept_then_bounced';
+    } else {
+      // Levels after the turn are never tested (null)
+      reaction = null;
+    }
+
+    // Sometimes first level bounces cleanly or is front-run
+    if (i === 0 && turnPosition === 1 && Math.random() > 0.5) {
+      reaction = Math.random() > 0.3 ? 'bounced' : 'front_run';
+    }
+
+    levels.push({
+      id: uuidv4(),
+      levelType: randomElement(LEVEL_TYPES),
+      timeframe: randomElement(LEVEL_TIMEFRAMES),
+      price: levelPrice,
+      reaction,
+    });
+  }
+
+  return levels;
 }
 
 // Generate a weekday date within the last N days
@@ -641,6 +706,15 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       }
     }
 
+    // Generate level sequence for some trades
+    const levelSequence = generateLevelSequence(
+      entryPrice,
+      stopLoss,
+      direction,
+      isWinner,
+      pairConfig.priceDecimals
+    );
+
     const trade: TradeRecord = {
       // Let Dexie Cloud generate the ID with @id schema
       accountId,
@@ -666,6 +740,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       entryTF,
       htfBias,
       marketCondition,
+      levelSequence,
       emotionalState,
       confidenceLevel,
       followedPlan,
@@ -770,6 +845,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       entryTF,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),
+      levelSequence: [],
       emotionalState: randomElement([3, 4, 5]) as EmotionalState,
       confidenceLevel: randomElement(['medium', 'high']),
       followedPlan: true,
@@ -917,6 +993,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       entryTF,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),
+      levelSequence: [],
       emotionalState: randomElement([3, 4]) as EmotionalState,
       confidenceLevel: randomElement(['low', 'medium']),
       followedPlan: true,
