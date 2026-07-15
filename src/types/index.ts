@@ -174,6 +174,7 @@ export interface TradeRecord {
   mfePrice: number | null; // Maximum Favorable Excursion - best price reached during trade
   maeR?: number; // MAE expressed in R-multiples (derived from maePrice)
   mfeR?: number; // MFE expressed in R-multiples (derived from mfePrice)
+  firstTouchWorstPrice: number | null; // Worst price before initial move in trader's favour (pre-reaction extreme)
 
   // === Post-Exit Tracking ===
   postExitBestPrice: number | null; // Best price in your favour after full exit
@@ -340,6 +341,7 @@ export interface TradeFormData {
   targetPrice: string;   // Primary profit target
   maePrice: string;      // Worst price reached during trade (price level)
   mfePrice: string;      // Best price reached during trade (price level)
+  firstTouchWorstPrice: string; // Worst price before initial move in trader's favour
 
   // Position Sizing
   positionSize: string;

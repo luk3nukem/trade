@@ -488,6 +488,27 @@ class TradingDiaryDB extends Dexie {
           });
       });
 
+    // Version 18 - Add firstTouchWorstPrice field for first-touch reaction analysis
+    this.version(18)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Initialize firstTouchWorstPrice for all existing trades
+            if (trade.firstTouchWorstPrice === undefined) {
+              trade.firstTouchWorstPrice = null;
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

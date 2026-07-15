@@ -49,6 +49,7 @@ const getInitialFormData = (): TradeFormData => ({
   targetPrice: '',
   maePrice: '',
   mfePrice: '',
+  firstTouchWorstPrice: '',
   positionSize: '',
   riskAmount: '',
   riskPercent: '',
@@ -228,6 +229,7 @@ export function TradeForm() {
             targetPrice: trade.targetPrice ? String(trade.targetPrice) : '',
             maePrice: trade.maePrice != null ? String(trade.maePrice) : '',
             mfePrice: trade.mfePrice != null ? String(trade.mfePrice) : '',
+            firstTouchWorstPrice: trade.firstTouchWorstPrice != null ? String(trade.firstTouchWorstPrice) : '',
             positionSize: String(trade.positionSize),
             riskAmount: trade.riskAmount ? String(trade.riskAmount) : '',
             riskPercent: trade.riskPercent ? String(trade.riskPercent) : '',
@@ -626,6 +628,7 @@ export function TradeForm() {
       // Parse MAE/MFE price levels
       const maePrice = formData.maePrice ? parseFloat(formData.maePrice) : null;
       const mfePrice = formData.mfePrice ? parseFloat(formData.mfePrice) : null;
+      const firstTouchWorstPrice = formData.firstTouchWorstPrice ? parseFloat(formData.firstTouchWorstPrice) : null;
 
       // Calculate MAE/MFE distances and R-multiples from price levels
       const stopDistance = calculated.stopDistance;
@@ -680,6 +683,7 @@ export function TradeForm() {
         tags: formData.tags,
         maePrice,
         mfePrice,
+        firstTouchWorstPrice,
         maeR,
         mfeR,
         session: calculated.session,
@@ -1557,6 +1561,19 @@ export function TradeForm() {
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <p className="text-xs text-gray-500 mt-1">Best price reached in your favour</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">First-Touch Worst</label>
+                <input
+                  type="number"
+                  step="any"
+                  value={formData.firstTouchWorstPrice}
+                  onChange={(e) => handleChange('firstTouchWorstPrice', e.target.value)}
+                  placeholder="Worst before reaction"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">Worst price before the initial move in your favour (leave empty if price never moved in your favour)</p>
               </div>
 
               {/* Auto-derived exit price (read-only) */}

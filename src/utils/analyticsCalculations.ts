@@ -3719,3 +3719,508 @@ export function getPostExitInsights(trades: TradeRecord[], minRThreshold: number
 
   return insights;
 }
+
+// ============================================
+// FIRST-TOUCH REACTION ANALYSIS
+// ============================================
+
+/**
+ * First-touch reaction summary statistics
+ */
+export interface FirstTouchSummary {
+  totalTrades: number;
+  tradesWithFirstTouch: number;
+  avgFirstTouchAdverseR: number;
+  avgFirstTouchAdversePercent: number;
+  avgReactionR: number;
+  levelWorkedPercent: number; // % of trades where price moved favorably after first touch
+  levelWorkedCount: number;
+}
+
+/**
+ * Entry quality vs outcome grouping
+ */
+export interface EntryQualityGroup {
+  category: 'level_worked_won' | 'level_worked_lost' | 'level_failed';
+  label: string;
+  count: number;
+  percent: number;
+  avgFirstTouchAdverseR: number;
+  avgReactionR: number;
+}
+
+/**
+ * First-touch stop simulator result
+ */
+export interface FirstTouchStopSimulation {
+  bufferPercent: number;
+  simulatedTrades: number;
+  originalTotalR: number;
+  simulatedTotalR: number;
+  netRImpact: number;
+  originalWinRate: number;
+  simulatedWinRate: number;
+  avgWinnerR: number;
+  originalAvgWinnerR: number;
+  stoppedOutCount: number;
+  improvedCount: number;
+}
+
+/**
+ * Scatter point for first-touch vs reaction visualization
+ */
+export interface FirstTouchScatterPoint {
+  tradeId: string;
+  pair: string;
+  firstTouchAdverseR: number;
+  reactionR: number;
+  isWinner: boolean;
+}
+
+/**
+ * First-touch analysis by setup tag
+ */
+export interface FirstTouchByTag {
+  tag: string;
+  count: number;
+  avgFirstTouchAdverseR: number;
+  avgReactionR: number;
+  levelWorkedPercent: number;
+  cleanEntryScore: number; // Derived metric combining low adverse + high reaction
+}
+
+/**
+ * Get first-touch reaction summary
+ */
+export function getFirstTouchSummary(trades: TradeRecord[]): FirstTouchSummary {
+  const closedTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false
+  );
+
+  const tradesWithFirstTouch = closedTrades.filter(t =>
+    t.firstTouchWorstPrice !== null &&
+    t.firstTouchWorstPrice !== undefined &&
+    t.mfePrice !== null &&
+    t.stopDistance &&
+    t.stopDistance > 0
+  );
+
+  if (tradesWithFirstTouch.length === 0) {
+    return {
+      totalTrades: closedTrades.length,
+      tradesWithFirstTouch: 0,
+      avgFirstTouchAdverseR: 0,
+      avgFirstTouchAdversePercent: 0,
+      avgReactionR: 0,
+      levelWorkedPercent: 0,
+      levelWorkedCount: 0,
+    };
+  }
+
+  let totalFirstTouchAdverseR = 0;
+  let totalReactionR = 0;
+  let levelWorkedCount = 0;
+  let reactionRCount = 0;
+
+  for (const trade of tradesWithFirstTouch) {
+    // Calculate first-touch adverse R
+    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
+    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
+    totalFirstTouchAdverseR += firstTouchAdverseR;
+
+    // Calculate reaction R (only if first touch adverse > 0 to avoid division by zero)
+    if (adverseDistance > 0 && trade.mfePrice !== null) {
+      const mfeDistance = Math.abs(trade.mfePrice - trade.entryPrice);
+      const reactionR = mfeDistance / adverseDistance;
+      totalReactionR += reactionR;
+      reactionRCount++;
+
+      // Level "worked" if there was a meaningful favorable move after first touch
+      // We define this as MFE being better than entry (i.e., some favorable reaction happened)
+      if (mfeDistance > 0) {
+        levelWorkedCount++;
+      }
+    }
+  }
+
+  const avgFirstTouchAdverseR = totalFirstTouchAdverseR / tradesWithFirstTouch.length;
+
+  return {
+    totalTrades: closedTrades.length,
+    tradesWithFirstTouch: tradesWithFirstTouch.length,
+    avgFirstTouchAdverseR,
+    avgFirstTouchAdversePercent: avgFirstTouchAdverseR * 100,
+    avgReactionR: reactionRCount > 0 ? totalReactionR / reactionRCount : 0,
+    levelWorkedPercent: (levelWorkedCount / tradesWithFirstTouch.length) * 100,
+    levelWorkedCount,
+  };
+}
+
+/**
+ * Get entry level quality vs trade outcome groupings
+ * Groups trades into: "Level worked, trade won" / "Level worked, trade lost" / "Level failed"
+ */
+export function getEntryQualityAnalysis(trades: TradeRecord[]): EntryQualityGroup[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.firstTouchWorstPrice !== null &&
+    t.mfePrice !== null &&
+    t.rMultiple !== undefined &&
+    t.stopDistance &&
+    t.stopDistance > 0
+  );
+
+  if (relevantTrades.length === 0) {
+    return [];
+  }
+
+  const groups: Record<string, { trades: TradeRecord[]; totalAdverseR: number; totalReactionR: number }> = {
+    level_worked_won: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
+    level_worked_lost: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
+    level_failed: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
+  };
+
+  for (const trade of relevantTrades) {
+    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
+    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
+    const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
+
+    // Level "worked" if MFE is greater than entry (any favorable reaction)
+    const levelWorked = mfeDistance > adverseDistance * 0.1; // At least 10% of adverse as favorable
+    const isWinner = trade.rMultiple !== undefined && trade.rMultiple > 0;
+
+    let category: string;
+    if (!levelWorked) {
+      category = 'level_failed';
+    } else if (isWinner) {
+      category = 'level_worked_won';
+    } else {
+      category = 'level_worked_lost';
+    }
+
+    groups[category].trades.push(trade);
+    groups[category].totalAdverseR += firstTouchAdverseR;
+
+    if (adverseDistance > 0) {
+      groups[category].totalReactionR += mfeDistance / adverseDistance;
+    }
+  }
+
+  const results: EntryQualityGroup[] = [];
+  const labels: Record<string, string> = {
+    level_worked_won: 'Level worked, trade won',
+    level_worked_lost: 'Level worked, trade lost',
+    level_failed: 'Level failed (no favorable reaction)',
+  };
+
+  for (const [key, data] of Object.entries(groups)) {
+    if (data.trades.length > 0) {
+      results.push({
+        category: key as EntryQualityGroup['category'],
+        label: labels[key],
+        count: data.trades.length,
+        percent: (data.trades.length / relevantTrades.length) * 100,
+        avgFirstTouchAdverseR: data.totalAdverseR / data.trades.length,
+        avgReactionR: data.totalReactionR / data.trades.length,
+      });
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Simulate stop placement at first-touch extreme + buffer
+ *
+ * For each trade:
+ * - stop = firstTouchWorstPrice ± buffer%
+ * - If MAE would have hit this tighter stop before MFE → loss at -1R
+ * - Otherwise → what R would the MFE have delivered with this tighter stop?
+ *
+ * Note: MAE timing isn't recorded, so trades where deep MAE came AFTER favorable reaction
+ * will be simulated pessimistically.
+ */
+export function simulateFirstTouchStop(
+  trades: TradeRecord[],
+  bufferPercent: number = 0
+): FirstTouchStopSimulation {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.firstTouchWorstPrice !== null &&
+    t.mfePrice !== null &&
+    t.maePrice !== null &&
+    t.rMultiple !== undefined &&
+    t.stopDistance &&
+    t.stopDistance > 0
+  );
+
+  if (relevantTrades.length === 0) {
+    return {
+      bufferPercent,
+      simulatedTrades: 0,
+      originalTotalR: 0,
+      simulatedTotalR: 0,
+      netRImpact: 0,
+      originalWinRate: 0,
+      simulatedWinRate: 0,
+      avgWinnerR: 0,
+      originalAvgWinnerR: 0,
+      stoppedOutCount: 0,
+      improvedCount: 0,
+    };
+  }
+
+  let originalTotalR = 0;
+  let simulatedTotalR = 0;
+  let originalWinners = 0;
+  let simulatedWinners = 0;
+  let stoppedOutCount = 0;
+  let improvedCount = 0;
+  let originalWinnerRSum = 0;
+  let simulatedWinnerRSum = 0;
+
+  for (const trade of relevantTrades) {
+    const originalR = trade.rMultiple!;
+    originalTotalR += originalR;
+
+    if (originalR > 0) {
+      originalWinners++;
+      originalWinnerRSum += originalR;
+    }
+
+    // Calculate first-touch adverse distance
+    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
+
+    // New stop = first-touch adverse + buffer
+    const buffer = adverseDistance * (bufferPercent / 100);
+    const newStopDistance = adverseDistance + buffer;
+
+    // Check if MAE would have hit the new tighter stop
+    // MAE is the worst price, so if MAE is worse than the new stop, we get stopped out
+    const maeDistance = Math.abs(trade.entryPrice - trade.maePrice!);
+
+    if (maeDistance >= newStopDistance) {
+      // Would have been stopped out at -1R (relative to the new stop)
+      simulatedTotalR -= 1;
+      stoppedOutCount++;
+    } else {
+      // Trade survives, calculate MFE relative to new stop distance
+      const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
+      const simulatedR = mfeDistance / newStopDistance;
+      simulatedTotalR += simulatedR;
+      simulatedWinners++;
+      simulatedWinnerRSum += simulatedR;
+
+      if (simulatedR > originalR) {
+        improvedCount++;
+      }
+    }
+  }
+
+  const originalWinRate = (originalWinners / relevantTrades.length) * 100;
+  const simulatedWinRate = (simulatedWinners / relevantTrades.length) * 100;
+
+  return {
+    bufferPercent,
+    simulatedTrades: relevantTrades.length,
+    originalTotalR: Number(originalTotalR.toFixed(2)),
+    simulatedTotalR: Number(simulatedTotalR.toFixed(2)),
+    netRImpact: Number((simulatedTotalR - originalTotalR).toFixed(2)),
+    originalWinRate,
+    simulatedWinRate,
+    avgWinnerR: simulatedWinners > 0 ? Number((simulatedWinnerRSum / simulatedWinners).toFixed(2)) : 0,
+    originalAvgWinnerR: originalWinners > 0 ? Number((originalWinnerRSum / originalWinners).toFixed(2)) : 0,
+    stoppedOutCount,
+    improvedCount,
+  };
+}
+
+/**
+ * Get scatter data for first-touch adverse vs reaction size visualization
+ */
+export function getFirstTouchScatterData(trades: TradeRecord[]): FirstTouchScatterPoint[] {
+  const points: FirstTouchScatterPoint[] = [];
+
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.firstTouchWorstPrice !== null &&
+    t.mfePrice !== null &&
+    t.stopDistance &&
+    t.stopDistance > 0 &&
+    t.rMultiple !== undefined
+  );
+
+  for (const trade of relevantTrades) {
+    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
+    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
+
+    // Only include if there's meaningful adverse movement to avoid division by zero
+    if (adverseDistance > 0) {
+      const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
+      const reactionR = mfeDistance / adverseDistance;
+
+      points.push({
+        tradeId: trade.id!,
+        pair: trade.pair,
+        firstTouchAdverseR: Number(firstTouchAdverseR.toFixed(2)),
+        reactionR: Number(reactionR.toFixed(2)),
+        isWinner: trade.rMultiple! > 0,
+      });
+    }
+  }
+
+  return points;
+}
+
+/**
+ * Get first-touch analysis grouped by setup tags
+ */
+export function getFirstTouchByTag(trades: TradeRecord[]): FirstTouchByTag[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.firstTouchWorstPrice !== null &&
+    t.mfePrice !== null &&
+    t.setupTags &&
+    t.setupTags.length > 0 &&
+    t.stopDistance &&
+    t.stopDistance > 0
+  );
+
+  if (relevantTrades.length === 0) {
+    return [];
+  }
+
+  // Group by tag
+  const tagMap = new Map<string, {
+    trades: TradeRecord[];
+    totalAdverseR: number;
+    totalReactionR: number;
+    reactionRCount: number;
+    levelWorkedCount: number;
+  }>();
+
+  for (const trade of relevantTrades) {
+    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
+    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
+    const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
+    const levelWorked = mfeDistance > 0;
+
+    for (const tag of trade.setupTags) {
+      if (!tagMap.has(tag)) {
+        tagMap.set(tag, {
+          trades: [],
+          totalAdverseR: 0,
+          totalReactionR: 0,
+          reactionRCount: 0,
+          levelWorkedCount: 0,
+        });
+      }
+
+      const group = tagMap.get(tag)!;
+      group.trades.push(trade);
+      group.totalAdverseR += firstTouchAdverseR;
+
+      if (adverseDistance > 0) {
+        const reactionR = mfeDistance / adverseDistance;
+        group.totalReactionR += reactionR;
+        group.reactionRCount++;
+      }
+
+      if (levelWorked) {
+        group.levelWorkedCount++;
+      }
+    }
+  }
+
+  // Convert to results
+  const results: FirstTouchByTag[] = [];
+  for (const [tag, data] of tagMap.entries()) {
+    if (data.trades.length >= 2) { // Require at least 2 trades for meaningful stats
+      const avgAdverseR = data.totalAdverseR / data.trades.length;
+      const avgReactionR = data.reactionRCount > 0 ? data.totalReactionR / data.reactionRCount : 0;
+      const levelWorkedPercent = (data.levelWorkedCount / data.trades.length) * 100;
+
+      // Clean entry score: low adverse + high reaction = higher score
+      // Normalized: (2 - avgAdverseR) + avgReactionR, clamped
+      const cleanEntryScore = Math.max(0, (2 - avgAdverseR) + avgReactionR);
+
+      results.push({
+        tag,
+        count: data.trades.length,
+        avgFirstTouchAdverseR: Number(avgAdverseR.toFixed(2)),
+        avgReactionR: Number(avgReactionR.toFixed(2)),
+        levelWorkedPercent: Number(levelWorkedPercent.toFixed(1)),
+        cleanEntryScore: Number(cleanEntryScore.toFixed(2)),
+      });
+    }
+  }
+
+  // Sort by clean entry score (best first)
+  return results.sort((a, b) => b.cleanEntryScore - a.cleanEntryScore);
+}
+
+/**
+ * Generate insights from first-touch reaction analysis
+ */
+export function getFirstTouchInsights(
+  summary: FirstTouchSummary,
+  entryQuality: EntryQualityGroup[],
+  byTag: FirstTouchByTag[]
+): string[] {
+  const insights: string[] = [];
+
+  if (summary.tradesWithFirstTouch < 5) {
+    return insights;
+  }
+
+  // Entry level quality vs outcome insight
+  const levelWorked = entryQuality.filter(g =>
+    g.category === 'level_worked_won' || g.category === 'level_worked_lost'
+  );
+  const totalLevelWorked = levelWorked.reduce((sum, g) => sum + g.count, 0);
+  const workedAndWon = entryQuality.find(g => g.category === 'level_worked_won');
+
+  if (totalLevelWorked > 0 && workedAndWon) {
+    const levelWorkedPercent = (totalLevelWorked / summary.tradesWithFirstTouch) * 100;
+    const wonPercent = (workedAndWon.count / summary.tradesWithFirstTouch) * 100;
+
+    if (levelWorkedPercent - wonPercent >= 15) {
+      insights.push(
+        `Your entry levels produce a favourable reaction on ${levelWorkedPercent.toFixed(0)}% of trades, ` +
+        `but only ${wonPercent.toFixed(0)}% become winners — your entries are better than your results. ` +
+        `The gap is stop/target framing.`
+      );
+    }
+  }
+
+  // Tag-specific insight
+  if (byTag.length >= 2) {
+    const bestTag = byTag[0];
+    if (bestTag.avgFirstTouchAdverseR < 0.3 && bestTag.avgReactionR > 2) {
+      insights.push(
+        `Your [${bestTag.tag}] entries react cleanest — avg ${bestTag.avgFirstTouchAdverseR.toFixed(2)}R ` +
+        `adverse before a ${bestTag.avgReactionR.toFixed(1)}R reaction. Consider tighter stops on these setups specifically.`
+      );
+    }
+  }
+
+  // Average metrics insight
+  if (summary.avgFirstTouchAdverseR > 0.5) {
+    insights.push(
+      `Average first-touch adverse is ${summary.avgFirstTouchAdverseR.toFixed(2)}R — you're taking significant heat ` +
+      `before your levels react. Look for cleaner entry confirmations.`
+    );
+  } else if (summary.avgFirstTouchAdverseR < 0.2 && summary.avgReactionR > 2) {
+    insights.push(
+      `Excellent entry precision: ${summary.avgFirstTouchAdverseR.toFixed(2)}R adverse with ` +
+      `${summary.avgReactionR.toFixed(1)}R reactions. Your level identification is strong.`
+    );
+  }
+
+  return insights;
+}

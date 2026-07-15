@@ -351,6 +351,80 @@ export function deriveMfeMetrics(
 }
 
 // ============================================
+// FIRST-TOUCH REACTION ANALYSIS FUNCTIONS
+// ============================================
+
+/**
+ * Calculate first-touch adverse R - the initial heat taken before the first favourable reaction
+ * firstTouchAdverseR = |entryPrice - firstTouchWorstPrice| / stopDistance
+ *
+ * This measures how far price moves against you BEFORE the initial reaction in your favour.
+ * Lower values indicate cleaner entries where price immediately moves in your direction.
+ */
+export function calculateFirstTouchAdverseR(
+  entryPrice: number,
+  firstTouchWorstPrice: number | null,
+  stopDistance: number | undefined
+): number | undefined {
+  if (firstTouchWorstPrice === null || !stopDistance || stopDistance === 0) {
+    return undefined;
+  }
+  const adverseDistance = Math.abs(entryPrice - firstTouchWorstPrice);
+  return Number((adverseDistance / stopDistance).toFixed(2));
+}
+
+/**
+ * Calculate reaction R - the R-multiple of the initial reaction relative to the first-touch extreme
+ * reactionR = |mfePrice - entryPrice| / |entryPrice - firstTouchWorstPrice|
+ *
+ * This is the "what could have been" number - if you had placed your stop just beyond
+ * the first-touch extreme, what R-multiple would the MFE have delivered?
+ *
+ * Higher values indicate better risk/reward relative to the actual price action at your entry level.
+ */
+export function calculateReactionR(
+  entryPrice: number,
+  mfePrice: number | null,
+  firstTouchWorstPrice: number | null
+): number | undefined {
+  if (mfePrice === null || firstTouchWorstPrice === null) {
+    return undefined;
+  }
+
+  const firstTouchAdverseDistance = Math.abs(entryPrice - firstTouchWorstPrice);
+  if (firstTouchAdverseDistance === 0) {
+    return undefined; // Avoid division by zero
+  }
+
+  const mfeDistance = Math.abs(mfePrice - entryPrice);
+  return Number((mfeDistance / firstTouchAdverseDistance).toFixed(2));
+}
+
+/**
+ * Derive all first-touch reaction metrics
+ */
+export function deriveFirstTouchMetrics(
+  entryPrice: number,
+  mfePrice: number | null,
+  firstTouchWorstPrice: number | null,
+  stopDistance: number | undefined
+): {
+  firstTouchAdverseR: number | undefined;
+  reactionR: number | undefined;
+  firstTouchAdversePercent: number | undefined;
+} {
+  const firstTouchAdverseR = calculateFirstTouchAdverseR(entryPrice, firstTouchWorstPrice, stopDistance);
+  const reactionR = calculateReactionR(entryPrice, mfePrice, firstTouchWorstPrice);
+
+  // Also calculate as percentage of stop distance for intuitive display
+  const firstTouchAdversePercent = firstTouchAdverseR !== undefined
+    ? Number((firstTouchAdverseR * 100).toFixed(1))
+    : undefined;
+
+  return { firstTouchAdverseR, reactionR, firstTouchAdversePercent };
+}
+
+// ============================================
 // POST-EXIT TRACKING FUNCTIONS
 // ============================================
 

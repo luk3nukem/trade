@@ -466,6 +466,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     let mfePrice: number | null = null;
     let maeR: number | undefined;
     let mfeR: number | undefined;
+    let firstTouchWorstPrice: number | null = null;
 
     if (Math.random() < 0.6) {
       if (isWinner) {
@@ -512,6 +513,31 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
           mfePrice = direction === 'long'
             ? roundToDecimals(entryPrice + mfeDistance, pairConfig.priceDecimals)
             : roundToDecimals(entryPrice - mfeDistance, pairConfig.priceDecimals);
+        }
+      }
+
+      // First-touch worst price - populate on ~70% of trades with MAE data
+      // This is the worst price BEFORE the initial reaction in trader's favour
+      // It should be <= maePrice (in absolute distance) since MAE is the overall worst
+      if (maePrice !== null && mfePrice !== null && Math.random() < 0.7) {
+        const maeDistance = Math.abs(entryPrice - maePrice);
+
+        if (isWinner) {
+          // For winners: first-touch adverse is typically small (level works quickly)
+          // First touch is 30-80% of MAE (the rest of MAE may come from later retests)
+          const firstTouchPercent = randomBetween(0.3, 0.8);
+          const firstTouchDistance = maeDistance * firstTouchPercent;
+          firstTouchWorstPrice = direction === 'long'
+            ? roundToDecimals(entryPrice - firstTouchDistance, pairConfig.priceDecimals)
+            : roundToDecimals(entryPrice + firstTouchDistance, pairConfig.priceDecimals);
+        } else {
+          // For losers: first-touch could be the full MAE (immediate failure)
+          // or partial MAE (had a chance but then failed)
+          const firstTouchPercent = randomBetween(0.5, 1.0);
+          const firstTouchDistance = maeDistance * firstTouchPercent;
+          firstTouchWorstPrice = direction === 'long'
+            ? roundToDecimals(entryPrice - firstTouchDistance, pairConfig.priceDecimals)
+            : roundToDecimals(entryPrice + firstTouchDistance, pairConfig.priceDecimals);
         }
       }
     }
@@ -663,6 +689,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       originalStopLoss: stopLoss,
       maePrice,
       mfePrice,
+      firstTouchWorstPrice,
       maeR,
       mfeR,
       postExitBestPrice,
@@ -754,6 +781,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       originalStopLoss: stopLoss,
       maePrice: null,
       mfePrice: null,
+      firstTouchWorstPrice: null,
       postExitBestPrice: null,
       postExitWorstPrice: null,
       reachedTargetPostExit: null,
@@ -907,6 +935,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       originalStopLoss: stopLoss,
       maePrice: null,
       mfePrice: null,
+      firstTouchWorstPrice: null,
       postExitBestPrice: null,
       postExitWorstPrice: null,
       reachedTargetPostExit: null,
