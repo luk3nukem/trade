@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import dexieCloud from 'dexie-cloud-addon';
-import type { TradeRecord, Account, Strategy, DailyJournal, TagDefinition, GlossaryTerm } from '../types';
+import type { TradeRecord, Account, Strategy, DailyJournal, TagDefinition, GlossaryTerm, LevelTypePref } from '../types';
 
 // Database class extending Dexie with cloud sync
 class TradingDiaryDB extends Dexie {
@@ -9,6 +9,7 @@ class TradingDiaryDB extends Dexie {
   strategies!: EntityTable<Strategy, 'id'>;
   dailyJournals!: EntityTable<DailyJournal, 'id'>;
   glossaryTerms!: EntityTable<GlossaryTerm, 'id'>;
+  levelTypePrefs!: EntityTable<LevelTypePref, 'id'>;
 
   constructor() {
     super('tradingDiary', { addons: [dexieCloud] });
@@ -552,6 +553,17 @@ class TradingDiaryDB extends Dexie {
               }));
             }
           });
+      });
+
+    // Version 21 - Add levelTypePrefs table for custom level type zone preferences
+    this.version(21)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+        levelTypePrefs: '@id, levelType', // Store zone preference per custom level type
       });
 
     // Configure Dexie Cloud

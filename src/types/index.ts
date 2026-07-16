@@ -130,6 +130,13 @@ export interface GlossaryTerm {
   category?: string; // Optional grouping (e.g. "Order Blocks", "Fibonacci")
 }
 
+// Level type preference for custom level types (zone vs line)
+export interface LevelTypePref {
+  id?: string; // Optional - Dexie Cloud generates with @id
+  levelType: string; // The level type name (e.g. "custom_zone", "my_level")
+  isZone: boolean; // true = zone (has near/far edge), false = line (single price)
+}
+
 // Trade record entity - full spec
 export interface TradeRecord {
   id?: string; // Optional - Dexie Cloud generates with @id

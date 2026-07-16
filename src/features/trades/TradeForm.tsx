@@ -21,8 +21,14 @@ import type {
   Strategy,
   LevelEntry,
   LevelReaction,
+  LevelTypePref,
 } from '../../types';
 import { ZONE_LEVEL_TYPES } from '../../types';
+
+// Preset level types - zones have two edges, lines are single price
+const PRESET_ZONE_TYPES = ZONE_LEVEL_TYPES as readonly string[];
+const PRESET_LINE_TYPES = ['LCPB', 'fib', 'S/R', 'EQ'] as const;
+const ALL_PRESET_TYPES = [...PRESET_ZONE_TYPES, ...PRESET_LINE_TYPES] as string[];
 import {
   deriveSession,
   calculateStopDistance,
@@ -166,9 +172,19 @@ const CONFIDENCE_LEVELS: { value: ConfidenceLevel; label: string }[] = [
 // Tags will be learned from previous trades - no hardcoded defaults
 const DEFAULT_SETUP_TAGS: string[] = [];
 
-// Helper to check if a level type is a zone (has two edges)
-const isZoneLevelType = (levelType: string): boolean => {
-  return ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
+// Helper to check if a level type is a zone (has two edges) - for preset types only
+const isPresetZoneType = (levelType: string): boolean => {
+  return PRESET_ZONE_TYPES.includes(levelType);
+};
+
+// Helper to check if a level type is a preset line type
+const isPresetLineType = (levelType: string): boolean => {
+  return (PRESET_LINE_TYPES as readonly string[]).includes(levelType);
+};
+
+// Check if type is known (preset) vs custom
+const isKnownLevelType = (levelType: string): boolean => {
+  return ALL_PRESET_TYPES.includes(levelType);
 };
 
 // Helper to calculate penetration percent for zone levels
@@ -237,6 +253,12 @@ export function TradeForm() {
   // Screenshot URL input state
   const [screenshotUrlInput, setScreenshotUrlInput] = useState('');
   const [screenshotCaptionInput, setScreenshotCaptionInput] = useState('');
+
+  // Level type autocomplete state
+  const [previousLevelTypes, setPreviousLevelTypes] = useState<string[]>([]);
+  const [levelTypePrefs, setLevelTypePrefs] = useState<LevelTypePref[]>([]);
+  const [levelTypeInputs, setLevelTypeInputs] = useState<Record<number, string>>({}); // Input value per row index
+  const [showLevelTypeSuggestions, setShowLevelTypeSuggestions] = useState<Record<number, boolean>>({});
 
   // Load existing trade data for edit mode
   useEffect(() => {
@@ -313,6 +335,17 @@ export function TradeForm() {
       const uniqueTags = [...new Set(allTags)].filter(Boolean);
       setPreviousPairs(pairs);
       setPreviousSetupTags(uniqueTags);
+
+      // Collect all unique level types from all trades
+      const allLevelTypes = trades.flatMap((t) =>
+        (t.levelSequence || []).map((l) => l.levelType).filter(Boolean)
+      );
+      const uniqueLevelTypes = [...new Set(allLevelTypes)].filter(Boolean);
+      setPreviousLevelTypes(uniqueLevelTypes);
+
+      // Load level type zone preferences
+      const prefs = await db.levelTypePrefs.toArray();
+      setLevelTypePrefs(prefs);
 
       // Load glossary for tag descriptions
       const glossaryTerms = await db.glossaryTerms.toArray();
@@ -890,6 +923,99 @@ export function TradeForm() {
     setFormData((prev) => ({
       ...prev,
       setupTags: prev.setupTags.filter((t) => t !== tag),
+    }));
+  };
+
+  // === Level Type Helpers ===
+
+  // Check if a level type should be treated as a zone (considering custom preferences)
+  const isLevelTypeZone = useCallback((levelType: string): boolean => {
+    // Preset zone types are always zones
+    if (isPresetZoneType(levelType)) return true;
+    // Preset line types are never zones
+    if (isPresetLineType(levelType)) return false;
+    // For custom types, check the stored preference
+    const pref = levelTypePrefs.find(p => p.levelType === levelType);
+    return pref?.isZone ?? false; // Default to line if no preference stored
+  }, [levelTypePrefs]);
+
+  // Check if zone toggle should be shown for a level type
+  const shouldShowZoneToggle = (levelType: string): boolean => {
+    return levelType !== '' && !isKnownLevelType(levelType);
+  };
+
+  // All available level types for autocomplete (presets + previously used custom types)
+  const allLevelTypes = useMemo(() => {
+    const combined = new Set(ALL_PRESET_TYPES);
+    previousLevelTypes.forEach(lt => combined.add(lt));
+    return Array.from(combined);
+  }, [previousLevelTypes]);
+
+  // Get filtered level type suggestions for a row
+  const getFilteredLevelTypes = (index: number, currentValue: string): string[] => {
+    const inputValue = levelTypeInputs[index] ?? currentValue;
+    return allLevelTypes
+      .filter(lt => lt.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  // Save zone preference for a custom level type
+  const saveLevelTypeZonePref = async (levelType: string, isZone: boolean) => {
+    // Only save for custom types
+    if (isKnownLevelType(levelType)) return;
+
+    const existingPref = levelTypePrefs.find(p => p.levelType === levelType);
+    if (existingPref) {
+      // Update existing preference
+      await db.levelTypePrefs.update(existingPref.id!, { isZone });
+      setLevelTypePrefs(prev => prev.map(p =>
+        p.id === existingPref.id ? { ...p, isZone } : p
+      ));
+    } else {
+      // Create new preference
+      const newPref: LevelTypePref = { levelType, isZone };
+      const newId = await db.levelTypePrefs.add(newPref);
+      setLevelTypePrefs(prev => [...prev, { ...newPref, id: newId as string }]);
+    }
+  };
+
+  // Handle level type selection from autocomplete
+  const selectLevelType = (index: number, levelType: string) => {
+    const isZone = isLevelTypeZone(levelType);
+    setFormData((prev) => ({
+      ...prev,
+      levelSequence: prev.levelSequence.map((l, i) =>
+        i === index ? {
+          ...l,
+          levelType,
+          // Clear zone fields if switching from zone to line
+          priceFar: isZone ? l.priceFar : null,
+          deepestPrice: isZone ? l.deepestPrice : null,
+          penetrationPercent: isZone ? l.penetrationPercent : null,
+        } : l
+      ),
+    }));
+    setLevelTypeInputs(prev => ({ ...prev, [index]: '' }));
+    setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false }));
+  };
+
+  // Handle zone toggle change for custom types
+  const handleZoneToggle = (index: number, levelType: string, isZone: boolean) => {
+    // Save preference for future use
+    saveLevelTypeZonePref(levelType, isZone);
+
+    // Update current level entry
+    setFormData((prev) => ({
+      ...prev,
+      levelSequence: prev.levelSequence.map((l, i) =>
+        i === index ? {
+          ...l,
+          // Clear zone fields if switching to line
+          priceFar: isZone ? l.priceFar : null,
+          deepestPrice: isZone ? l.deepestPrice : null,
+          penetrationPercent: isZone ? l.penetrationPercent : null,
+        } : l
+      ),
     }));
   };
 
@@ -2324,10 +2450,13 @@ export function TradeForm() {
                 {formData.levelSequence.length > 0 && (
                   <div className="space-y-2">
                     {formData.levelSequence.map((level, index) => {
-                      const isZone = isZoneLevelType(level.levelType);
+                      const isZone = isLevelTypeZone(level.levelType);
+                      const showZoneToggle = shouldShowZoneToggle(level.levelType);
                       const penetration = isZone && level.priceFar
                         ? calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice)
                         : null;
+                      const filteredTypes = getFilteredLevelTypes(index, level.levelType);
+                      const inputValue = levelTypeInputs[index] ?? '';
 
                       return (
                         <div
@@ -2340,44 +2469,75 @@ export function TradeForm() {
                             <span className="text-xs text-gray-500 w-5 text-center">{index + 1}</span>
 
                             {/* Level Type - autocomplete input */}
-                            <input
-                              type="text"
-                              value={level.levelType}
-                              onChange={(e) => {
-                                const newType = e.target.value;
-                                const nowZone = isZoneLevelType(newType);
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  levelSequence: prev.levelSequence.map((l, i) =>
-                                    i === index ? {
-                                      ...l,
-                                      levelType: newType,
-                                      // Clear zone fields if switching from zone to line
-                                      priceFar: nowZone ? l.priceFar : null,
-                                      deepestPrice: nowZone ? l.deepestPrice : null,
-                                      penetrationPercent: nowZone ? l.penetrationPercent : null,
-                                    } : l
-                                  ),
-                                }));
-                              }}
-                              list="level-types-list"
-                              placeholder="Type"
-                              className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            />
-                            <datalist id="level-types-list">
-                              <option value="LCPB" />
-                              <option value="HOB" />
-                              <option value="LOB" />
-                              <option value="DHOB" />
-                              <option value="DLOB" />
-                              <option value="fib" />
-                              <option value="S/R" />
-                              <option value="EQ" />
-                              <option value="FVG" />
-                              <option value="OB" />
-                              <option value="BB" />
-                              <option value="IMB" />
-                            </datalist>
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={showLevelTypeSuggestions[index] ? inputValue : level.levelType}
+                                onChange={(e) => {
+                                  const newValue = e.target.value;
+                                  setLevelTypeInputs(prev => ({ ...prev, [index]: newValue }));
+                                  // Also update the actual level type as user types
+                                  const nowZone = isLevelTypeZone(newValue);
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? {
+                                        ...l,
+                                        levelType: newValue,
+                                        // Clear zone fields if switching from zone to line
+                                        priceFar: nowZone ? l.priceFar : null,
+                                        deepestPrice: nowZone ? l.deepestPrice : null,
+                                        penetrationPercent: nowZone ? l.penetrationPercent : null,
+                                      } : l
+                                    ),
+                                  }));
+                                  setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                                }}
+                                onFocus={() => {
+                                  setLevelTypeInputs(prev => ({ ...prev, [index]: level.levelType }));
+                                  setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                                }}
+                                onBlur={() => setTimeout(() => setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false })), 200)}
+                                placeholder="Type"
+                                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                              {showLevelTypeSuggestions[index] && filteredTypes.length > 0 && (
+                                <div className="absolute z-20 w-40 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                  {filteredTypes.map((lt) => (
+                                    <button
+                                      key={lt}
+                                      type="button"
+                                      onClick={() => selectLevelType(index, lt)}
+                                      className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
+                                    >
+                                      <span>{lt}</span>
+                                      {isPresetZoneType(lt) && (
+                                        <span className="text-xs text-gray-500">zone</span>
+                                      )}
+                                      {isPresetLineType(lt) && (
+                                        <span className="text-xs text-gray-500">line</span>
+                                      )}
+                                      {!isKnownLevelType(lt) && (
+                                        <span className="text-xs text-blue-400">custom</span>
+                                      )}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Zone toggle for custom types */}
+                            {showZoneToggle && (
+                              <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer" title="Toggle zone (has two edges) vs line (single price)">
+                                <input
+                                  type="checkbox"
+                                  checked={isZone}
+                                  onChange={(e) => handleZoneToggle(index, level.levelType, e.target.checked)}
+                                  className="w-3 h-3 rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
+                                />
+                                Zone
+                              </label>
+                            )}
 
                             {/* Timeframe select */}
                             <select
