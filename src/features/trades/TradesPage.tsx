@@ -3,8 +3,89 @@ import { Link, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord, TradeDirection, TradeStatus } from '../../types';
 import { formatDuration } from '../../utils';
+import { getReviewDueDate } from '../../utils/tradeCalculations';
 
-type SortField = 'entryTime' | 'pair' | 'direction' | 'entryPrice' | 'exitPrice' | 'pnl' | 'rMultiple' | 'setupTags' | 'status' | 'holdDuration';
+type SortField = 'entryTime' | 'pair' | 'direction' | 'pnl' | 'rMultiple' | 'setupTags' | 'status' | 'review' | 'age' | 'holdDuration';
+
+// Review status for sorting and display
+type ReviewStatus = 'reviewed' | 'due' | 'pending' | 'na';
+
+// Helper to get review status for a trade
+function getReviewStatus(trade: TradeRecord): ReviewStatus {
+  // Not applicable for open/partial trades or missed trades
+  if (trade.status !== 'closed' || trade.tradeTaken === false) {
+    return 'na';
+  }
+
+  // Reviewed if reviewedAt is set
+  if (trade.reviewedAt) {
+    return 'reviewed';
+  }
+
+  // Check if review is due
+  if (trade.exitTime) {
+    const dueDate = getReviewDueDate(new Date(trade.exitTime), trade.assetClass);
+    if (new Date() >= dueDate) {
+      return 'due';
+    }
+  }
+
+  return 'pending';
+}
+
+// Helper to format age in compact format
+function formatAge(timestamp: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - new Date(timestamp).getTime();
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffWeeks = Math.floor(diffDays / 7);
+  const diffMonths = Math.floor(diffDays / 30);
+  const diffYears = Math.floor(diffDays / 365);
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m`;
+  }
+  if (diffHours < 24) {
+    return `${diffHours}h`;
+  }
+  if (diffDays < 7) {
+    return `${diffDays}d`;
+  }
+  if (diffWeeks < 5) {
+    return `${diffWeeks}w`;
+  }
+  if (diffMonths < 12) {
+    return `${diffMonths}mo`;
+  }
+  const remainingMonths = diffMonths % 12;
+  if (remainingMonths > 0) {
+    return `${diffYears}y ${remainingMonths}mo`;
+  }
+  return `${diffYears}y`;
+}
+
+// Get age timestamp for a trade (exit time for closed, entry time for open)
+function getAgeTimestamp(trade: TradeRecord): Date {
+  if (trade.status === 'closed' && trade.exitTime) {
+    return new Date(trade.exitTime);
+  }
+  return new Date(trade.entryTime);
+}
+
+// Format datetime for tooltip
+function formatDateTimeFull(date: Date): string {
+  return new Date(date).toLocaleString('en-US', {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
 type SortDirection = 'asc' | 'desc';
 
 type TradeTakenFilter = 'all' | 'taken' | 'missed';
@@ -103,13 +184,26 @@ export function TradesPage() {
   // Sort trades
   const sortedTrades = useMemo(() => {
     const sorted = [...filteredTrades].sort((a, b) => {
-      let aVal: unknown = a[sortField];
-      let bVal: unknown = b[sortField];
+      let aVal: unknown = a[sortField as keyof TradeRecord];
+      let bVal: unknown = b[sortField as keyof TradeRecord];
 
       // Handle dates
       if (sortField === 'entryTime') {
         aVal = new Date(a.entryTime).getTime();
         bVal = new Date(b.entryTime).getTime();
+      }
+
+      // Handle review status sorting
+      if (sortField === 'review') {
+        const statusOrder: Record<ReviewStatus, number> = { due: 0, pending: 1, reviewed: 2, na: 3 };
+        aVal = statusOrder[getReviewStatus(a)];
+        bVal = statusOrder[getReviewStatus(b)];
+      }
+
+      // Handle age sorting (by underlying timestamp)
+      if (sortField === 'age') {
+        aVal = getAgeTimestamp(a).getTime();
+        bVal = getAgeTimestamp(b).getTime();
       }
 
       // Handle nullish values
@@ -461,24 +555,6 @@ export function TradesPage() {
                     </th>
                     <th className="px-4 py-3 text-right">
                       <button
-                        onClick={() => handleSort('entryPrice')}
-                        className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white ml-auto"
-                      >
-                        Entry
-                        <SortIndicator field="entryPrice" />
-                      </button>
-                    </th>
-                    <th className="px-4 py-3 text-right">
-                      <button
-                        onClick={() => handleSort('exitPrice')}
-                        className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white ml-auto"
-                      >
-                        Exit
-                        <SortIndicator field="exitPrice" />
-                      </button>
-                    </th>
-                    <th className="px-4 py-3 text-right">
-                      <button
                         onClick={() => handleSort('pnl')}
                         className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white ml-auto"
                       >
@@ -511,6 +587,24 @@ export function TradesPage() {
                       >
                         Status
                         <SortIndicator field="status" />
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 text-left">
+                      <button
+                        onClick={() => handleSort('review')}
+                        className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white"
+                      >
+                        Review
+                        <SortIndicator field="review" />
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 text-right">
+                      <button
+                        onClick={() => handleSort('age')}
+                        className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white ml-auto"
+                      >
+                        Age
+                        <SortIndicator field="age" />
                       </button>
                     </th>
                     <th className="px-4 py-3 text-right">
@@ -556,12 +650,6 @@ export function TradesPage() {
                           >
                             {trade.direction.toUpperCase()}
                           </span>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-200 text-right font-mono">
-                          {trade.entryPrice}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-200 text-right font-mono">
-                          {trade.exitPrice ?? '-'}
                         </td>
                         <td className={`px-4 py-3 text-sm text-right font-medium ${
                           trade.pnl === undefined
@@ -625,6 +713,52 @@ export function TradesPage() {
                               </span>
                             )}
                           </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {(() => {
+                            const reviewStatus = getReviewStatus(trade);
+                            if (reviewStatus === 'reviewed') {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
+                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  Reviewed
+                                </span>
+                              );
+                            }
+                            if (reviewStatus === 'due') {
+                              return (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigate(`/trades/${trade.id}`);
+                                  }}
+                                  className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors"
+                                >
+                                  Due
+                                </button>
+                              );
+                            }
+                            if (reviewStatus === 'pending') {
+                              return (
+                                <span className="text-xs text-gray-500">
+                                  Pending
+                                </span>
+                              );
+                            }
+                            return <span className="text-sm text-gray-500">—</span>;
+                          })()}
+                        </td>
+                        <td
+                          className="px-4 py-3 text-sm text-gray-200 text-right"
+                          title={formatDateTimeFull(getAgeTimestamp(trade))}
+                        >
+                          {trade.status === 'open' || trade.status === 'partial' ? (
+                            <span className="text-yellow-400">open {formatAge(new Date(trade.entryTime))}</span>
+                          ) : (
+                            formatAge(getAgeTimestamp(trade))
+                          )}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-200 text-right">
                           {formatDuration(trade.holdDuration)}
