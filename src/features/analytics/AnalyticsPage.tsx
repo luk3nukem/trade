@@ -174,14 +174,14 @@ export function AnalyticsPage() {
         )}
       </div>
 
-      {/* Tab Navigation */}
-      <div className="border-b border-gray-700">
-        <nav className="flex gap-1 -mb-px overflow-x-auto">
+      {/* Tab Navigation - scrollable on mobile */}
+      <div className="border-b border-gray-700 -mx-4 md:mx-0 px-4 md:px-0">
+        <nav className="flex gap-1 -mb-px overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-transparent pb-px">
           {TABS.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors ${
+              className={`px-3 md:px-4 py-3 text-sm font-medium whitespace-nowrap border-b-2 transition-colors shrink-0 ${
                 activeTab === tab.id
                   ? 'border-blue-500 text-blue-400'
                   : 'border-transparent text-gray-400 hover:text-gray-200 hover:border-gray-600'

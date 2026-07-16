@@ -520,8 +520,146 @@ export function TradesPage() {
             </div>
           </div>
 
-          {/* Trades Table */}
-          <div className="bg-gray-800 rounded-lg overflow-hidden">
+          {/* Trades - Mobile Cards / Desktop Table */}
+
+          {/* Mobile Card View */}
+          <div className="md:hidden space-y-3">
+            {sortedTrades.length === 0 ? (
+              <div className="bg-gray-800 rounded-lg p-8 text-center text-gray-400">
+                No trades match your filters
+              </div>
+            ) : (
+              sortedTrades.map((trade) => {
+                const reviewStatus = getReviewStatus(trade);
+                return (
+                  <div
+                    key={trade.id}
+                    onClick={() => navigate(`/trades/${trade.id}`)}
+                    className={`bg-gray-800 rounded-lg p-4 cursor-pointer active:bg-gray-750 transition-colors ${
+                      trade.tradeTaken === false ? 'opacity-60' : ''
+                    }`}
+                  >
+                    {/* Row 1: Pair, Direction, Status */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-white">{trade.pair}</span>
+                        <span
+                          className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                            trade.direction === 'long'
+                              ? 'bg-green-500/20 text-green-400'
+                              : 'bg-red-500/20 text-red-400'
+                          }`}
+                        >
+                          {trade.direction.toUpperCase()}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span
+                          className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                            trade.status === 'open'
+                              ? 'bg-yellow-500/20 text-yellow-400'
+                              : trade.status === 'partial'
+                                ? 'bg-orange-500/20 text-orange-400'
+                                : trade.status === 'closed'
+                                  ? 'bg-blue-500/20 text-blue-400'
+                                  : 'bg-gray-500/20 text-gray-400'
+                          }`}
+                        >
+                          {trade.status.charAt(0).toUpperCase() + trade.status.slice(1)}
+                        </span>
+                        {trade.tradeTaken === false && (
+                          <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-orange-500/20 text-orange-400">
+                            Missed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 2: P&L, R-Multiple, Review */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-4">
+                        <span className={`font-medium ${
+                          trade.pnl === undefined
+                            ? 'text-gray-400'
+                            : trade.pnl >= 0
+                              ? 'text-green-400'
+                              : 'text-red-400'
+                        }`}>
+                          {trade.pnl !== undefined ? `$${trade.pnl.toFixed(2)}` : '-'}
+                        </span>
+                        <span className={`text-sm ${
+                          trade.rMultiple === undefined
+                            ? 'text-gray-400'
+                            : trade.rMultiple >= 0
+                              ? 'text-green-400'
+                              : 'text-red-400'
+                        }`}>
+                          {trade.rMultiple !== undefined
+                            ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
+                            : '-'}
+                        </span>
+                      </div>
+                      <div>
+                        {reviewStatus === 'reviewed' && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                            Reviewed
+                          </span>
+                        )}
+                        {reviewStatus === 'due' && (
+                          <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400">
+                            Due
+                          </span>
+                        )}
+                        {reviewStatus === 'pending' && (
+                          <span className="text-xs text-gray-500">Pending</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 3: Date, Age, Duration */}
+                    <div className="flex items-center justify-between text-xs text-gray-400">
+                      <span>{formatDate(trade.entryTime)}</span>
+                      <div className="flex items-center gap-3">
+                        <span title={formatDateTimeFull(getAgeTimestamp(trade))}>
+                          {trade.status === 'open' || trade.status === 'partial' ? (
+                            <span className="text-yellow-400">open {formatAge(new Date(trade.entryTime))}</span>
+                          ) : (
+                            formatAge(getAgeTimestamp(trade))
+                          )}
+                        </span>
+                        <span>{formatDuration(trade.holdDuration)}</span>
+                      </div>
+                    </div>
+
+                    {/* Row 4: Tags (if any) */}
+                    {trade.setupTags && trade.setupTags.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-gray-700">
+                        {trade.setupTags.slice(0, 3).map((tag) => (
+                          <span
+                            key={tag}
+                            className="inline-flex px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {trade.setupTags.length > 3 && (
+                          <span className="inline-flex px-1.5 py-0.5 bg-gray-600 text-gray-300 rounded text-xs">
+                            +{trade.setupTags.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Desktop Table View */}
+          <div className="hidden md:block bg-gray-800 rounded-lg overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>

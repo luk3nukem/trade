@@ -54,7 +54,11 @@ const navItems = [
   },
 ];
 
-export function Sidebar() {
+interface SidebarProps {
+  onNavigate?: () => void;
+}
+
+export function Sidebar({ onNavigate }: SidebarProps) {
   const { sidebarCollapsed, toggleSidebar } = useAppStore();
   const alertCount = useAlertCount();
   const glossaryPopup = useGlossaryPopup();
@@ -102,6 +106,7 @@ export function Sidebar() {
             <NavLink
               key={item.path}
               to={item.path}
+              onClick={onNavigate}
               className={({ isActive }) =>
                 `relative flex items-center px-3 py-2.5 rounded-lg transition-colors ${
                   isActive

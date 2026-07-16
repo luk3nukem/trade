@@ -1087,8 +1087,8 @@ export function TradeForm() {
 
       {quickLogMode ? (
         /* Quick Log Mode - Minimal fields */
-        <div className="space-y-4 bg-gray-800 rounded-lg p-6">
-          <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-4 bg-gray-800 rounded-lg p-4 md:p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Pair */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -1136,7 +1136,7 @@ export function TradeForm() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Entry Price */}
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -1173,7 +1173,7 @@ export function TradeForm() {
           </div>
 
           {/* Target Price and MAE/MFE */}
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">Target</label>
               <input
@@ -2014,8 +2014,9 @@ export function TradeForm() {
 
                       return (
                         <div key={exit.id} className="p-3 bg-gray-750 rounded-lg space-y-2">
-                          <div className="flex gap-2 items-start flex-wrap">
-                            <div className="w-28">
+                          {/* Mobile: grid layout / Desktop: flex wrap */}
+                          <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
+                            <div className="col-span-1 md:w-28">
                               <label className="block text-xs text-gray-400 mb-1">Price</label>
                               <input
                                 type="number"
@@ -2023,7 +2024,7 @@ export function TradeForm() {
                                 value={exit.price || ''}
                                 onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
                                 placeholder="Exit price"
-                                className={`w-full px-2 py-1.5 bg-gray-700 border rounded text-white text-sm ${
+                                className={`w-full px-2 py-2 md:py-1.5 bg-gray-700 border rounded text-white text-sm ${
                                   warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
                                 }`}
                               />
@@ -2031,7 +2032,7 @@ export function TradeForm() {
                                 <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
                               )}
                             </div>
-                            <div className="w-24">
+                            <div className="col-span-1 md:w-24">
                               <label className="block text-xs text-gray-400 mb-1">Size</label>
                               <input
                                 type="number"
@@ -2039,24 +2040,24 @@ export function TradeForm() {
                                 value={exit.size || ''}
                                 onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
                                 placeholder="Lots"
-                                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                               />
                             </div>
-                            <div className="w-44">
+                            <div className="col-span-2 md:w-44">
                               <label className="block text-xs text-gray-400 mb-1">Time</label>
                               <input
                                 type="datetime-local"
                                 value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
                                 onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
-                                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                               />
                             </div>
-                            <div className="w-36">
+                            <div className="col-span-1 md:w-36">
                               <label className="block text-xs text-gray-400 mb-1">Type</label>
                               <select
                                 value={exit.type}
                                 onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
-                                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                               >
                                 {EXIT_TYPES.map((et) => (
                                   <option key={et.value} value={et.value}>
@@ -2065,25 +2066,27 @@ export function TradeForm() {
                                 ))}
                               </select>
                             </div>
-                            <div className="flex-1 min-w-[120px]">
-                              <label className="block text-xs text-gray-400 mb-1">Reason (optional)</label>
-                              <input
-                                type="text"
-                                value={exit.reason || ''}
-                                onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
-                                placeholder="e.g., TP at S/R"
-                                className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              />
+                            <div className="col-span-1 md:flex-1 md:min-w-[120px] flex items-end gap-2">
+                              <div className="flex-1">
+                                <label className="block text-xs text-gray-400 mb-1">Reason</label>
+                                <input
+                                  type="text"
+                                  value={exit.reason || ''}
+                                  onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
+                                  placeholder="Optional"
+                                  className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeExit(exit.id)}
+                                className="p-2 md:p-1.5 text-red-400 hover:text-red-300 shrink-0"
+                              >
+                                <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                              </button>
                             </div>
-                            <button
-                              type="button"
-                              onClick={() => removeExit(exit.id)}
-                              className="mt-5 p-1.5 text-red-400 hover:text-red-300"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
                           </div>
                           {/* Drawdown After - only for non-final exits */}
                           {showDrawdownAfter && (
@@ -2200,60 +2203,71 @@ export function TradeForm() {
               {formData.stopAdjustments.length > 0 ? (
                 <div className="space-y-2">
                   {formData.stopAdjustments.map((adj) => (
-                    <div key={adj.id} className="flex gap-2 items-start flex-wrap">
-                      <input
-                        type="datetime-local"
-                        value={adj.time instanceof Date ? toLocalDateTimeString(adj.time) : ''}
-                        onChange={(e) => updateStopAdjustment(adj.id, 'time', new Date(e.target.value))}
-                        className="w-40 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                      />
-                      <input
-                        type="number"
-                        step="any"
-                        value={adj.newStop || ''}
-                        onChange={(e) => updateStopAdjustment(adj.id, 'newStop', parseFloat(e.target.value) || 0)}
-                        placeholder="New Stop Price"
-                        className="w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                      />
-                      <div className="relative flex-1 min-w-[150px]">
+                    <div key={adj.id} className="p-2 bg-gray-800 rounded-lg space-y-2 md:p-0 md:bg-transparent md:space-y-0">
+                      <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
                         <input
-                          type="text"
-                          value={adj.reason}
-                          onChange={(e) => updateStopAdjustment(adj.id, 'reason', e.target.value)}
-                          placeholder="Reason (e.g., moved to BE)"
-                          list={`reason-suggestions-${adj.id}`}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                          type="datetime-local"
+                          value={adj.time instanceof Date ? toLocalDateTimeString(adj.time) : ''}
+                          onChange={(e) => updateStopAdjustment(adj.id, 'time', new Date(e.target.value))}
+                          className="col-span-2 md:w-40 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
                         />
-                        <datalist id={`reason-suggestions-${adj.id}`}>
-                          {STOP_ADJUSTMENT_REASONS.map((r) => (
-                            <option key={r} value={r} />
-                          ))}
-                        </datalist>
-                      </div>
-                      <div className="relative flex-1 min-w-[120px]">
                         <input
-                          type="text"
-                          value={adj.trigger || ''}
-                          onChange={(e) => updateStopAdjustment(adj.id, 'trigger', e.target.value)}
-                          placeholder="Trigger (e.g., TP hit)"
-                          list={`trigger-suggestions-${adj.id}`}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                          type="number"
+                          step="any"
+                          value={adj.newStop || ''}
+                          onChange={(e) => updateStopAdjustment(adj.id, 'newStop', parseFloat(e.target.value) || 0)}
+                          placeholder="New Stop"
+                          className="col-span-1 md:w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
                         />
-                        <datalist id={`trigger-suggestions-${adj.id}`}>
-                          {STOP_ADJUSTMENT_TRIGGERS.map((t) => (
-                            <option key={t} value={t} />
-                          ))}
-                        </datalist>
+                        <div className="relative col-span-1 md:flex-1 md:min-w-[150px] flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={adj.reason}
+                            onChange={(e) => updateStopAdjustment(adj.id, 'reason', e.target.value)}
+                            placeholder="Reason"
+                            list={`reason-suggestions-${adj.id}`}
+                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                          />
+                          <datalist id={`reason-suggestions-${adj.id}`}>
+                            {STOP_ADJUSTMENT_REASONS.map((r) => (
+                              <option key={r} value={r} />
+                            ))}
+                          </datalist>
+                          <button
+                            type="button"
+                            onClick={() => removeStopAdjustment(adj.id)}
+                            className="p-2 text-red-400 hover:text-red-300 shrink-0 md:hidden"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                        <div className="relative col-span-2 md:col-span-1 md:flex-1 md:min-w-[120px]">
+                          <input
+                            type="text"
+                            value={adj.trigger || ''}
+                            onChange={(e) => updateStopAdjustment(adj.id, 'trigger', e.target.value)}
+                            placeholder="Trigger"
+                            list={`trigger-suggestions-${adj.id}`}
+                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                          />
+                          <datalist id={`trigger-suggestions-${adj.id}`}>
+                            {STOP_ADJUSTMENT_TRIGGERS.map((t) => (
+                              <option key={t} value={t} />
+                            ))}
+                          </datalist>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeStopAdjustment(adj.id)}
+                          className="hidden md:block p-2 text-red-400 hover:text-red-300"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => removeStopAdjustment(adj.id)}
-                        className="p-2 text-red-400 hover:text-red-300"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
                     </div>
                   ))}
                 </div>
@@ -2461,112 +2475,204 @@ export function TradeForm() {
                       return (
                         <div
                           key={level.id}
-                          className="p-2 bg-gray-750 rounded-lg"
+                          className="p-2 md:p-2 bg-gray-750 rounded-lg"
                         >
-                          {/* Main row */}
-                          <div className="flex items-center gap-2">
-                            {/* Position indicator */}
-                            <span className="text-xs text-gray-500 w-5 text-center">{index + 1}</span>
+                          {/* Mobile: Stacked layout / Desktop: Inline row */}
+                          <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-2">
+                            {/* Row 1 on mobile: Type, TF, Zone toggle, Actions */}
+                            <div className="flex items-center gap-2">
+                              {/* Position indicator */}
+                              <span className="text-xs text-gray-500 w-5 text-center shrink-0">{index + 1}</span>
 
-                            {/* Level Type - autocomplete input */}
-                            <div className="relative">
-                              <input
-                                type="text"
-                                value={showLevelTypeSuggestions[index] ? inputValue : level.levelType}
+                              {/* Level Type - autocomplete input */}
+                              <div className="relative flex-1 md:flex-none">
+                                <input
+                                  type="text"
+                                  value={showLevelTypeSuggestions[index] ? inputValue : level.levelType}
+                                  onChange={(e) => {
+                                    const newValue = e.target.value;
+                                    setLevelTypeInputs(prev => ({ ...prev, [index]: newValue }));
+                                    const nowZone = isLevelTypeZone(newValue);
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.map((l, i) =>
+                                        i === index ? {
+                                          ...l,
+                                          levelType: newValue,
+                                          priceFar: nowZone ? l.priceFar : null,
+                                          deepestPrice: nowZone ? l.deepestPrice : null,
+                                          penetrationPercent: nowZone ? l.penetrationPercent : null,
+                                        } : l
+                                      ),
+                                    }));
+                                    setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                                  }}
+                                  onFocus={() => {
+                                    setLevelTypeInputs(prev => ({ ...prev, [index]: level.levelType }));
+                                    setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                                  }}
+                                  onBlur={() => setTimeout(() => setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false })), 200)}
+                                  placeholder="Type"
+                                  className="w-full md:w-20 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                                {showLevelTypeSuggestions[index] && filteredTypes.length > 0 && (
+                                  <div className="absolute z-20 w-full md:w-40 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                    {filteredTypes.map((lt) => (
+                                      <button
+                                        key={lt}
+                                        type="button"
+                                        onClick={() => selectLevelType(index, lt)}
+                                        className="w-full px-3 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
+                                      >
+                                        <span>{lt}</span>
+                                        {isPresetZoneType(lt) && (
+                                          <span className="text-xs text-gray-500">zone</span>
+                                        )}
+                                        {isPresetLineType(lt) && (
+                                          <span className="text-xs text-gray-500">line</span>
+                                        )}
+                                        {!isKnownLevelType(lt) && (
+                                          <span className="text-xs text-blue-400">custom</span>
+                                        )}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Timeframe select */}
+                              <select
+                                value={level.timeframe}
                                 onChange={(e) => {
-                                  const newValue = e.target.value;
-                                  setLevelTypeInputs(prev => ({ ...prev, [index]: newValue }));
-                                  // Also update the actual level type as user types
-                                  const nowZone = isLevelTypeZone(newValue);
                                   setFormData((prev) => ({
                                     ...prev,
                                     levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? {
-                                        ...l,
-                                        levelType: newValue,
-                                        // Clear zone fields if switching from zone to line
-                                        priceFar: nowZone ? l.priceFar : null,
-                                        deepestPrice: nowZone ? l.deepestPrice : null,
-                                        penetrationPercent: nowZone ? l.penetrationPercent : null,
-                                      } : l
+                                      i === index ? { ...l, timeframe: e.target.value } : l
                                     ),
                                   }));
-                                  setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
                                 }}
-                                onFocus={() => {
-                                  setLevelTypeInputs(prev => ({ ...prev, [index]: level.levelType }));
-                                  setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
-                                }}
-                                onBlur={() => setTimeout(() => setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false })), 200)}
-                                placeholder="Type"
-                                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                              {showLevelTypeSuggestions[index] && filteredTypes.length > 0 && (
-                                <div className="absolute z-20 w-40 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                                  {filteredTypes.map((lt) => (
-                                    <button
-                                      key={lt}
-                                      type="button"
-                                      onClick={() => selectLevelType(index, lt)}
-                                      className="w-full px-3 py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
-                                    >
-                                      <span>{lt}</span>
-                                      {isPresetZoneType(lt) && (
-                                        <span className="text-xs text-gray-500">zone</span>
-                                      )}
-                                      {isPresetLineType(lt) && (
-                                        <span className="text-xs text-gray-500">line</span>
-                                      )}
-                                      {!isKnownLevelType(lt) && (
-                                        <span className="text-xs text-blue-400">custom</span>
-                                      )}
-                                    </button>
-                                  ))}
-                                </div>
+                                className="w-16 shrink-0 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              >
+                                <option value="">TF</option>
+                                <option value="M1">M1</option>
+                                <option value="M5">M5</option>
+                                <option value="M15">M15</option>
+                                <option value="M30">M30</option>
+                                <option value="H1">H1</option>
+                                <option value="H4">H4</option>
+                                <option value="D1">D1</option>
+                                <option value="W1">W1</option>
+                                <option value="MTF">MTF</option>
+                              </select>
+
+                              {/* Zone toggle for custom types */}
+                              {showZoneToggle && (
+                                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer shrink-0" title="Zone">
+                                  <input
+                                    type="checkbox"
+                                    checked={isZone}
+                                    onChange={(e) => handleZoneToggle(index, level.levelType, e.target.checked)}
+                                    className="w-4 h-4 md:w-3 md:h-3 rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
+                                  />
+                                  <span className="hidden md:inline">Zone</span>
+                                </label>
                               )}
+
+                              {/* Reorder & Remove buttons - always visible on mobile */}
+                              <div className="flex items-center gap-1 ml-auto md:ml-0">
+                                <div className="flex flex-col">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (index === 0) return;
+                                      setFormData((prev) => {
+                                        const newSeq = [...prev.levelSequence];
+                                        [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
+                                        return { ...prev, levelSequence: newSeq };
+                                      });
+                                    }}
+                                    disabled={index === 0}
+                                    className={`p-1 md:p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                                  >
+                                    <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (index === formData.levelSequence.length - 1) return;
+                                      setFormData((prev) => {
+                                        const newSeq = [...prev.levelSequence];
+                                        [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
+                                        return { ...prev, levelSequence: newSeq };
+                                      });
+                                    }}
+                                    disabled={index === formData.levelSequence.length - 1}
+                                    className={`p-1 md:p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                                  >
+                                    <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.filter((_, i) => i !== index),
+                                    }));
+                                  }}
+                                  className="p-1.5 md:p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
+                                >
+                                  <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
                             </div>
 
-                            {/* Zone toggle for custom types */}
-                            {showZoneToggle && (
-                              <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer" title="Toggle zone (has two edges) vs line (single price)">
-                                <input
-                                  type="checkbox"
-                                  checked={isZone}
-                                  onChange={(e) => handleZoneToggle(index, level.levelType, e.target.checked)}
-                                  className="w-3 h-3 rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
-                                />
-                                Zone
-                              </label>
-                            )}
-
-                            {/* Timeframe select */}
-                            <select
-                              value={level.timeframe}
-                              onChange={(e) => {
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  levelSequence: prev.levelSequence.map((l, i) =>
-                                    i === index ? { ...l, timeframe: e.target.value } : l
-                                  ),
-                                }));
-                              }}
-                              className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                              <option value="">TF</option>
-                              <option value="M1">M1</option>
-                              <option value="M5">M5</option>
-                              <option value="M15">M15</option>
-                              <option value="M30">M30</option>
-                              <option value="H1">H1</option>
-                              <option value="H4">H4</option>
-                              <option value="D1">D1</option>
-                              <option value="W1">W1</option>
-                              <option value="MTF">MTF</option>
-                            </select>
-
-                            {/* Price inputs - different for zones vs lines */}
-                            {isZone ? (
-                              <>
+                            {/* Row 2 on mobile: Price inputs and Reaction */}
+                            <div className="flex items-center gap-2 ml-7 md:ml-0">
+                              {/* Price inputs - different for zones vs lines */}
+                              {isZone ? (
+                                <>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={level.price || ''}
+                                    onChange={(e) => {
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        levelSequence: prev.levelSequence.map((l, i) =>
+                                          i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                        ),
+                                      }));
+                                    }}
+                                    placeholder="Near"
+                                    title="Near edge"
+                                    className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                  />
+                                  <span className="text-gray-500 text-xs shrink-0">→</span>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    value={level.priceFar || ''}
+                                    onChange={(e) => {
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        levelSequence: prev.levelSequence.map((l, i) =>
+                                          i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
+                                        ),
+                                      }));
+                                    }}
+                                    placeholder="Far"
+                                    title="Far edge"
+                                    className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                  />
+                                </>
+                              ) : (
                                 <input
                                   type="number"
                                   step="any"
@@ -2579,119 +2685,31 @@ export function TradeForm() {
                                       ),
                                     }));
                                   }}
-                                  placeholder="Near edge"
-                                  title="Near edge (where price enters)"
-                                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                  placeholder="Price"
+                                  className="flex-1 md:flex-none md:w-28 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                                 />
-                                <span className="text-gray-500 text-xs">→</span>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={level.priceFar || ''}
-                                  onChange={(e) => {
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      levelSequence: prev.levelSequence.map((l, i) =>
-                                        i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
-                                      ),
-                                    }));
-                                  }}
-                                  placeholder="Far edge"
-                                  title="Far edge (opposite side of zone)"
-                                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                              </>
-                            ) : (
-                              <input
-                                type="number"
-                                step="any"
-                                value={level.price || ''}
+                              )}
+
+                              {/* Reaction select */}
+                              <select
+                                value={level.reaction || ''}
                                 onChange={(e) => {
                                   setFormData((prev) => ({
                                     ...prev,
                                     levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                      i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
                                     ),
                                   }));
                                 }}
-                                placeholder="Price"
-                                className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                            )}
-
-                            {/* Reaction select */}
-                            <select
-                              value={level.reaction || ''}
-                              onChange={(e) => {
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  levelSequence: prev.levelSequence.map((l, i) =>
-                                    i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
-                                  ),
-                                }));
-                              }}
-                              className="flex-1 min-w-[90px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            >
-                              <option value="">— Reaction</option>
-                              <option value="bounced">Bounced</option>
-                              <option value="front_run">Front-run</option>
-                              <option value="swept_then_bounced">Swept then bounced</option>
-                              <option value="broken">Broken through</option>
-                            </select>
-
-                            {/* Reorder buttons */}
-                            <div className="flex flex-col">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (index === 0) return;
-                                  setFormData((prev) => {
-                                    const newSeq = [...prev.levelSequence];
-                                    [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
-                                    return { ...prev, levelSequence: newSeq };
-                                  });
-                                }}
-                                disabled={index === 0}
-                                className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                                className="flex-1 md:flex-none md:min-w-[90px] px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                               >
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                                </svg>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (index === formData.levelSequence.length - 1) return;
-                                  setFormData((prev) => {
-                                    const newSeq = [...prev.levelSequence];
-                                    [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
-                                    return { ...prev, levelSequence: newSeq };
-                                  });
-                                }}
-                                disabled={index === formData.levelSequence.length - 1}
-                                className={`p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                              >
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                </svg>
-                              </button>
+                                <option value="">Reaction</option>
+                                <option value="bounced">Bounced</option>
+                                <option value="front_run">Front-run</option>
+                                <option value="swept_then_bounced">Swept+bounced</option>
+                                <option value="broken">Broken</option>
+                              </select>
                             </div>
-
-                            {/* Remove button */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  levelSequence: prev.levelSequence.filter((_, i) => i !== index),
-                                }));
-                              }}
-                              className="p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
-                            >
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                            </button>
                           </div>
 
                           {/* Zone-only: Deepest price row */}
