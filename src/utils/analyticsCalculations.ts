@@ -1586,12 +1586,138 @@ export function getTradesPerDayAnalysis(trades: TradeRecord[]): {
   return { points, optimalTradeCount, overtradeThreshold };
 }
 
+// Entry Confirmation Analysis
+export interface EntryConfirmationStats {
+  type: string;
+  label: string;
+  count: number;
+  winRate: number;
+  avgR: number;
+  profitFactor: number;
+  avgFirstTouchAdverse: number | null; // Average firstTouchWorstPrice distance in R
+  avgMae: number | null; // Average MAE in R
+}
+
+const ENTRY_CONFIRMATION_LABELS: Record<string, string> = {
+  blind_limit: 'Blind (Limit)',
+  blind_market: 'Blind (Market)',
+  structural: 'Structural',
+  partial_confirmation: 'Partial Confirmation',
+};
+
+export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfirmationStats[] {
+  const closedTrades = trades.filter(t => t.status === 'closed' && t.entryConfirmation);
+
+  const groups = new Map<string, TradeRecord[]>();
+  for (const trade of closedTrades) {
+    const type = trade.entryConfirmation!;
+    const existing = groups.get(type) || [];
+    existing.push(trade);
+    groups.set(type, existing);
+  }
+
+  const results: EntryConfirmationStats[] = [];
+  const typeOrder = ['blind_limit', 'blind_market', 'structural', 'partial_confirmation'];
+
+  for (const type of typeOrder) {
+    const groupTrades = groups.get(type);
+    if (!groupTrades || groupTrades.length === 0) continue;
+
+    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+
+    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+
+    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+    // Calculate avg first touch adverse in R
+    const tradesWithFirstTouch = groupTrades.filter(t =>
+      t.firstTouchWorstPrice !== null &&
+      t.firstTouchWorstPrice !== undefined &&
+      t.stopLoss &&
+      t.entryPrice
+    );
+    let avgFirstTouchAdverse: number | null = null;
+    if (tradesWithFirstTouch.length > 0) {
+      const firstTouchRs = tradesWithFirstTouch.map(t => {
+        const stopDistance = Math.abs(t.entryPrice - t.stopLoss);
+        if (stopDistance === 0) return 0;
+        const adverseDistance = t.direction === 'long'
+          ? t.entryPrice - t.firstTouchWorstPrice!
+          : t.firstTouchWorstPrice! - t.entryPrice;
+        return adverseDistance / stopDistance;
+      });
+      avgFirstTouchAdverse = firstTouchRs.reduce((a, b) => a + b, 0) / firstTouchRs.length;
+    }
+
+    // Calculate avg MAE in R
+    const tradesWithMae = groupTrades.filter(t =>
+      t.maePrice !== null &&
+      t.maePrice !== undefined &&
+      t.stopLoss &&
+      t.entryPrice
+    );
+    let avgMae: number | null = null;
+    if (tradesWithMae.length > 0) {
+      const maeRs = tradesWithMae.map(t => {
+        const stopDistance = Math.abs(t.entryPrice - t.stopLoss);
+        if (stopDistance === 0) return 0;
+        const adverseDistance = t.direction === 'long'
+          ? t.entryPrice - t.maePrice!
+          : t.maePrice! - t.entryPrice;
+        return adverseDistance / stopDistance;
+      });
+      avgMae = maeRs.reduce((a, b) => a + b, 0) / maeRs.length;
+    }
+
+    results.push({
+      type,
+      label: ENTRY_CONFIRMATION_LABELS[type] || type,
+      count: groupTrades.length,
+      winRate: (wins.length / groupTrades.length) * 100,
+      avgR,
+      profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
+      avgFirstTouchAdverse,
+      avgMae,
+    });
+  }
+
+  // Add any custom types not in the standard list
+  for (const [type, groupTrades] of groups) {
+    if (typeOrder.includes(type)) continue;
+    if (groupTrades.length === 0) continue;
+
+    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+    results.push({
+      type,
+      label: type,
+      count: groupTrades.length,
+      winRate: (wins.length / groupTrades.length) * 100,
+      avgR,
+      profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
+      avgFirstTouchAdverse: null,
+      avgMae: null,
+    });
+  }
+
+  return results;
+}
+
 export function getBehaviouralInsights(
   emotionalStats: EmotionalStateStats[],
   planAdherence: PlanAdherenceStats,
   revengeStats: RevengeTradeStats,
   streakAnalysis: StreakAnalysisData,
-  tradesPerDay: { optimalTradeCount: number; overtradeThreshold: number }
+  tradesPerDay: { optimalTradeCount: number; overtradeThreshold: number },
+  entryConfirmationStats?: EntryConfirmationStats[]
 ): string[] {
   const insights: string[] = [];
 
@@ -1651,6 +1777,62 @@ export function getBehaviouralInsights(
     'Your best days have ' + tradesPerDay.optimalTradeCount + ' trades. ' +
     'Days with ' + tradesPerDay.overtradeThreshold + '+ trades show declining returns — this is your overtrade threshold.'
   );
+
+  // Entry confirmation insights
+  if (entryConfirmationStats && entryConfirmationStats.length > 0) {
+    // Compare blind entries vs confirmation-based entries
+    const blindEntries = entryConfirmationStats.filter(s =>
+      s.type === 'blind_limit' || s.type === 'blind_market'
+    );
+    const confirmationEntries = entryConfirmationStats.filter(s =>
+      s.type === 'structural' || s.type === 'partial_confirmation'
+    );
+
+    if (blindEntries.length > 0 && confirmationEntries.length > 0) {
+      const blindCount = blindEntries.reduce((sum, s) => sum + s.count, 0);
+      const confirmCount = confirmationEntries.reduce((sum, s) => sum + s.count, 0);
+
+      const blindAvgR = blindEntries.reduce((sum, s) => sum + s.avgR * s.count, 0) / blindCount;
+      const confirmAvgR = confirmationEntries.reduce((sum, s) => sum + s.avgR * s.count, 0) / confirmCount;
+
+      if (Math.abs(blindAvgR - confirmAvgR) > 0.1) {
+        const better = blindAvgR > confirmAvgR ? 'blind' : 'confirmation';
+        const betterR = better === 'blind' ? blindAvgR : confirmAvgR;
+        const worseR = better === 'blind' ? confirmAvgR : blindAvgR;
+
+        insights.push(
+          'Your ' + better + ' entries average ' + betterR.toFixed(2) + 'R vs ' + worseR.toFixed(2) + 'R for ' +
+          (better === 'blind' ? 'confirmation' : 'blind') + ' entries. ' +
+          (better === 'blind'
+            ? 'Your levels may be strong enough to trust without waiting for confirmation.'
+            : 'Waiting for confirmation improves your results.')
+        );
+      }
+
+      // Compare MAE/first touch adverse if available
+      const blindWithMae = blindEntries.filter(s => s.avgMae !== null);
+      const confirmWithMae = confirmationEntries.filter(s => s.avgMae !== null);
+
+      if (blindWithMae.length > 0 && confirmWithMae.length > 0) {
+        const blindMaeCount = blindWithMae.reduce((sum, s) => sum + s.count, 0);
+        const confirmMaeCount = confirmWithMae.reduce((sum, s) => sum + s.count, 0);
+        const blindMae = blindWithMae.reduce((sum, s) => sum + (s.avgMae ?? 0) * s.count, 0) / blindMaeCount;
+        const confirmMae = confirmWithMae.reduce((sum, s) => sum + (s.avgMae ?? 0) * s.count, 0) / confirmMaeCount;
+
+        if (Math.abs(blindMae - confirmMae) > 0.05) {
+          const tighter = blindMae < confirmMae ? 'blind' : 'confirmation';
+          insights.push(
+            (tighter === 'blind' ? 'Blind' : 'Confirmation') + ' entries have tighter MAE (' +
+            (tighter === 'blind' ? blindMae : confirmMae).toFixed(2) + 'R vs ' +
+            (tighter === 'blind' ? confirmMae : blindMae).toFixed(2) + 'R). ' +
+            (tighter === 'confirmation'
+              ? 'Waiting for confirmation helps you enter at better prices.'
+              : 'Your limit levels are well-placed.')
+          );
+        }
+      }
+    }
+  }
 
   return insights;
 }

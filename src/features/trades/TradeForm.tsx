@@ -67,6 +67,7 @@ const getInitialFormData = (): TradeFormData => ({
   setupTags: [],
   analysisTFs: [],
   entryTF: '',
+  entryConfirmation: '',
   htfBias: '',
   marketCondition: '',
   levelSequence: [],
@@ -128,6 +129,39 @@ const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: 'W1', label: 'W1' },
   { value: 'M1', label: 'M1' },
 ];
+
+const ENTRY_CONFIRMATION_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '—' },
+  { value: 'blind_limit', label: 'Blind — limit order at level' },
+  { value: 'blind_market', label: 'Blind — market order at touch' },
+  { value: 'structural', label: 'Waited for structural confirmation' },
+  { value: 'partial_confirmation', label: 'Partial confirmation' },
+];
+
+// Preset level timeframes for the combo input
+const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MTF'];
+
+// Normalize a timeframe string (trim whitespace, uppercase unit letter)
+const normalizeLevelTimeframe = (tf: string): string => {
+  const trimmed = tf.trim();
+  if (!trimmed) return '';
+  // Match patterns like "1m", "15M", "4h", "1d", "2W", etc.
+  const match = trimmed.match(/^(\d+)([mhdwMHDW])$/i);
+  if (match) {
+    const num = match[1];
+    const unit = match[2].toUpperCase();
+    return `${unit}${num}`;
+  }
+  // Already in correct format like "H4", "D1", etc.
+  const match2 = trimmed.match(/^([mhdwMHDW])(\d+)$/i);
+  if (match2) {
+    const unit = match2[1].toUpperCase();
+    const num = match2[2];
+    return `${unit}${num}`;
+  }
+  // Return as-is for custom values like "MTF"
+  return trimmed.toUpperCase();
+};
 
 const HTF_BIASES: { value: HTFBias; label: string }[] = [
   { value: 'bullish', label: 'Bullish' },
@@ -260,6 +294,11 @@ export function TradeForm() {
   const [levelTypeInputs, setLevelTypeInputs] = useState<Record<number, string>>({}); // Input value per row index
   const [showLevelTypeSuggestions, setShowLevelTypeSuggestions] = useState<Record<number, boolean>>({});
 
+  // Level timeframe autocomplete state
+  const [previousLevelTimeframes, setPreviousLevelTimeframes] = useState<string[]>([]);
+  const [levelTfInputs, setLevelTfInputs] = useState<Record<number, string>>({}); // Input value per row index
+  const [showLevelTfSuggestions, setShowLevelTfSuggestions] = useState<Record<number, boolean>>({});
+
   // Load existing trade data for edit mode
   useEffect(() => {
     if (!id) return;
@@ -288,6 +327,7 @@ export function TradeForm() {
             setupTags: trade.setupTags || [],
             analysisTFs: trade.analysisTFs || [],
             entryTF: trade.entryTF || '',
+            entryConfirmation: trade.entryConfirmation || '',
             htfBias: trade.htfBias || '',
             marketCondition: trade.marketCondition || '',
             levelSequence: trade.levelSequence || [],
@@ -342,6 +382,14 @@ export function TradeForm() {
       );
       const uniqueLevelTypes = [...new Set(allLevelTypes)].filter(Boolean);
       setPreviousLevelTypes(uniqueLevelTypes);
+
+      // Collect all unique level timeframes (excluding presets to only get custom ones)
+      const allLevelTimeframes = trades.flatMap((t) =>
+        (t.levelSequence || []).map((l) => l.timeframe).filter(Boolean)
+      );
+      const uniqueLevelTimeframes = [...new Set(allLevelTimeframes)]
+        .filter(tf => tf && !PRESET_LEVEL_TIMEFRAMES.includes(tf));
+      setPreviousLevelTimeframes(uniqueLevelTimeframes);
 
       // Load level type zone preferences
       const prefs = await db.levelTypePrefs.toArray();
@@ -830,9 +878,13 @@ export function TradeForm() {
         setupTags: formData.setupTags,
         analysisTFs: formData.analysisTFs,
         entryTF: formData.entryTF || undefined,
+        entryConfirmation: formData.entryConfirmation || undefined,
         htfBias: formData.htfBias || undefined,
         marketCondition: formData.marketCondition || undefined,
-        levelSequence: formData.levelSequence,
+        levelSequence: formData.levelSequence.map(level => ({
+          ...level,
+          timeframe: normalizeLevelTimeframe(level.timeframe),
+        })),
         tradeTaken: formData.tradeTaken,
         notTakenReason: !formData.tradeTaken ? formData.notTakenReason.trim() : '',
         emotionalState: formData.emotionalState ?? undefined,
@@ -957,6 +1009,30 @@ export function TradeForm() {
     return allLevelTypes
       .filter(lt => lt.toLowerCase().includes(inputValue.toLowerCase()))
       .slice(0, 10);
+  };
+
+  // All level timeframes = presets + custom previously used ones
+  const allLevelTimeframes = [...PRESET_LEVEL_TIMEFRAMES, ...previousLevelTimeframes.filter(tf => !PRESET_LEVEL_TIMEFRAMES.includes(tf))];
+
+  // Get filtered level timeframe suggestions for a row
+  const getFilteredLevelTimeframes = (index: number, currentValue: string): string[] => {
+    const inputValue = levelTfInputs[index] ?? currentValue;
+    if (!inputValue) return allLevelTimeframes;
+    return allLevelTimeframes
+      .filter(tf => tf.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  // Select a level timeframe from suggestions
+  const selectLevelTimeframe = (index: number, timeframe: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      levelSequence: prev.levelSequence.map((l, i) =>
+        i === index ? { ...l, timeframe } : l
+      ),
+    }));
+    setLevelTfInputs(prev => ({ ...prev, [index]: '' }));
+    setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false }));
   };
 
   // Save zone preference for a custom level type
@@ -1411,6 +1487,20 @@ export function TradeForm() {
                 {TIMEFRAMES.map((tf) => (
                   <option key={tf.value} value={tf.value}>
                     {tf.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">Entry Confirmation</label>
+              <select
+                value={formData.entryConfirmation}
+                onChange={(e) => handleChange('entryConfirmation', e.target.value)}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {ENTRY_CONFIRMATION_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
                   </option>
                 ))}
               </select>
@@ -2397,6 +2487,22 @@ export function TradeForm() {
                 </div>
 
                 <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">Entry Confirmation</label>
+                  <select
+                    value={formData.entryConfirmation}
+                    onChange={(e) => handleChange('entryConfirmation', e.target.value)}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {ENTRY_CONFIRMATION_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">How entry was executed</p>
+                </div>
+
+                <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">HTF Bias</label>
                   <select
                     value={formData.htfBias}
@@ -2540,30 +2646,60 @@ export function TradeForm() {
                                 )}
                               </div>
 
-                              {/* Timeframe select */}
-                              <select
-                                value={level.timeframe}
-                                onChange={(e) => {
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? { ...l, timeframe: e.target.value } : l
-                                    ),
-                                  }));
-                                }}
-                                className="w-16 shrink-0 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              >
-                                <option value="">TF</option>
-                                <option value="M1">M1</option>
-                                <option value="M5">M5</option>
-                                <option value="M15">M15</option>
-                                <option value="M30">M30</option>
-                                <option value="H1">H1</option>
-                                <option value="H4">H4</option>
-                                <option value="D1">D1</option>
-                                <option value="W1">W1</option>
-                                <option value="MTF">MTF</option>
-                              </select>
+                              {/* Timeframe combo input */}
+                              <div className="relative shrink-0">
+                                <input
+                                  type="text"
+                                  value={showLevelTfSuggestions[index] ? (levelTfInputs[index] ?? level.timeframe) : level.timeframe}
+                                  onChange={(e) => {
+                                    const newValue = e.target.value;
+                                    setLevelTfInputs(prev => ({ ...prev, [index]: newValue }));
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.map((l, i) =>
+                                        i === index ? { ...l, timeframe: newValue } : l
+                                      ),
+                                    }));
+                                    setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
+                                  }}
+                                  onFocus={() => {
+                                    setLevelTfInputs(prev => ({ ...prev, [index]: level.timeframe }));
+                                    setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
+                                  }}
+                                  onBlur={() => {
+                                    // Normalize on blur
+                                    const normalized = normalizeLevelTimeframe(level.timeframe);
+                                    if (normalized !== level.timeframe) {
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        levelSequence: prev.levelSequence.map((l, i) =>
+                                          i === index ? { ...l, timeframe: normalized } : l
+                                        ),
+                                      }));
+                                    }
+                                    setTimeout(() => setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false })), 200);
+                                  }}
+                                  placeholder="TF"
+                                  className="w-16 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                                {showLevelTfSuggestions[index] && getFilteredLevelTimeframes(index, level.timeframe).length > 0 && (
+                                  <div className="absolute z-20 w-20 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                    {getFilteredLevelTimeframes(index, level.timeframe).map((tf) => (
+                                      <button
+                                        key={tf}
+                                        type="button"
+                                        onClick={() => selectLevelTimeframe(index, tf)}
+                                        className="w-full px-2 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-1"
+                                      >
+                                        <span>{tf}</span>
+                                        {!PRESET_LEVEL_TIMEFRAMES.includes(tf) && (
+                                          <span className="text-xs text-blue-400">*</span>
+                                        )}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
 
                               {/* Zone toggle for custom types */}
                               {showZoneToggle && (

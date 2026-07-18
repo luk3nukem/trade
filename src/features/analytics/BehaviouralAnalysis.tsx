@@ -21,6 +21,7 @@ import {
   getStreakAnalysis,
   getTradesPerDayAnalysis,
   getBehaviouralInsights,
+  getEntryConfirmationAnalysis,
 } from '../../utils';
 
 interface Props {
@@ -36,9 +37,10 @@ export function BehaviouralAnalysis({ trades }: Props) {
   const revengeStats = useMemo(() => getRevengeTradeAnalysis(trades), [trades]);
   const streakAnalysis = useMemo(() => getStreakAnalysis(trades), [trades]);
   const tradesPerDay = useMemo(() => getTradesPerDayAnalysis(trades), [trades]);
+  const entryConfirmationStats = useMemo(() => getEntryConfirmationAnalysis(trades), [trades]);
   const insights = useMemo(
-    () => getBehaviouralInsights(emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay),
-    [emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay]
+    () => getBehaviouralInsights(emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats),
+    [emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats]
   );
 
   const closedTrades = trades.filter(t => t.status === 'closed');
@@ -299,6 +301,118 @@ export function BehaviouralAnalysis({ trades }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Entry Confirmation Analysis */}
+      {entryConfirmationStats.length > 0 && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-medium text-white">Entry Confirmation Analysis</h3>
+            <p className="text-sm text-gray-400">Performance by entry confirmation type</p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-700">
+                  <th className="text-left py-2 px-3 text-gray-400 font-medium">Type</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Count</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Win Rate</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg R</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">PF</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg 1st Touch</th>
+                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg MAE</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entryConfirmationStats.map((stat) => (
+                  <tr key={stat.type} className="border-b border-gray-700/50 last:border-0">
+                    <td className="py-2 px-3 text-gray-300">{stat.label}</td>
+                    <td className="py-2 px-3 text-right text-white">{stat.count}</td>
+                    <td className="py-2 px-3 text-right text-white">{stat.winRate.toFixed(1)}%</td>
+                    <td className={`py-2 px-3 text-right font-medium ${stat.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {stat.avgR.toFixed(2)}R
+                    </td>
+                    <td className="py-2 px-3 text-right text-white">
+                      {stat.profitFactor > 10 ? '>10' : stat.profitFactor.toFixed(2)}
+                    </td>
+                    <td className="py-2 px-3 text-right text-gray-300">
+                      {stat.avgFirstTouchAdverse !== null
+                        ? stat.avgFirstTouchAdverse.toFixed(2) + 'R'
+                        : '-'}
+                    </td>
+                    <td className="py-2 px-3 text-right text-gray-300">
+                      {stat.avgMae !== null ? stat.avgMae.toFixed(2) + 'R' : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Blind vs Confirmation Summary */}
+          {(() => {
+            const blindTypes = entryConfirmationStats.filter(s =>
+              s.type === 'blind_limit' || s.type === 'blind_market'
+            );
+            const confirmTypes = entryConfirmationStats.filter(s =>
+              s.type === 'structural' || s.type === 'partial_confirmation'
+            );
+
+            if (blindTypes.length > 0 && confirmTypes.length > 0) {
+              const blindCount = blindTypes.reduce((sum, s) => sum + s.count, 0);
+              const confirmCount = confirmTypes.reduce((sum, s) => sum + s.count, 0);
+              const blindAvgR = blindTypes.reduce((sum, s) => sum + s.avgR * s.count, 0) / blindCount;
+              const confirmAvgR = confirmTypes.reduce((sum, s) => sum + s.avgR * s.count, 0) / confirmCount;
+              const blindWinRate = blindTypes.reduce((sum, s) => sum + s.winRate * s.count, 0) / blindCount;
+              const confirmWinRate = confirmTypes.reduce((sum, s) => sum + s.winRate * s.count, 0) / confirmCount;
+
+              return (
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="bg-gray-750 rounded-lg p-4">
+                    <h4 className="text-sm font-medium text-gray-400 mb-3">Blind Entries</h4>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Count</span>
+                        <span className="text-white font-medium">{blindCount}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Win Rate</span>
+                        <span className="text-white font-medium">{blindWinRate.toFixed(1)}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Avg R</span>
+                        <span className={`font-medium ${blindAvgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {blindAvgR.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-gray-750 rounded-lg p-4">
+                    <h4 className="text-sm font-medium text-gray-400 mb-3">Confirmation Entries</h4>
+                    <div className="space-y-2">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Count</span>
+                        <span className="text-white font-medium">{confirmCount}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Win Rate</span>
+                        <span className="text-white font-medium">{confirmWinRate.toFixed(1)}%</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Avg R</span>
+                        <span className={`font-medium ${confirmAvgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {confirmAvgR.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
+        </div>
+      )}
 
       {/* Performance After Wins vs Losses (Streak Analysis) */}
       <div className="bg-gray-800 rounded-lg p-6">

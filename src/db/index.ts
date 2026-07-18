@@ -566,6 +566,28 @@ class TradingDiaryDB extends Dexie {
         levelTypePrefs: '@id, levelType', // Store zone preference per custom level type
       });
 
+    // Version 22 - Add entryConfirmation field for entry confirmation tracking
+    this.version(22)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+        levelTypePrefs: '@id, levelType',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Initialize entryConfirmation for all existing trades
+            if (trade.entryConfirmation === undefined) {
+              trade.entryConfirmation = '';
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

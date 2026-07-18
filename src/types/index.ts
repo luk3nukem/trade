@@ -173,6 +173,7 @@ export interface TradeRecord {
   setupTags: string[]; // Multi-tag confluence system
   analysisTFs: string[]; // Timeframes used to identify the setup (e.g. W1, D1, H4)
   entryTF?: Timeframe; // Timeframe used to execute entry (e.g. 15m, 1H)
+  entryConfirmation?: string; // How the entry was executed (blind_limit, blind_market, structural, partial_confirmation)
   htfBias?: HTFBias;
   marketCondition?: MarketCondition;
   levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
@@ -382,6 +383,7 @@ export interface TradeFormData {
   setupTags: string[];
   analysisTFs: string[];
   entryTF: Timeframe | '';
+  entryConfirmation: string; // blind_limit, blind_market, structural, partial_confirmation, or ''
   htfBias: HTFBias | '';
   marketCondition: MarketCondition | '';
   levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest

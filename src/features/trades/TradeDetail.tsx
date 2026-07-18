@@ -669,6 +669,19 @@ export function TradeDetail() {
               <span className="text-gray-200">{trade.entryTF || '-'}</span>
             </div>
             <div className="flex justify-between">
+              <span className="text-sm text-gray-400">Entry Confirmation</span>
+              <span className="text-gray-200">
+                {trade.entryConfirmation
+                  ? {
+                      blind_limit: 'Blind — limit order',
+                      blind_market: 'Blind — market order',
+                      structural: 'Structural confirmation',
+                      partial_confirmation: 'Partial confirmation',
+                    }[trade.entryConfirmation] || trade.entryConfirmation
+                  : '-'}
+              </span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-sm text-gray-400">HTF Bias</span>
               <span className={`${
                 trade.htfBias === 'bullish'
