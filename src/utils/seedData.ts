@@ -63,7 +63,7 @@ const SETUP_TAG_COMBINATIONS: { tags: string[]; weight: number; winBias: number 
   { tags: ['range_reversal'], weight: 4, winBias: 0.45 },
 ];
 
-const TIMEFRAMES: Timeframe[] = ['15m', '1H', '4H'];
+const TIMEFRAMES: Timeframe[] = ['M15', 'H1', 'H4'];
 
 // Level types for level sequence generation
 const LEVEL_TYPES = ['LCPB', 'HOB', 'LOB', 'DHOB', 'DLOB', 'fib', 'S/R', 'EQ', 'FVG', 'OB'];
@@ -251,22 +251,22 @@ function generateExitTime(entryTime: Date, entryTF: Timeframe): Date {
   let minutesHeld: number;
 
   switch (entryTF) {
-    case '1m':
+    case 'M1':
       minutesHeld = randomInt(5, 30); // 5 min to 30 min
       break;
-    case '5m':
+    case 'M5':
       minutesHeld = randomInt(10, 60); // 10 min to 1 hour
       break;
-    case '15m':
+    case 'M15':
       minutesHeld = randomInt(15, 180); // 15 min to 3 hours
       break;
-    case '30m':
+    case 'M30':
       minutesHeld = randomInt(30, 240); // 30 min to 4 hours
       break;
-    case '1H':
+    case 'H1':
       minutesHeld = randomInt(60, 480); // 1 to 8 hours
       break;
-    case '4H':
+    case 'H4':
       minutesHeld = randomInt(240, 1440); // 4 to 24 hours
       break;
     case 'D1':
@@ -275,7 +275,7 @@ function generateExitTime(entryTime: Date, entryTF: Timeframe): Date {
     case 'W1':
       minutesHeld = randomInt(7200, 14400); // 5 to 10 days
       break;
-    case 'M1':
+    case 'MN':
       minutesHeld = randomInt(20160, 43200); // 2 to 4 weeks
       break;
     default:
@@ -393,7 +393,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     // Select timeframes (weighted) - entry TF and analysis TFs (1-3)
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
     // Analysis TFs are usually higher than entry TF - generate 1-3 TFs
-    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const higherTFs: Timeframe[] = ['H1', 'H4', 'D1', 'W1'];
     const analysisTFs: string[] = [];
     if (Math.random() > 0.2) { // 80% have at least one analysis TF
       // Determine how many TFs (1-3)
@@ -832,7 +832,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     const setupConfig = weightedRandom(SETUP_TAG_COMBINATIONS, SETUP_TAG_COMBINATIONS.map(s => s.weight));
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
     // Analysis TFs - generate 1-3 TFs
-    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const higherTFs: Timeframe[] = ['H1', 'H4', 'D1', 'W1'];
     const analysisTFs: string[] = [];
     if (Math.random() > 0.2) {
       const tfCount = Math.random() < 0.5 ? 1 : Math.random() < 0.7 ? 2 : 3;
@@ -941,7 +941,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
     const session = weightedRandom(sessions, sessionWeights);
     const entryTF = weightedRandom(TIMEFRAMES, TIMEFRAME_WEIGHTS);
     // Analysis TFs - generate 1-3 TFs
-    const higherTFs: Timeframe[] = ['1H', '4H', 'D1', 'W1'];
+    const higherTFs: Timeframe[] = ['H1', 'H4', 'D1', 'W1'];
     const analysisTFs: string[] = [];
     if (Math.random() > 0.2) {
       const tfCount = Math.random() < 0.5 ? 1 : Math.random() < 0.7 ? 2 : 3;

@@ -11,7 +11,7 @@ export function FormSection({ title, children, defaultOpen = true, className = '
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   return (
-    <div className={`border border-gray-700 rounded-lg overflow-hidden ${className}`}>
+    <div className={`border border-gray-700 rounded-lg ${className}`}>
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}

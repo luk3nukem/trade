@@ -118,16 +118,17 @@ const ASSET_CLASSES: { value: AssetClass; label: string }[] = [
   { value: 'other', label: 'Other' },
 ];
 
+// Timeframes use letter-first notation: M=minutes, H=hours, D=days, W=weeks, MN=monthly
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
-  { value: '1m', label: '1m' },
-  { value: '5m', label: '5m' },
-  { value: '15m', label: '15m' },
-  { value: '30m', label: '30m' },
-  { value: '1H', label: '1H' },
-  { value: '4H', label: '4H' },
+  { value: 'M1', label: 'M1' },
+  { value: 'M5', label: 'M5' },
+  { value: 'M15', label: 'M15' },
+  { value: 'M30', label: 'M30' },
+  { value: 'H1', label: 'H1' },
+  { value: 'H4', label: 'H4' },
   { value: 'D1', label: 'D1' },
   { value: 'W1', label: 'W1' },
-  { value: 'M1', label: 'M1' },
+  { value: 'MN', label: 'MN' },
 ];
 
 const ENTRY_CONFIRMATION_OPTIONS: { value: string; label: string }[] = [
@@ -138,8 +139,8 @@ const ENTRY_CONFIRMATION_OPTIONS: { value: string; label: string }[] = [
   { value: 'partial_confirmation', label: 'Partial confirmation' },
 ];
 
-// Preset level timeframes for the combo input
-const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MTF'];
+// Preset level timeframes for the combo input (MN = monthly, MTF = multi-timeframe)
+const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN', 'MTF'];
 
 // Normalize a timeframe string (trim whitespace, uppercase unit letter)
 const normalizeLevelTimeframe = (tf: string): string => {

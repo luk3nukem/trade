@@ -588,6 +588,89 @@ class TradingDiaryDB extends Dexie {
           });
       });
 
+    // Version 23 - Normalize timeframe notation to letter-first format
+    // Mapping: '1m'→'M1', '5m'→'M5', '15m'→'M15', '30m'→'M30', '1H'→'H1', '4H'→'H4'
+    // Monthly: 'M1' (as monthly) or '1M' → 'MN' (MetaTrader convention)
+    // D1, W1 remain unchanged
+    this.version(23)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+        levelTypePrefs: '@id, levelType',
+      })
+      .upgrade((tx) => {
+        // Timeframe normalization mapping
+        const tfMap: Record<string, string> = {
+          // Old number-first minute formats
+          '1m': 'M1',
+          '5m': 'M5',
+          '15m': 'M15',
+          '30m': 'M30',
+          // Old number-first hour formats (some may exist)
+          '1h': 'H1',
+          '4h': 'H4',
+          '1H': 'H1',
+          '4H': 'H4',
+          // Monthly variations → MN
+          '1M': 'MN',
+          // Note: 'M1' as stored monthly is ambiguous with 1-minute
+          // Since minute timeframes were stored as '1m' (lowercase),
+          // any uppercase 'M1' in entryTF would be from the old TIMEFRAMES constant
+          // which used 'M1' for monthly. But we need to be careful here.
+          // The old TIMEFRAMES had: '1m', '5m', '15m', '30m', '1H', '4H', 'D1', 'W1', 'M1'
+          // So 'M1' in entryTF means monthly, not 1-minute
+        };
+
+        // Normalize a single timeframe value
+        const normalizeTf = (tf: string | undefined): string | undefined => {
+          if (!tf) return tf;
+          // Check direct mapping first
+          if (tfMap[tf]) return tfMap[tf];
+          // Handle 'M1' specially - in the old TIMEFRAMES it was monthly
+          // Check if it's in entryTF context (from dropdown) vs level sequence (free text)
+          // For safety, 'M1' from entryTF dropdown = monthly = MN
+          return tf;
+        };
+
+        // Normalize entryTF specifically - 'M1' here means monthly from old dropdown
+        const normalizeEntryTf = (tf: string | undefined): string | undefined => {
+          if (!tf) return tf;
+          if (tfMap[tf]) return tfMap[tf];
+          // 'M1' from the old TIMEFRAMES dropdown was monthly
+          if (tf === 'M1') return 'MN';
+          return tf;
+        };
+
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Normalize entryTF (from dropdown, so 'M1' = monthly)
+            if (trade.entryTF) {
+              trade.entryTF = normalizeEntryTf(trade.entryTF);
+            }
+
+            // Normalize analysisTFs array (also from dropdown)
+            if (trade.analysisTFs && Array.isArray(trade.analysisTFs)) {
+              trade.analysisTFs = trade.analysisTFs.map((tf: string) => normalizeEntryTf(tf) || tf);
+            }
+
+            // Normalize levelSequence timeframes (free text, so 'M1' = 1-minute which is correct)
+            if (trade.levelSequence && Array.isArray(trade.levelSequence)) {
+              trade.levelSequence = trade.levelSequence.map((level: { timeframe?: string }) => {
+                if (level.timeframe) {
+                  const normalized = normalizeTf(level.timeframe);
+                  return { ...level, timeframe: normalized };
+                }
+                return level;
+              });
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

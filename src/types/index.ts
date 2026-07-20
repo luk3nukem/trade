@@ -13,8 +13,8 @@ export type TradeOutcome = 'win' | 'loss' | 'breakeven';
 // Asset class
 export type AssetClass = 'forex' | 'crypto' | 'stocks' | 'futures' | 'options' | 'indices' | 'commodities' | 'other';
 
-// Timeframe
-export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1H' | '4H' | 'D1' | 'W1' | 'M1';
+// Timeframe (letter-first notation: M=minutes, H=hours, D=days, W=weeks, MN=monthly)
+export type Timeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1' | 'W1' | 'MN';
 
 // HTF Bias (Higher Timeframe Bias)
 export type HTFBias = 'bullish' | 'bearish' | 'neutral' | 'ranging';
