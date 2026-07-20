@@ -251,6 +251,7 @@ interface ValidationWarnings {
   mfePrice?: string;
   firstTouchWorstPrice?: string;
   exitWarnings?: Record<string, string>; // keyed by exit id
+  stopAdjustmentWarnings?: Record<string, string>; // keyed by adjustment id
 }
 
 export function TradeForm() {
@@ -429,7 +430,10 @@ export function TradeForm() {
   // Auto-calculated values derived from exits
   const calculated = useMemo(() => {
     const entryPrice = parseFloat(formData.entryPrice) || 0;
-    const stopLoss = parseFloat(formData.stopLoss) || 0;
+    const currentStopLoss = parseFloat(formData.stopLoss) || 0;
+    // CRITICAL: Use original stop loss for R calculations to avoid explosion when stops are adjusted
+    // The originalStopLoss is set on first save and never changes. For new trades, use current stop.
+    const stopForRCalc = originalStopLoss ?? currentStopLoss;
     const targetPrice = formData.targetPrice ? parseFloat(formData.targetPrice) : undefined;
     const positionSize = parseFloat(formData.positionSize) || 0;
     const commissions = parseFloat(formData.commissions) || 0;
@@ -477,18 +481,20 @@ export function TradeForm() {
     }
 
     const session = entryTime ? deriveSession(entryTime) : 'other';
-    const stopDistance = entryPrice && stopLoss ? calculateStopDistance(entryPrice, stopLoss) : undefined;
-    const plannedRR = entryPrice && stopLoss ? calculatePlannedRR(entryPrice, stopLoss, targetPrice) : undefined;
-    const actualRR = entryPrice && stopLoss ? calculateActualRR(entryPrice, stopLoss, exitPrice) : undefined;
-    const rMultiple = entryPrice && stopLoss ? calculateRMultiple(entryPrice, stopLoss, exitPrice, formData.direction) : undefined;
+    // Use original stop for all R calculations - "1R" is defined by the ORIGINAL risk, not adjusted stops
+    const stopDistance = entryPrice && stopForRCalc ? calculateStopDistance(entryPrice, stopForRCalc) : undefined;
+    const plannedRR = entryPrice && stopForRCalc ? calculatePlannedRR(entryPrice, stopForRCalc, targetPrice) : undefined;
+    const actualRR = entryPrice && stopForRCalc ? calculateActualRR(entryPrice, stopForRCalc, exitPrice) : undefined;
+    const rMultiple = entryPrice && stopForRCalc ? calculateRMultiple(entryPrice, stopForRCalc, exitPrice, formData.direction) : undefined;
 
     // Calculate P&L using R-based method (instrument-agnostic)
+    // Also uses original stop since R is based on original risk unit
     const riskAmount = parseFloat(formData.riskAmount) || 0;
     let pnl: number | undefined;
-    if (entryPrice && stopLoss && riskAmount && positionSize && exits.length > 0) {
+    if (entryPrice && stopForRCalc && riskAmount && positionSize && exits.length > 0) {
       pnl = calculateTotalExitsPnl(
         entryPrice,
-        stopLoss,
+        stopForRCalc,
         riskAmount,
         positionSize,
         formData.direction,
@@ -513,7 +519,7 @@ export function TradeForm() {
       netPnl,
       holdDuration,
     };
-  }, [formData]);
+  }, [formData, originalStopLoss]);
 
   // Validate form
   const validate = useCallback((): boolean => {
@@ -653,10 +659,27 @@ export function TradeForm() {
       }
     }
 
+    // E) Stop adjustment timestamp validation - warn if adjustment logged after exit time
+    if (formData.stopAdjustments && formData.stopAdjustments.length > 0 && calculated.exitTime) {
+      const exitTimestamp = calculated.exitTime.getTime();
+      const stopAdjustmentWarnings: Record<string, string> = {};
+      for (const adj of formData.stopAdjustments) {
+        if (adj.time) {
+          const adjTime = adj.time instanceof Date ? adj.time : new Date(adj.time);
+          if (adjTime.getTime() > exitTimestamp) {
+            stopAdjustmentWarnings[adj.id] = 'This adjustment was logged after the trade exited';
+          }
+        }
+      }
+      if (Object.keys(stopAdjustmentWarnings).length > 0) {
+        newWarnings.stopAdjustmentWarnings = stopAdjustmentWarnings;
+      }
+    }
+
     setErrors(newErrors);
     setWarnings(newWarnings);
     return Object.keys(newErrors).length === 0;
-  }, [formData]);
+  }, [formData, calculated.exitTime]);
 
   // Handle form field changes
   const handleChange = (field: keyof TradeFormData, value: unknown) => {
@@ -1594,6 +1617,9 @@ export function TradeForm() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
+                  {warnings.stopAdjustmentWarnings?.[adj.id] && (
+                    <span className="text-xs text-amber-400">⚠️ After exit</span>
+                  )}
                 </div>
               ))}
               <button
@@ -2359,6 +2385,12 @@ export function TradeForm() {
                           </svg>
                         </button>
                       </div>
+                      {/* Warning if adjustment logged after exit */}
+                      {warnings.stopAdjustmentWarnings?.[adj.id] && (
+                        <p className="text-xs text-amber-400 mt-1 px-1">
+                          ⚠️ {warnings.stopAdjustmentWarnings[adj.id]}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>

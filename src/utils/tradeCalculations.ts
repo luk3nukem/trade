@@ -1,6 +1,28 @@
 import type { TradingSession, TradeDirection, TradeStatus, ExitType, AssetClass } from '../types';
 
 /**
+ * Maximum plausible R-multiple value.
+ * Any R value beyond this is likely due to a calculation error (e.g., using adjusted stop near entry).
+ * Values exceeding this will be clamped and flagged.
+ */
+export const MAX_PLAUSIBLE_R = 50;
+
+/**
+ * Clamp an R-multiple to a plausible range to prevent display issues from calculation errors.
+ * If the value is implausible, log a warning in dev mode.
+ */
+export function clampRValue(r: number | undefined): number | undefined {
+  if (r === undefined) return undefined;
+  if (Math.abs(r) > MAX_PLAUSIBLE_R) {
+    if (import.meta.env.DEV) {
+      console.warn(`Implausible R value detected: ${r.toFixed(2)}R - clamping to ±${MAX_PLAUSIBLE_R}R. Check stop distance calculation.`);
+    }
+    return r > 0 ? MAX_PLAUSIBLE_R : -MAX_PLAUSIBLE_R;
+  }
+  return r;
+}
+
+/**
  * Derive trading session from entry time (UTC)
  * Asian: 00:00-08:00 UTC
  * London: 08:00-13:00 UTC
@@ -83,6 +105,7 @@ export function calculateActualRR(
 
 /**
  * Calculate R-Multiple (signed actualRR - positive for winners, negative for losers)
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
  */
 export function calculateRMultiple(
   entryPrice: number,
@@ -98,8 +121,9 @@ export function calculateRMultiple(
   const priceDiff = exitPrice - entryPrice;
   // For longs: positive priceDiff = win; For shorts: negative priceDiff = win
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
+  const raw = signedMove / stopDistance;
 
-  return Number((signedMove / stopDistance).toFixed(2));
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
@@ -295,6 +319,7 @@ export function calculateMfeDistance(
 /**
  * Calculate MAE expressed in R-multiples
  * maeR = maeDistance / stopDistance
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
  */
 export function calculateMaeR(
   entryPrice: number,
@@ -304,12 +329,14 @@ export function calculateMaeR(
   if (maePrice === null || !stopDistance || stopDistance === 0) return undefined;
   const maeDistance = calculateMaeDistance(entryPrice, maePrice);
   if (maeDistance === undefined) return undefined;
-  return Number((maeDistance / stopDistance).toFixed(2));
+  const raw = maeDistance / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
  * Calculate MFE expressed in R-multiples
  * mfeR = mfeDistance / stopDistance
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
  */
 export function calculateMfeR(
   entryPrice: number,
@@ -319,7 +346,8 @@ export function calculateMfeR(
   if (mfePrice === null || !stopDistance || stopDistance === 0) return undefined;
   const mfeDistance = calculateMfeDistance(entryPrice, mfePrice);
   if (mfeDistance === undefined) return undefined;
-  return Number((mfeDistance / stopDistance).toFixed(2));
+  const raw = mfeDistance / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
@@ -357,6 +385,7 @@ export function deriveMfeMetrics(
 /**
  * Calculate first-touch adverse R - the initial heat taken before the first favourable reaction
  * firstTouchAdverseR = |entryPrice - firstTouchWorstPrice| / stopDistance
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  *
  * This measures how far price moves against you BEFORE the initial reaction in your favour.
  * Lower values indicate cleaner entries where price immediately moves in your direction.
@@ -370,12 +399,14 @@ export function calculateFirstTouchAdverseR(
     return undefined;
   }
   const adverseDistance = Math.abs(entryPrice - firstTouchWorstPrice);
-  return Number((adverseDistance / stopDistance).toFixed(2));
+  const raw = adverseDistance / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
  * Calculate reaction R - the R-multiple of the initial reaction relative to the first-touch extreme
  * reactionR = |mfePrice - entryPrice| / |entryPrice - firstTouchWorstPrice|
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  *
  * This is the "what could have been" number - if you had placed your stop just beyond
  * the first-touch extreme, what R-multiple would the MFE have delivered?
@@ -397,7 +428,8 @@ export function calculateReactionR(
   }
 
   const mfeDistance = Math.abs(mfePrice - entryPrice);
-  return Number((mfeDistance / firstTouchAdverseDistance).toFixed(2));
+  const raw = mfeDistance / firstTouchAdverseDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
@@ -431,6 +463,7 @@ export function deriveFirstTouchMetrics(
 /**
  * Calculate "missed R" for voluntary exits - how much additional R you would have made if held to post-exit best price
  * missedR = |postExitBestPrice - exitPrice| / stopDistance
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  *
  * NOTE: This is the original behavior, kept for voluntary exits (tp_hit, manual_close, trail_stop_hit, be_stop_hit, time_exit)
  */
@@ -452,13 +485,15 @@ export function calculateMissedR(
   // Only count as "missed" if it went further in your favor
   if (signedMove <= 0) return 0;
 
-  return Number((signedMove / stopDistance).toFixed(2));
+  const raw = signedMove / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
  * Calculate post-stop move R for stopouts (sl_hit) - how far price moved in trader's favor after being stopped out
  * This is measured from entry price, NOT from exit price (since stop was a full loss)
  * postStopMoveR = |postExitBestPrice - entryPrice| / stopDistance (if in trader's favor)
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  *
  * This metric answers: "After I got stopped, did price move in my direction?"
  * A positive value indicates the thesis may have been correct but stop placement was the issue.
@@ -481,12 +516,14 @@ export function calculatePostStopMoveR(
   // Only count if it moved in trader's favor after the stop
   if (signedMove <= 0) return 0;
 
-  return Number((signedMove / stopDistance).toFixed(2));
+  const raw = signedMove / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
  * Calculate "would have R" - the R you would have achieved if held to post-exit best price
  * wouldHaveR = |postExitBestPrice - entryPrice| / stopDistance
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  */
 export function calculateWouldHaveR(
   entryPrice: number,
@@ -502,7 +539,8 @@ export function calculateWouldHaveR(
   // For longs: positive priceDiff = win; For shorts: negative priceDiff = win
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
 
-  return Number((signedMove / stopDistance).toFixed(2));
+  const raw = signedMove / stopDistance;
+  return clampRValue(Number(raw.toFixed(2)));
 }
 
 /**
