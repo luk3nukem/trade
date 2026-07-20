@@ -627,6 +627,7 @@ export interface MAEBucket {
 export interface StopEfficiencyPoint {
   tradeId?: string;
   stopDistance: number;
+  stopDistancePercent: number; // Stop distance as % of entry price
   rMultiple: number;
   isWinner: boolean;
   pair: string;
@@ -696,10 +697,11 @@ export function getMAEDistribution(trades: TradeRecord[], bucketCount: number = 
 
 export function getStopEfficiencyData(trades: TradeRecord[]): StopEfficiencyPoint[] {
   return trades
-    .filter(t => t.status === 'closed' && t.stopDistance !== undefined)
+    .filter(t => t.status === 'closed' && t.stopDistance !== undefined && t.entryPrice !== undefined)
     .map(t => ({
       tradeId: t.id,
       stopDistance: t.stopDistance!,
+      stopDistancePercent: (t.stopDistance! / t.entryPrice) * 100,
       rMultiple: t.rMultiple ?? 0,
       isWinner: (t.rMultiple ?? 0) > 0,
       pair: t.pair,
@@ -2380,20 +2382,41 @@ export function simulateStopAdjustment(
   // Calculate summary stats
   const originalWins = simulatedTrades.filter(t => t.originalR > 0);
   const simulatedWins = simulatedTrades.filter(t => t.simulatedR > 0);
-  const stoppedOutCount = simulatedTrades.filter(t => t.wouldBeStoppedOut).length;
+
+  // Count only WINNERS that became losers due to tighter stops
+  // This is the true "cost" of tighter stops - trades where outcome changed
+  const stoppedOutCount = simulatedTrades.filter(
+    t => t.wouldBeStoppedOut && t.originalR > 0
+  ).length;
+
   const improvedCount = simulatedTrades.filter(t => t.simulatedR > t.originalR).length;
+
+  // Calculate win rates
+  const originalWinRate = simulatedTrades.length > 0
+    ? (originalWins.length / simulatedTrades.length) * 100
+    : 0;
+  const simulatedWinRate = simulatedTrades.length > 0
+    ? (simulatedWins.length / simulatedTrades.length) * 100
+    : 0;
+
+  // Dev sanity check: win rate must equal winners / total
+  if (import.meta.env.DEV) {
+    const expectedSimulatedWinRate = simulatedTrades.length > 0
+      ? (simulatedWins.length / simulatedTrades.length) * 100
+      : 0;
+    console.assert(
+      Math.abs(simulatedWinRate - expectedSimulatedWinRate) < 0.01,
+      `Win rate mismatch: ${simulatedWinRate} vs ${expectedSimulatedWinRate}`
+    );
+  }
 
   return {
     simulatedTrades,
     adjustmentPercent,
     originalTotalR: originalCumulative,
     simulatedTotalR: simulatedCumulative,
-    originalWinRate: simulatedTrades.length > 0
-      ? (originalWins.length / simulatedTrades.length) * 100
-      : 0,
-    simulatedWinRate: simulatedTrades.length > 0
-      ? (simulatedWins.length / simulatedTrades.length) * 100
-      : 0,
+    originalWinRate,
+    simulatedWinRate,
     originalAvgR: simulatedTrades.length > 0
       ? originalCumulative / simulatedTrades.length
       : 0,

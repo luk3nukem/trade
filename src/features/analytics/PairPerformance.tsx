@@ -11,7 +11,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
-import { groupPerformanceBy, getPairInsights } from '../../utils';
+import { groupPerformanceBy, getPairInsights, CHART_TOOLTIP_STYLES } from '../../utils';
 
 interface Props {
   trades: TradeRecord[];
@@ -151,7 +151,7 @@ export function PairPerformance({ trades }: Props) {
             <XAxis type="number" stroke="#6b7280" fontSize={12} tickFormatter={(v) => '$' + v} />
             <YAxis type="category" dataKey="pair" stroke="#6b7280" fontSize={12} width={55} />
             <Tooltip
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+              {...CHART_TOOLTIP_STYLES}
               formatter={(value: number) => ['$' + value.toFixed(2), 'Net P&L']}
               labelFormatter={(label) => label}
             />

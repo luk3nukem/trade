@@ -16,6 +16,7 @@ import {
   getNotTakenReasonBreakdown,
   getMissedTradesByTag,
   getSelectivityInsights,
+  CHART_TOOLTIP_STYLES,
 } from '../../utils';
 
 interface Props {
@@ -240,12 +241,7 @@ export function SelectivityAnalysis({ trades }: Props) {
                     }
                   />
                   <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#1F2937',
-                      border: 'none',
-                      borderRadius: '8px',
-                    }}
-                    labelStyle={{ color: '#F3F4F6' }}
+                    {...CHART_TOOLTIP_STYLES}
                     formatter={(value: number, name: string) => {
                       if (name === 'count') return [value, 'Count'];
                       return [value, name];

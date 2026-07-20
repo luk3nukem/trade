@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart,
   Bar,
@@ -14,16 +15,22 @@ import {
   ReferenceLine,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
-import { getRMultipleDistribution, getPlannedVsActual, getPositionSizingData } from '../../utils';
+import { getRMultipleDistribution, getPlannedVsActual, getPositionSizingData, CHART_TOOLTIP_STYLES } from '../../utils';
+import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
 }
 
 export function RiskDistribution({ trades }: Props) {
+  const navigate = useNavigate();
   const rDistribution = useMemo(() => getRMultipleDistribution(trades), [trades]);
   const plannedVsActual = useMemo(() => getPlannedVsActual(trades), [trades]);
   const positionSizing = useMemo(() => getPositionSizingData(trades), [trades]);
+
+  // Modal state for drill-down
+  const [modalTrades, setModalTrades] = useState<TradeRecord[]>([]);
+  const [modalTitle, setModalTitle] = useState('');
 
   if (rDistribution.every(b => b.count === 0)) {
     return (
@@ -43,7 +50,7 @@ export function RiskDistribution({ trades }: Props) {
       <div className="bg-gray-800 rounded-lg p-6">
         <div className="mb-4">
           <h3 className="text-lg font-medium text-white">R-Multiple Distribution</h3>
-          <p className="text-sm text-gray-400">Your trading signature - how your outcomes distribute</p>
+          <p className="text-sm text-gray-400">Your trading signature. Click a bar to see trades.</p>
         </div>
         <ResponsiveContainer width="100%" height={300}>
           <BarChart data={rDistribution} margin={{ left: 10, right: 10, bottom: 20 }}>
@@ -59,10 +66,29 @@ export function RiskDistribution({ trades }: Props) {
             />
             <YAxis stroke="#6b7280" fontSize={12} />
             <Tooltip
-              contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+              {...CHART_TOOLTIP_STYLES}
               formatter={(value: number) => [value + ' trades', 'Count']}
             />
-            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+            <Bar
+              dataKey="count"
+              radius={[4, 4, 0, 0]}
+              className="cursor-pointer"
+              onClick={(data) => {
+                if (!data) return;
+                const bucket = data as { min: number; max: number; label: string };
+                const bucketTrades = trades.filter(t => {
+                  if (t.status !== 'closed' || t.rMultiple === undefined) return false;
+                  const r = t.rMultiple;
+                  if (bucket.max === Infinity) return r > bucket.min;
+                  if (bucket.min === -Infinity) return r <= bucket.max;
+                  // Handle zero specially (belongs to -0.5 to 0 bucket)
+                  if (r === 0) return bucket.min === -0.5 && bucket.max === 0;
+                  return r > bucket.min && r <= bucket.max;
+                });
+                setModalTitle(`R-Multiple: ${bucket.label}`);
+                setModalTrades(bucketTrades);
+              }}
+            >
               {rDistribution.map((entry, index) => (
                 <Cell key={index} fill={entry.isPositive ? '#22c55e' : '#ef4444'} />
               ))}
@@ -77,7 +103,7 @@ export function RiskDistribution({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">Planned vs Actual R:R</h3>
-            <p className="text-sm text-gray-400">Diagonal = perfect execution</p>
+            <p className="text-sm text-gray-400">Diagonal = perfect execution. Click a dot to view trade.</p>
           </div>
           {plannedVsActual.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
@@ -102,9 +128,15 @@ export function RiskDistribution({ trades }: Props) {
                 />
                 <ZAxis range={[50, 50]} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => [value.toFixed(2), name]}
-                  labelFormatter={(_, payload) => payload[0]?.payload?.pair || ''}
+                  labelFormatter={(_, payload) => {
+                    const data = payload[0]?.payload;
+                    if (!data) return '';
+                    const trade = trades.find(t => t.id === data.tradeId);
+                    const dateStr = trade?.entryTime ? new Date(trade.entryTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                    return `${data.pair} ${dateStr}`;
+                  }}
                 />
                 <ReferenceLine
                   segment={[{ x: 0, y: 0 }, { x: 5, y: 5 }]}
@@ -116,11 +148,19 @@ export function RiskDistribution({ trades }: Props) {
                   data={plannedVsActual.filter(d => d.isWinner)}
                   fill="#22c55e"
                   name="Winners"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
                 <Scatter
                   data={plannedVsActual.filter(d => !d.isWinner)}
                   fill="#ef4444"
                   name="Losers"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
               </ScatterChart>
             </ResponsiveContainer>
@@ -140,7 +180,7 @@ export function RiskDistribution({ trades }: Props) {
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">Position Sizing Consistency</h3>
             <p className="text-sm text-gray-400">
-              Avg risk: {positionSizing.avgRiskPercent.toFixed(2)}%{stdDevText}
+              Avg risk: {positionSizing.avgRiskPercent.toFixed(2)}%{stdDevText}. Click a dot to view trade.
             </p>
           </div>
           {positionSizing.points.length > 0 ? (
@@ -166,7 +206,7 @@ export function RiskDistribution({ trades }: Props) {
                 />
                 <ZAxis range={[40, 40]} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
                     if (name === 'Risk %') return [value.toFixed(2) + '%', 'Risk'];
                     return [value, name];
@@ -174,7 +214,9 @@ export function RiskDistribution({ trades }: Props) {
                   labelFormatter={(_, payload) => {
                     const p = payload[0]?.payload;
                     if (!p) return '';
-                    return p.pair + (p.isOutlier ? ' (Outlier)' : '');
+                    const trade = trades.find(t => t.id === p.tradeId);
+                    const dateStr = trade?.entryTime ? new Date(trade.entryTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                    return `${p.pair} ${dateStr}${p.isOutlier ? ' (Outlier)' : ''}`;
                   }}
                 />
                 <ReferenceLine
@@ -187,17 +229,29 @@ export function RiskDistribution({ trades }: Props) {
                   data={positionSizing.points.filter(d => d.isWinner && !d.isOutlier)}
                   fill="#22c55e"
                   name="Winners"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
                 <Scatter
                   data={positionSizing.points.filter(d => !d.isWinner && !d.isOutlier)}
                   fill="#ef4444"
                   name="Losers"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
                 <Scatter
                   data={positionSizing.points.filter(d => d.isOutlier)}
                   fill="#f59e0b"
                   name="Outliers"
                   shape="diamond"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
               </ScatterChart>
             </ResponsiveContainer>
@@ -222,6 +276,15 @@ export function RiskDistribution({ trades }: Props) {
           </div>
         </div>
       </div>
+
+      {/* Trade List Modal */}
+      {modalTrades.length > 0 && (
+        <TradeListModal
+          title={modalTitle}
+          trades={modalTrades}
+          onClose={() => setModalTrades([])}
+        />
+      )}
     </div>
   );
 }

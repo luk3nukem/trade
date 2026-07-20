@@ -16,6 +16,7 @@ import {
   getHTFBiasAnalysis,
   getContextHeatmapData,
   getMarketContextInsights,
+  CHART_TOOLTIP_STYLES,
 } from '../../utils';
 
 interface Props {
@@ -107,7 +108,7 @@ export function MarketContext({ trades }: Props) {
                 tickFormatter={(v) => v.toFixed(1) + 'R'}
               />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   if (name === 'winRate') return [value.toFixed(1) + '%', 'Win Rate'];
@@ -162,7 +163,7 @@ export function MarketContext({ trades }: Props) {
                   tickFormatter={(v) => v.toFixed(1) + 'R'}
                 />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
                     if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                     if (name === 'winRate') return [value.toFixed(1) + '%', 'Win Rate'];

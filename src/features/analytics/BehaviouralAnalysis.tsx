@@ -22,6 +22,7 @@ import {
   getTradesPerDayAnalysis,
   getBehaviouralInsights,
   getEntryConfirmationAnalysis,
+  CHART_TOOLTIP_STYLES,
 } from '../../utils';
 
 interface Props {
@@ -106,7 +107,7 @@ export function BehaviouralAnalysis({ trades }: Props) {
                 tickFormatter={(v) => v.toFixed(1) + 'R'}
               />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   return [value, name];
@@ -203,7 +204,7 @@ export function BehaviouralAnalysis({ trades }: Props) {
               <XAxis dataKey="name" stroke="#6b7280" fontSize={12} />
               <YAxis stroke="#6b7280" fontSize={12} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
               />
               <Bar dataKey="followed" fill="#22c55e" name="Followed Plan" />
               <Bar dataKey="deviated" fill="#ef4444" name="Deviated" />
@@ -432,7 +433,7 @@ export function BehaviouralAnalysis({ trades }: Props) {
                 tickFormatter={(v) => v.toFixed(1) + 'R'}
               />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   return [value, name];
@@ -496,7 +497,7 @@ export function BehaviouralAnalysis({ trades }: Props) {
                 />
                 <ZAxis range={[50, 200]} dataKey="totalPnl" />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
                     if (name === 'Avg R') return [value.toFixed(2) + 'R', name];
                     if (name === 'Trades') return [value, name];

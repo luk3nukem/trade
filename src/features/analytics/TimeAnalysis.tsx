@@ -14,7 +14,7 @@ import {
   ZAxis,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
-import { getTimeAnalysis, getTimeInsights, getTimeframeAnalysis } from '../../utils';
+import { getTimeAnalysis, getTimeInsights, getTimeframeAnalysis, CHART_TOOLTIP_STYLES } from '../../utils';
 
 interface Props {
   trades: TradeRecord[];
@@ -78,7 +78,7 @@ export function TimeAnalysis({ trades }: Props) {
               <XAxis dataKey="session" stroke="#6b7280" fontSize={12} />
               <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   return [value, name];
@@ -109,7 +109,7 @@ export function TimeAnalysis({ trades }: Props) {
               <XAxis dataKey="dayName" stroke="#6b7280" fontSize={12} tickFormatter={(v) => v.slice(0, 3)} />
               <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   return [value, name];
@@ -204,7 +204,7 @@ export function TimeAnalysis({ trades }: Props) {
               />
               <ZAxis range={[40, 40]} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'Hold Time') return [formatHoldTime(value), 'Hold Time'];
                   if (name === 'R-Multiple') return [value.toFixed(2) + 'R', 'R-Multiple'];
@@ -260,7 +260,7 @@ export function TimeAnalysis({ trades }: Props) {
                 <XAxis dataKey="timeframe" stroke="#6b7280" fontSize={12} />
                 <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
                     if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                     return [value, name];
@@ -302,7 +302,7 @@ export function TimeAnalysis({ trades }: Props) {
                 <XAxis dataKey="timeframe" stroke="#6b7280" fontSize={12} />
                 <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
                     if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                     return [value, name];
@@ -345,7 +345,7 @@ export function TimeAnalysis({ trades }: Props) {
               <XAxis dataKey="group" stroke="#6b7280" fontSize={12} />
               <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
                   return [value, name];

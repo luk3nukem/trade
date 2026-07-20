@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart,
   Bar,
@@ -38,10 +39,12 @@ import {
   getMissedRByExitType,
   getPostExitScatterData,
   getPostExitInsights,
+  CHART_TOOLTIP_STYLES,
   type SimulationStrategy,
   type SimulationResult,
 } from '../../utils';
 import { useAppStore } from '../../stores/appStore';
+import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
@@ -57,7 +60,12 @@ const STRATEGY_COLORS: Record<string, string> = {
 };
 
 export function ExitManagement({ trades }: Props) {
+  const navigate = useNavigate();
   const [activeStrategies, setActiveStrategies] = useState<SimulationStrategy[]>(['actual', 'full_tp1']);
+
+  // Modal state for drill-down
+  const [modalTrades, setModalTrades] = useState<TradeRecord[]>([]);
+  const [modalTitle, setModalTitle] = useState('');
   const [trailR, setTrailR] = useState(0.5);
   const [fixedRTarget, setFixedRTarget] = useState(1.0);
   const [showFixedR, setShowFixedR] = useState(false);
@@ -239,7 +247,7 @@ export function ExitManagement({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">MFE vs Exit</h3>
-            <p className="text-sm text-gray-400">Diagonal = perfect exit at the high</p>
+            <p className="text-sm text-gray-400">Diagonal = perfect exit at the high. Click to view trade.</p>
           </div>
           {mfeCaptureData.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
@@ -254,16 +262,35 @@ export function ExitManagement({ trades }: Props) {
                 />
                 <ZAxis range={[40, 40]} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => [value.toFixed(2) + 'R', name]}
                   labelFormatter={(_, payload) => {
                     const p = payload[0]?.payload;
-                    return p ? p.pair + ' (' + p.exitType + ')' : '';
+                    if (!p) return '';
+                    const trade = trades.find(t => t.id === p.tradeId);
+                    const dateStr = trade?.entryTime ? new Date(trade.entryTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                    return `${p.pair} ${dateStr} (${p.exitType})`;
                   }}
                 />
                 <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 4, y: 4 }]} stroke="#6b7280" strokeDasharray="5 5" />
-                <Scatter data={mfeCaptureData.filter(d => d.exitType === 'partial')} fill="#f59e0b" name="Partials" />
-                <Scatter data={mfeCaptureData.filter(d => d.exitType !== 'partial')} fill="#3b82f6" name="Full Exits" />
+                <Scatter
+                  data={mfeCaptureData.filter(d => d.exitType === 'partial')}
+                  fill="#f59e0b"
+                  name="Partials"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
+                />
+                <Scatter
+                  data={mfeCaptureData.filter(d => d.exitType !== 'partial')}
+                  fill="#3b82f6"
+                  name="Full Exits"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
+                />
               </ScatterChart>
             </ResponsiveContainer>
           ) : (
@@ -284,7 +311,7 @@ export function ExitManagement({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">Profit Giveback</h3>
-            <p className="text-sm text-gray-400">Avg giveback: {givebackData.avgGiveback.toFixed(2)}R per winning trade</p>
+            <p className="text-sm text-gray-400">Avg giveback: {givebackData.avgGiveback.toFixed(2)}R. Click a bar to see trades.</p>
           </div>
           {givebackData.buckets.some(b => b.count > 0) ? (
             <ResponsiveContainer width="100%" height={300}>
@@ -293,10 +320,27 @@ export function ExitManagement({ trades }: Props) {
                 <XAxis dataKey="label" stroke="#6b7280" fontSize={12} />
                 <YAxis stroke="#6b7280" fontSize={12} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number) => [value + ' trades', 'Count']}
                 />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                <Bar
+                  dataKey="count"
+                  radius={[4, 4, 0, 0]}
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (!data) return;
+                    const bucket = data as { min: number; max: number; label: string };
+                    const bucketTrades = trades.filter(t => {
+                      if (t.status !== 'closed' || (t.rMultiple ?? 0) <= 0 || t.mfeR === undefined) return false;
+                      const giveback = t.mfeR - Math.abs(t.rMultiple!);
+                      if (giveback < 0) return false;
+                      if (bucket.max === Infinity) return giveback >= bucket.min;
+                      return giveback >= bucket.min && giveback < bucket.max;
+                    });
+                    setModalTitle(`Profit Giveback: ${bucket.label}`);
+                    setModalTrades(bucketTrades);
+                  }}
+                >
                   {givebackData.buckets.map((_, index) => (
                     <Cell key={index} fill={index < 2 ? '#22c55e' : index < 4 ? '#f59e0b' : '#ef4444'} />
                   ))}
@@ -400,24 +444,31 @@ export function ExitManagement({ trades }: Props) {
           </button>
         </div>
 
-        <div className="flex items-center gap-4 mb-4 p-3 bg-gray-750 rounded-lg">
-          <label className="text-sm text-gray-400 whitespace-nowrap">Trail Distance:</label>
-          <input
-            type="range"
-            min="0.25"
-            max="1.5"
-            step="0.25"
-            value={trailR}
-            onChange={(e) => setTrailR(parseFloat(e.target.value))}
-            className="flex-1"
-          />
-          <span className="text-sm text-white w-12">{trailR}R</span>
+        <div className="mb-4 p-3 bg-gray-750 rounded-lg">
+          <div className="flex items-center gap-4 mb-2">
+            <label className="text-sm text-gray-400 whitespace-nowrap">Trail Distance:</label>
+            <input
+              type="range"
+              min="0.25"
+              max="1.5"
+              step="0.25"
+              value={trailR}
+              onChange={(e) => setTrailR(parseFloat(e.target.value))}
+              className="flex-1"
+            />
+          </div>
+          {/* Prominent centered readout */}
+          <div className="text-center">
+            <span className="text-lg font-bold px-4 py-1 rounded-lg bg-purple-500/20 text-purple-400">
+              Trailing stop: {trailR}R behind price
+            </span>
+          </div>
         </div>
 
         {/* Fixed R Target Controls */}
         {showFixedR && (
           <div className="mb-4 p-4 bg-teal-500/10 border border-teal-500/30 rounded-lg space-y-3">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 mb-2">
               <label className="text-sm text-teal-400 whitespace-nowrap">Target R:</label>
               <input
                 type="range"
@@ -431,9 +482,6 @@ export function ExitManagement({ trades }: Props) {
                 }}
                 className="flex-1 accent-teal-500"
               />
-              <span className="text-sm text-white font-medium w-16">
-                Full exit at {fixedRTarget.toFixed(2)}R
-              </span>
               <button
                 onClick={handleFindOptimal}
                 disabled={isSearchingOptimal}
@@ -441,6 +489,12 @@ export function ExitManagement({ trades }: Props) {
               >
                 {isSearchingOptimal ? 'Searching...' : 'Find Optimal'}
               </button>
+            </div>
+            {/* Prominent centered readout */}
+            <div className="text-center">
+              <span className="text-lg font-bold px-4 py-1 rounded-lg bg-teal-500/20 text-teal-400">
+                Full exit at {fixedRTarget.toFixed(2)}R
+              </span>
             </div>
 
             {/* Sample size warning */}
@@ -484,7 +538,7 @@ export function ExitManagement({ trades }: Props) {
               <XAxis dataKey="tradeIndex" stroke="#6b7280" fontSize={12} />
               <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v.toFixed(0) + 'R'} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number) => [value.toFixed(2) + 'R', '']}
               />
               <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
@@ -1088,7 +1142,7 @@ export function ExitManagement({ trades }: Props) {
               <div>
                 <h4 className="text-sm font-medium text-gray-300 mb-3">Should-Have-Held Analysis</h4>
                 <p className="text-xs text-gray-500 mb-3">
-                  Dots above the diagonal line = left money on the table. Blue = had BE adjustment.
+                  Dots above the diagonal line = left money on the table. Blue = had BE adjustment. Click to view trade.
                 </p>
                 <ResponsiveContainer width="100%" height={300}>
                   <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
@@ -1120,17 +1174,27 @@ export function ExitManagement({ trades }: Props) {
                       strokeDasharray="3 3"
                     />
                     <Tooltip
-                      contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                      {...CHART_TOOLTIP_STYLES}
                       formatter={(value: number, name: string) => [
                         `${value.toFixed(2)}R`,
                         name === 'actualR' ? 'Actual' : 'Would-Have'
                       ]}
-                      labelFormatter={() => ''}
+                      labelFormatter={(_, payload) => {
+                        const data = payload[0]?.payload;
+                        if (!data) return '';
+                        const trade = trades.find(t => t.id === data.tradeId);
+                        const dateStr = trade?.entryTime ? new Date(trade.entryTime).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                        return `${trade?.pair || ''} ${dateStr}`;
+                      }}
                     />
                     <Scatter
                       name="Trades"
                       data={postExitScatter}
                       fill="#3b82f6"
+                      className="cursor-pointer"
+                      onClick={(data) => {
+                        if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                      }}
                     >
                       {postExitScatter.map((entry, index) => (
                         <Cell
@@ -1175,6 +1239,15 @@ export function ExitManagement({ trades }: Props) {
             ))}
           </ul>
         </div>
+      )}
+
+      {/* Trade List Modal */}
+      {modalTrades.length > 0 && (
+        <TradeListModal
+          title={modalTitle}
+          trades={modalTrades}
+          onClose={() => setModalTrades([])}
+        />
       )}
     </div>
   );

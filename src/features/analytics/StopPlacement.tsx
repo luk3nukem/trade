@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart,
   Bar,
@@ -33,18 +34,25 @@ import {
   getFirstTouchScatterData,
   getFirstTouchByTag,
   getFirstTouchInsights,
+  CHART_TOOLTIP_STYLES,
 } from '../../utils';
 import { useAppStore } from '../../stores/appStore';
+import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
 }
 
 export function StopPlacement({ trades }: Props) {
+  const navigate = useNavigate();
   const [stopAdjustment, setStopAdjustment] = useState(0);
   const [firstTouchBuffer, setFirstTouchBuffer] = useState(10);
   const { alertSettings } = useAppStore();
   const minRThreshold = alertSettings.minRThreshold ?? 1.0;
+
+  // Modal state for drill-down
+  const [modalTrades, setModalTrades] = useState<TradeRecord[]>([]);
+  const [modalTitle, setModalTitle] = useState('');
 
   const summary = useMemo(() => getStopPlacementSummary(trades), [trades]);
   const maeDistribution = useMemo(() => getMAEDistribution(trades, 6), [trades]);
@@ -145,7 +153,7 @@ export function StopPlacement({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">MAE Distribution</h3>
-            <p className="text-sm text-gray-400">How far trades move against you before resolving</p>
+            <p className="text-sm text-gray-400">How far trades move against you before resolving. Click a bar to see trades.</p>
           </div>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={maeDistribution} margin={{ left: 10, right: 10 }}>
@@ -153,14 +161,54 @@ export function StopPlacement({ trades }: Props) {
               <XAxis dataKey="label" stroke="#6b7280" fontSize={12} />
               <YAxis stroke="#6b7280" fontSize={12} />
               <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number, name: string) => {
                   const label = name === 'winners' ? 'Winners' : 'Losers';
                   return [value + ' trades', label];
                 }}
               />
-              <Bar dataKey="winners" stackId="a" fill="#22c55e" name="winners" />
-              <Bar dataKey="losers" stackId="a" fill="#ef4444" name="losers" />
+              <Bar
+                dataKey="winners"
+                stackId="a"
+                fill="#22c55e"
+                name="winners"
+                className="cursor-pointer"
+                onClick={(data) => {
+                  if (!data) return;
+                  const bucket = data as { min: number; max: number; label: string };
+                  const bucketTrades = trades.filter(t => {
+                    if (t.status !== 'closed' || t.maeR === undefined) return false;
+                    const maePercent = (t.maeR / 1) * 100;
+                    const isWinner = (t.rMultiple ?? 0) > 0;
+                    if (!isWinner) return false;
+                    if (bucket.max === Infinity) return maePercent >= bucket.min;
+                    return maePercent >= bucket.min && maePercent < bucket.max;
+                  });
+                  setModalTitle(`MAE ${bucket.label} — Winners`);
+                  setModalTrades(bucketTrades);
+                }}
+              />
+              <Bar
+                dataKey="losers"
+                stackId="a"
+                fill="#ef4444"
+                name="losers"
+                className="cursor-pointer"
+                onClick={(data) => {
+                  if (!data) return;
+                  const bucket = data as { min: number; max: number; label: string };
+                  const bucketTrades = trades.filter(t => {
+                    if (t.status !== 'closed' || t.maeR === undefined) return false;
+                    const maePercent = (t.maeR / 1) * 100;
+                    const isWinner = (t.rMultiple ?? 0) > 0;
+                    if (isWinner) return false;
+                    if (bucket.max === Infinity) return maePercent >= bucket.min;
+                    return maePercent >= bucket.min && maePercent < bucket.max;
+                  });
+                  setModalTitle(`MAE ${bucket.label} — Losers`);
+                  setModalTrades(bucketTrades);
+                }}
+              />
             </BarChart>
           </ResponsiveContainer>
           <div className="flex justify-center gap-6 mt-2 text-xs">
@@ -182,7 +230,7 @@ export function StopPlacement({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">Stop Efficiency</h3>
-            <p className="text-sm text-gray-400">Stop distance vs outcome</p>
+            <p className="text-sm text-gray-400">Stop distance vs outcome. Click a dot to view trade.</p>
           </div>
           {stopEfficiency.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
@@ -190,12 +238,12 @@ export function StopPlacement({ trades }: Props) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                 <XAxis
                   type="number"
-                  dataKey="stopDistance"
-                  name="Stop Distance"
+                  dataKey="stopDistancePercent"
+                  name="Stop Distance %"
                   stroke="#6b7280"
                   fontSize={12}
-                  tickFormatter={(v) => v.toFixed(4)}
-                  label={{ value: 'Stop Distance', position: 'bottom', fill: '#6b7280', fontSize: 11 }}
+                  tickFormatter={(v) => v.toFixed(2) + '%'}
+                  label={{ value: 'Stop Distance (% of Entry)', position: 'bottom', fill: '#6b7280', fontSize: 11 }}
                 />
                 <YAxis
                   type="number"
@@ -207,23 +255,37 @@ export function StopPlacement({ trades }: Props) {
                 />
                 <ZAxis range={[40, 40]} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => {
-                    if (name === 'Stop Distance') return [value.toFixed(5), 'Stop'];
+                    if (name === 'Stop Distance %') return [value.toFixed(2) + '%', 'Stop'];
                     return [value.toFixed(2) + 'R', name];
                   }}
-                  labelFormatter={(_, payload) => payload[0]?.payload?.pair || ''}
+                  labelFormatter={(_, payload) => {
+                    const data = payload[0]?.payload;
+                    if (!data) return '';
+                    const date = trades.find(t => t.id === data.tradeId)?.entryTime;
+                    const dateStr = date ? new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                    return `${data.pair} ${dateStr}`;
+                  }}
                 />
                 <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
                 <Scatter
                   data={stopEfficiency.filter(d => d.isWinner)}
                   fill="#22c55e"
                   name="Winners"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
                 <Scatter
                   data={stopEfficiency.filter(d => !d.isWinner)}
                   fill="#ef4444"
                   name="Losers"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
               </ScatterChart>
             </ResponsiveContainer>
@@ -238,7 +300,7 @@ export function StopPlacement({ trades }: Props) {
         <div className="bg-gray-800 rounded-lg p-6">
           <div className="mb-4">
             <h3 className="text-lg font-medium text-white">MAE vs Outcome</h3>
-            <p className="text-sm text-gray-400">Drawdown during trade vs final result</p>
+            <p className="text-sm text-gray-400">Drawdown during trade vs final result. Click a dot to view trade.</p>
           </div>
           {maeOutcome.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
@@ -263,9 +325,15 @@ export function StopPlacement({ trades }: Props) {
                 />
                 <ZAxis range={[40, 40]} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => [value.toFixed(2) + 'R', name]}
-                  labelFormatter={(_, payload) => payload[0]?.payload?.pair || ''}
+                  labelFormatter={(_, payload) => {
+                    const data = payload[0]?.payload;
+                    if (!data) return '';
+                    const date = trades.find(t => t.id === data.tradeId)?.entryTime;
+                    const dateStr = date ? new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
+                    return `${data.pair} ${dateStr}`;
+                  }}
                 />
                 <ReferenceLine x={1} stroke="#f59e0b" strokeDasharray="3 3" label={{ value: 'Stop', fill: '#f59e0b', fontSize: 10 }} />
                 <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
@@ -273,11 +341,19 @@ export function StopPlacement({ trades }: Props) {
                   data={maeOutcome.filter(d => d.isWinner)}
                   fill="#22c55e"
                   name="Winners"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
                 <Scatter
                   data={maeOutcome.filter(d => !d.isWinner)}
                   fill="#ef4444"
                   name="Losers"
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (data?.tradeId) navigate(`/trades/${data.tradeId}`);
+                  }}
                 />
               </ScatterChart>
             </ResponsiveContainer>
@@ -301,7 +377,7 @@ export function StopPlacement({ trades }: Props) {
 
           {/* Slider and Presets */}
           <div className="mb-6">
-            <div className="flex items-center gap-4 mb-3">
+            <div className="flex items-center gap-4 mb-2">
               <label className="text-sm text-gray-400 whitespace-nowrap">Stop Adjustment:</label>
               <input
                 type="range"
@@ -312,10 +388,21 @@ export function StopPlacement({ trades }: Props) {
                 onChange={(e) => setStopAdjustment(Number(e.target.value))}
                 className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
               />
-              <span className={`text-lg font-bold min-w-[60px] text-right ${
-                stopAdjustment < 0 ? 'text-amber-400' : stopAdjustment > 0 ? 'text-blue-400' : 'text-gray-400'
+            </div>
+            {/* Prominent centered readout */}
+            <div className="text-center mb-3">
+              <span className={`text-xl font-bold px-4 py-1 rounded-lg ${
+                stopAdjustment < 0
+                  ? 'bg-amber-500/20 text-amber-400'
+                  : stopAdjustment > 0
+                  ? 'bg-blue-500/20 text-blue-400'
+                  : 'bg-gray-700 text-gray-400'
               }`}>
-                {stopAdjustment > 0 ? '+' : ''}{stopAdjustment}%
+                {stopAdjustment === 0
+                  ? 'No adjustment'
+                  : stopAdjustment < 0
+                  ? `Stops tightened by ${Math.abs(stopAdjustment)}%`
+                  : `Stops widened by ${stopAdjustment}%`}
               </span>
             </div>
             <div className="flex gap-2 flex-wrap">
@@ -376,7 +463,7 @@ export function StopPlacement({ trades }: Props) {
             <div className="bg-gray-750 rounded-lg p-4">
               <p className="text-xs text-gray-400 mb-1">Impact</p>
               <p className="text-sm text-gray-300">
-                <span className="text-red-400">{simulationResult.stoppedOutCount}</span> stopped out early
+                <span className="text-red-400">{simulationResult.stoppedOutCount}</span> winners→losers
               </p>
               <p className="text-sm text-gray-300">
                 <span className="text-green-400">{simulationResult.improvedCount}</span> improved R
@@ -402,7 +489,7 @@ export function StopPlacement({ trades }: Props) {
                   tickFormatter={(v) => v + 'R'}
                 />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => [value.toFixed(2) + 'R', name]}
                 />
                 <Legend />
@@ -766,7 +853,7 @@ export function StopPlacement({ trades }: Props) {
               </p>
 
               {/* Slider */}
-              <div className="flex items-center gap-4 mb-4">
+              <div className="flex items-center gap-4 mb-2">
                 <label className="text-sm text-gray-400 whitespace-nowrap">Stop Buffer:</label>
                 <input
                   type="range"
@@ -777,8 +864,11 @@ export function StopPlacement({ trades }: Props) {
                   onChange={(e) => setFirstTouchBuffer(Number(e.target.value))}
                   className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                 />
-                <span className="text-lg font-bold text-blue-400 min-w-[50px] text-right">
-                  +{firstTouchBuffer}%
+              </div>
+              {/* Prominent centered readout */}
+              <div className="text-center mb-3">
+                <span className="text-lg font-bold px-4 py-1 rounded-lg bg-blue-500/20 text-blue-400">
+                  Stop buffer: +{firstTouchBuffer}% beyond first-touch
                 </span>
               </div>
               <div className="flex gap-2 flex-wrap mb-4">
@@ -895,7 +985,7 @@ export function StopPlacement({ trades }: Props) {
                   />
                   <ZAxis range={[40, 40]} />
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    {...CHART_TOOLTIP_STYLES}
                     formatter={(value: number, name: string) => [value.toFixed(2) + 'R', name]}
                     labelFormatter={(_, payload) => payload[0]?.payload?.pair || ''}
                   />
@@ -987,6 +1077,15 @@ export function StopPlacement({ trades }: Props) {
             ))}
           </ul>
         </div>
+      )}
+
+      {/* Trade List Modal */}
+      {modalTrades.length > 0 && (
+        <TradeListModal
+          title={modalTitle}
+          trades={modalTrades}
+          onClose={() => setModalTrades([])}
+        />
       )}
     </div>
   );

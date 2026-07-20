@@ -26,7 +26,9 @@ import {
   getZoneEntryPlacementInsights,
   getLevelsInsideZonesAnalysis,
   getZonePenetrationInsights,
+  CHART_TOOLTIP_STYLES,
 } from '../../utils';
+import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
@@ -39,6 +41,10 @@ export function SetupPerformance({ trades }: Props) {
   const [sortField, setSortField] = useState<SortField>('totalPnl');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
+
+  // Modal state for drill-down
+  const [modalTrades, setModalTrades] = useState<TradeRecord[]>([]);
+  const [modalTitle, setModalTitle] = useState('');
 
   // Load tag descriptions for tooltips
   useEffect(() => {
@@ -262,11 +268,7 @@ export function SetupPerformance({ trades }: Props) {
               <XAxis type="number" stroke="#6b7280" fontSize={12} tickFormatter={(v) => '$' + v} />
               <YAxis type="category" dataKey="tag" stroke="#6b7280" fontSize={11} width={95} />
               <Tooltip
-                contentStyle={{
-                  backgroundColor: '#1f2937',
-                  border: '1px solid #374151',
-                  borderRadius: '8px',
-                }}
+                {...CHART_TOOLTIP_STYLES}
                 formatter={(value: number) => ['$' + value.toFixed(2), 'Net P&L']}
               />
               <ReferenceLine x={0} stroke="#6b7280" />
@@ -282,7 +284,7 @@ export function SetupPerformance({ trades }: Props) {
         {/* Confluence Count Analysis */}
         <div className="bg-gray-800 rounded-lg p-6">
           <h3 className="text-lg font-medium text-white mb-1">Confluence Count Analysis</h3>
-          <p className="text-sm text-gray-400 mb-4">Do more confluences improve your results?</p>
+          <p className="text-sm text-gray-400 mb-4">Do more confluences improve your results? Click a bar to see trades.</p>
           {confluenceChartData.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={confluenceChartData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
@@ -295,18 +297,31 @@ export function SetupPerformance({ trades }: Props) {
                 />
                 <YAxis stroke="#6b7280" fontSize={12} tickFormatter={(v) => v + 'R'} />
                 <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#1f2937',
-                    border: '1px solid #374151',
-                    borderRadius: '8px',
-                  }}
+                  {...CHART_TOOLTIP_STYLES}
                   formatter={(value: number, name: string) => [
                     name === 'avgR' ? value.toFixed(2) + 'R' : value,
                     name === 'avgR' ? 'Avg R' : 'Trades',
                   ]}
                 />
                 <ReferenceLine y={0} stroke="#6b7280" />
-                <Bar dataKey="avgR" radius={[4, 4, 0, 0]}>
+                <Bar
+                  dataKey="avgR"
+                  radius={[4, 4, 0, 0]}
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    if (!data) return;
+                    const bucket = data as { label: string };
+                    const targetCount = bucket.label === '4+' ? 4 : parseInt(bucket.label);
+                    const bucketTrades = trades.filter(t => {
+                      if (t.status !== 'closed') return false;
+                      const tagCount = (t.setupTags || []).length;
+                      if (bucket.label === '4+') return tagCount >= 4;
+                      return tagCount === targetCount;
+                    });
+                    setModalTitle(`${bucket.label} Tag${bucket.label === '1' ? '' : 's'} Confluence`);
+                    setModalTrades(bucketTrades);
+                  }}
+                >
                   {confluenceChartData.map((entry, index) => (
                     <Cell key={index} fill={entry.avgR >= 0 ? '#22c55e' : '#ef4444'} />
                   ))}
@@ -650,11 +665,27 @@ export function SetupPerformance({ trades }: Props) {
             <div className="mb-6">
               <h4 className="text-sm font-medium text-gray-300 mb-3">Penetration Distribution</h4>
               <p className="text-xs text-gray-500 mb-3">
-                Based on {zonePenetrationStats.zonesWithPenetration} zones with penetration data
+                Based on {zonePenetrationStats.zonesWithPenetration} zones with penetration data. Click a bar to see trades.
               </p>
               <div className="flex gap-2 h-24">
                 {zonePenetrationStats.overall.map((bucket) => (
-                  <div key={bucket.bucket} className="flex-1 flex flex-col items-center">
+                  <div
+                    key={bucket.bucket}
+                    className="flex-1 flex flex-col items-center cursor-pointer hover:opacity-80 transition-opacity"
+                    onClick={() => {
+                      const bucketTrades = trades.filter(t => {
+                        if (t.status !== 'closed' || !t.levelSequence) return false;
+                        return t.levelSequence.some(level =>
+                          level.penetrationPercent !== null &&
+                          level.penetrationPercent !== undefined &&
+                          level.penetrationPercent >= bucket.bucketMin &&
+                          level.penetrationPercent < bucket.bucketMax
+                        );
+                      });
+                      setModalTitle(`Zone Penetration: ${bucket.bucket}`);
+                      setModalTrades(bucketTrades);
+                    }}
+                  >
                     <div className="flex-1 w-full flex items-end justify-center">
                       <div
                         className={`w-full max-w-12 rounded-t ${
@@ -838,6 +869,15 @@ export function SetupPerformance({ trades }: Props) {
             ))}
           </ul>
         </div>
+      )}
+
+      {/* Trade List Modal */}
+      {modalTrades.length > 0 && (
+        <TradeListModal
+          title={modalTitle}
+          trades={modalTrades}
+          onClose={() => setModalTrades([])}
+        />
       )}
     </div>
   );
