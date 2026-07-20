@@ -1,5 +1,5 @@
 import type { TradeRecord, TradingSession } from '../types';
-import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR } from './tradeCalculations';
+import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR, getTradeRMetrics } from './tradeCalculations';
 
 // Generic group performance stats
 export interface GroupStats {
@@ -873,6 +873,7 @@ export interface SimulationResult {
   avgR: number;
   maxDrawdown: number;
   winRate: number;
+  tradesExcludedImplausible?: number; // Trades excluded due to R values > 50 (data corruption)
 }
 
 export function getMFECaptureData(trades: TradeRecord[]): MFECapturePoint[] {
@@ -1035,9 +1036,10 @@ export function simulateExitStrategy(
   trades: TradeRecord[],
   strategy: SimulationStrategy,
   trailR: number = 0.5
-): SimulationResult {
+): SimulationResult & { tradesExcludedImplausible: number } {
+  // Filter to closed trades with MFE price data
   const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.mfeR !== undefined)
+    .filter(t => t.status === 'closed' && (t.mfePrice !== null || t.mfeR !== undefined))
     .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
 
   const equityCurve: { tradeIndex: number; cumulative: number }[] = [];
@@ -1045,14 +1047,25 @@ export function simulateExitStrategy(
   let peak = 0;
   let maxDrawdown = 0;
   const rMultiples: number[] = [];
+  let excludedImplausible = 0;
+  let tradeIndex = 0;
 
-  for (let i = 0; i < closedTrades.length; i++) {
-    const trade = closedTrades[i];
-    const mfeR = trade.mfeR ?? 0;
-    const maeR = trade.maeR ?? 1; // Assume full stop if no MAE
+  for (const trade of closedTrades) {
+    // Use centralized R-metrics calculation to ensure original stop is used
+    const metrics = getTradeRMetrics(trade);
+
+    // Skip trades with implausible R values (data corruption from stop adjustments)
+    if (metrics?.isImplausible) {
+      excludedImplausible++;
+      continue;
+    }
+
+    // Get properly calculated R metrics
+    const mfeR = metrics?.mfeR ?? 0;
+    const maeR = metrics?.maeR ?? 1; // Assume full stop if no MAE
     const actualR = trade.rMultiple ?? 0;
     const plannedRR = trade.plannedRR ?? 2;
-    
+
     let simulatedR: number;
 
     switch (strategy) {
@@ -1111,14 +1124,15 @@ export function simulateExitStrategy(
         simulatedR = actualR;
     }
 
+    tradeIndex++;
     rMultiples.push(simulatedR);
     cumulative += simulatedR;
-    
+
     if (cumulative > peak) peak = cumulative;
     const drawdown = peak - cumulative;
     if (drawdown > maxDrawdown) maxDrawdown = drawdown;
 
-    equityCurve.push({ tradeIndex: i + 1, cumulative });
+    equityCurve.push({ tradeIndex, cumulative });
   }
 
   const wins = rMultiples.filter(r => r > 0);
@@ -1142,6 +1156,7 @@ export function simulateExitStrategy(
     avgR: rMultiples.length > 0 ? cumulative / rMultiples.length : 0,
     maxDrawdown,
     winRate: rMultiples.length > 0 ? (wins.length / rMultiples.length) * 100 : 0,
+    tradesExcludedImplausible: excludedImplausible,
   };
 }
 
@@ -1150,6 +1165,7 @@ export interface FixedRTargetResult extends SimulationResult {
   targetR: number;
   tradesSimulated: number;
   tradesExcluded: number;
+  tradesExcludedImplausible: number;
 }
 
 /**
@@ -1159,13 +1175,17 @@ export interface FixedRTargetResult extends SimulationResult {
  * - If mfeR >= targetR: trade reached the fixed target, result = +targetR
  * - If mfeR < targetR AND maeR >= 1: trade never reached target and hit stop, result = -1R
  * - Otherwise (rare): exclude from simulation (e.g., manually closed before either)
+ *
+ * Uses centralized R-metrics calculation to ensure original stop distance is used.
+ * Trades with implausible R values (>50R) are excluded.
  */
 export function simulateFixedRTarget(
   trades: TradeRecord[],
   targetR: number
 ): FixedRTargetResult {
+  // Filter to closed trades with MFE price data
   const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.mfeR !== undefined)
+    .filter(t => t.status === 'closed' && (t.mfePrice !== null || t.mfeR !== undefined))
     .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
 
   const equityCurve: { tradeIndex: number; cumulative: number }[] = [];
@@ -1174,11 +1194,21 @@ export function simulateFixedRTarget(
   let maxDrawdown = 0;
   const rMultiples: number[] = [];
   let excluded = 0;
+  let excludedImplausible = 0;
 
-  for (let i = 0; i < closedTrades.length; i++) {
-    const trade = closedTrades[i];
-    const mfeR = trade.mfeR ?? 0;
-    const maeR = trade.maeR ?? 0;
+  for (const trade of closedTrades) {
+    // Use centralized R-metrics calculation to ensure original stop is used
+    const metrics = getTradeRMetrics(trade);
+
+    // Skip trades with implausible R values (data corruption from stop adjustments)
+    if (metrics?.isImplausible) {
+      excludedImplausible++;
+      continue;
+    }
+
+    // Get properly calculated R metrics
+    const mfeR = metrics?.mfeR ?? 0;
+    const maeR = metrics?.maeR ?? 0;
 
     let simulatedR: number | null = null;
 
@@ -1221,6 +1251,7 @@ export function simulateFixedRTarget(
     targetR,
     tradesSimulated: rMultiples.length,
     tradesExcluded: excluded,
+    tradesExcludedImplausible: excludedImplausible,
   };
 }
 

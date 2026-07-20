@@ -411,6 +411,13 @@ export function ExitManagement({ trades }: Props) {
         <div className="mb-4">
           <h3 className="text-lg font-medium text-white">"What If" Exit Simulator</h3>
           <p className="text-sm text-gray-400">Compare different exit strategies retroactively applied to your trade history</p>
+          {/* Warning if trades excluded due to implausible R values */}
+          {(simulations.actual?.tradesExcludedImplausible ?? 0) > 0 && (
+            <div className="mt-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400">
+              ⚠️ {simulations.actual?.tradesExcludedImplausible ?? 0} trade{(simulations.actual?.tradesExcludedImplausible ?? 0) > 1 ? 's' : ''} excluded due to implausible R values (&gt;50R).
+              This may indicate stop adjustment data issues — re-save those trades to fix.
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2 mb-4">
@@ -503,6 +510,9 @@ export function ExitManagement({ trades }: Props) {
                 Based on {fixedRSimulation.tradesSimulated} trades with MFE data
                 {fixedRSimulation.tradesExcluded > 0 && (
                   <span className="text-gray-500"> ({fixedRSimulation.tradesExcluded} excluded)</span>
+                )}
+                {fixedRSimulation.tradesExcludedImplausible > 0 && (
+                  <span className="text-amber-400"> ({fixedRSimulation.tradesExcludedImplausible} implausible)</span>
                 )}
               </span>
               {fixedRSimulation.tradesSimulated < 20 && (

@@ -1,4 +1,4 @@
-import type { TradingSession, TradeDirection, TradeStatus, ExitType, AssetClass } from '../types';
+import type { TradingSession, TradeDirection, TradeStatus, ExitType, AssetClass, TradeRecord } from '../types';
 
 /**
  * Maximum plausible R-multiple value.
@@ -737,4 +737,80 @@ export function getReviewDueDate(exitTime: Date, assetClass: AssetClass): Date {
 export function isReviewDue(exitTime: Date, assetClass: AssetClass): boolean {
   const dueDate = getReviewDueDate(exitTime, assetClass);
   return new Date() >= dueDate;
+}
+
+// ============================================
+// CENTRALIZED R-METRICS CALCULATION
+// ============================================
+
+/**
+ * Result of centralized R-metrics calculation
+ */
+export interface TradeRMetrics {
+  maeR: number;
+  mfeR: number;
+  stopDistance: number;
+  isImplausible: boolean; // True if raw values exceeded MAX_PLAUSIBLE_R
+}
+
+/**
+ * Centralized function to get properly calculated R-metrics for a trade.
+ *
+ * CRITICAL: This function ALWAYS uses the original stop distance (|entry - originalStopLoss|)
+ * to calculate R-multiples. This ensures consistent R values even when stops are adjusted.
+ *
+ * Use this instead of reading trade.mfeR/maeR directly, as stored values may have been
+ * calculated incorrectly if the stop was adjusted before the trade was saved.
+ *
+ * @param trade - The trade record to calculate metrics for
+ * @returns Recalculated R-metrics, or null if trade lacks required data
+ */
+export function getTradeRMetrics(trade: TradeRecord): TradeRMetrics | null {
+  const entryPrice = trade.entryPrice;
+  const mfePrice = trade.mfePrice;
+  const maePrice = trade.maePrice;
+
+  // Use original stop loss if available, otherwise fall back to current stop
+  const stopLossForCalc = trade.originalStopLoss ?? trade.stopLoss;
+  const stopDistance = Math.abs(entryPrice - stopLossForCalc);
+
+  // Can't calculate R without stop distance
+  if (stopDistance === 0) {
+    return null;
+  }
+
+  // Calculate MFE R from price
+  let mfeR = 0;
+  let mfeImplausible = false;
+  if (mfePrice !== null) {
+    const mfeDistance = Math.abs(mfePrice - entryPrice);
+    const rawMfeR = mfeDistance / stopDistance;
+    if (rawMfeR > MAX_PLAUSIBLE_R) {
+      mfeImplausible = true;
+      mfeR = MAX_PLAUSIBLE_R;
+    } else {
+      mfeR = rawMfeR;
+    }
+  }
+
+  // Calculate MAE R from price
+  let maeR = 0;
+  let maeImplausible = false;
+  if (maePrice !== null) {
+    const maeDistance = Math.abs(maePrice - entryPrice);
+    const rawMaeR = maeDistance / stopDistance;
+    if (rawMaeR > MAX_PLAUSIBLE_R) {
+      maeImplausible = true;
+      maeR = MAX_PLAUSIBLE_R;
+    } else {
+      maeR = rawMaeR;
+    }
+  }
+
+  return {
+    maeR: Number(maeR.toFixed(2)),
+    mfeR: Number(mfeR.toFixed(2)),
+    stopDistance,
+    isImplausible: mfeImplausible || maeImplausible,
+  };
 }
