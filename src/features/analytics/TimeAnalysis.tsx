@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import {
   BarChart,
   Bar,
@@ -14,18 +14,42 @@ import {
   ZAxis,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
-import { getTimeAnalysis, getTimeInsights, getTimeframeAnalysis, CHART_TOOLTIP_STYLES } from '../../utils';
+import {
+  getTimeAnalysis,
+  getTimeInsights,
+  getTimeframeAnalysis,
+  getEventHeatmap,
+  getEventOutcomeCorrelation,
+  getRecurringEventPatterns,
+  getEventInsights,
+  CHART_TOOLTIP_STYLES,
+} from '../../utils';
 
 interface Props {
   trades: TradeRecord[];
 }
 
 export function TimeAnalysis({ trades }: Props) {
+  const [eventAssetFilter, setEventAssetFilter] = useState<string>('');
+
   const timeData = useMemo(() => getTimeAnalysis(trades), [trades]);
   const timeframeData = useMemo(() => getTimeframeAnalysis(trades), [trades]);
+
+  // Event analysis
+  const eventHeatmap = useMemo(() => getEventHeatmap(trades, eventAssetFilter || undefined), [trades, eventAssetFilter]);
+  const eventCorrelation = useMemo(() => getEventOutcomeCorrelation(trades), [trades]);
+  const recurringPatterns = useMemo(() => getRecurringEventPatterns(trades), [trades]);
+  const eventInsights = useMemo(() => getEventInsights(eventCorrelation, recurringPatterns), [eventCorrelation, recurringPatterns]);
+
+  // Get unique pairs for event filter dropdown
+  const uniquePairs = useMemo(() => {
+    const pairs = [...new Set(trades.map(t => t.pair))].filter(Boolean).sort();
+    return pairs;
+  }, [trades]);
+
   const insights = useMemo(
-    () => getTimeInsights(timeData.sessions, timeData.daysOfWeek),
-    [timeData]
+    () => [...getTimeInsights(timeData.sessions, timeData.daysOfWeek), ...eventInsights],
+    [timeData, eventInsights]
   );
 
   // Filter to trading days only (Mon-Fri)
@@ -370,6 +394,156 @@ export function TimeAnalysis({ trades }: Props) {
           ))}
         </div>
       </div>
+
+      {/* In-Trade Event Patterns */}
+      {(eventCorrelation.length > 0 || recurringPatterns.length > 0) && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-medium text-white">In-Trade Event Patterns</h3>
+              <p className="text-sm text-gray-400">Analysis of events logged during trades</p>
+            </div>
+            {uniquePairs.length > 0 && (
+              <select
+                value={eventAssetFilter}
+                onChange={(e) => setEventAssetFilter(e.target.value)}
+                className="px-3 py-1.5 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">All pairs</option>
+                {uniquePairs.map(pair => (
+                  <option key={pair} value={pair}>{pair}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Event Heatmap */}
+            {eventHeatmap.length > 0 && (
+              <div>
+                <h4 className="text-md font-medium text-gray-300 mb-3">Event Timing Heatmap</h4>
+                <div className="overflow-x-auto">
+                  {(() => {
+                    // Build heatmap grid
+                    const eventTypes = [...new Set(eventHeatmap.map(e => e.eventType))].sort();
+                    const hours = Array.from({ length: 24 }, (_, i) => i);
+                    const maxCount = Math.max(...eventHeatmap.map(e => e.count), 1);
+                    const cellMap = new Map(eventHeatmap.map(e => [`${e.hour}|${e.eventType}`, e.count]));
+
+                    return (
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr>
+                            <th className="text-left py-1 px-1 text-gray-500 font-normal">Event</th>
+                            {hours.filter(h => h % 2 === 0).map(h => (
+                              <th key={h} className="text-center py-1 px-0.5 text-gray-500 font-normal" colSpan={2}>
+                                {h.toString().padStart(2, '0')}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {eventTypes.map(eventType => (
+                            <tr key={eventType}>
+                              <td className="py-1 px-1 text-gray-400 whitespace-nowrap max-w-[100px] truncate" title={eventType}>
+                                {eventType.replace(/_/g, ' ')}
+                              </td>
+                              {hours.map(h => {
+                                const count = cellMap.get(`${h}|${eventType}`) || 0;
+                                const intensity = count / maxCount;
+                                const bgColor = count > 0
+                                  ? `rgba(59, 130, 246, ${0.2 + intensity * 0.8})`
+                                  : 'transparent';
+                                return (
+                                  <td
+                                    key={h}
+                                    className="py-1 px-0.5 text-center"
+                                    style={{ backgroundColor: bgColor }}
+                                    title={`${h}:00 - ${eventType}: ${count}`}
+                                  >
+                                    {count > 0 && (
+                                      <span className="text-white text-[10px]">{count}</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+
+            {/* Event→Outcome Correlation */}
+            {eventCorrelation.length > 0 && (
+              <div>
+                <h4 className="text-md font-medium text-gray-300 mb-3">Event→Outcome Correlation</h4>
+                <div className="space-y-2">
+                  {eventCorrelation.slice(0, 10).map(event => {
+                    const isLowSample = event.count < 5;
+                    return (
+                      <div
+                        key={event.eventType}
+                        className={`flex items-center justify-between p-2 bg-gray-750 rounded ${isLowSample ? 'opacity-50' : ''}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-xs rounded">
+                            {event.eventType.replace(/_/g, ' ')}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            n={event.count}
+                            {isLowSample && ' (low sample)'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="text-sm text-gray-300">{event.winRate.toFixed(0)}% WR</span>
+                          <span className={`text-sm font-medium ${event.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {event.avgR > 0 ? '+' : ''}{event.avgR.toFixed(2)}R
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Recurring Patterns */}
+          {recurringPatterns.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-gray-700">
+              <h4 className="text-md font-medium text-gray-300 mb-3">Recurring Time Patterns</h4>
+              <p className="text-sm text-gray-500 mb-3">Events that cluster at specific times for specific pairs</p>
+              <div className="space-y-2">
+                {recurringPatterns.slice(0, 5).map((pattern, i) => {
+                  const percentage = ((pattern.occurrences / pattern.totalForPair) * 100).toFixed(0);
+                  const hourStr = `${pattern.hour.toString().padStart(2, '0')}:00`;
+                  const nextHour = `${((pattern.hour + 1) % 24).toString().padStart(2, '0')}:00`;
+
+                  return (
+                    <div key={i} className="flex items-center gap-2 p-2 bg-gray-750 rounded">
+                      <span className="px-2 py-0.5 bg-yellow-500/20 text-yellow-400 text-xs rounded">
+                        {pattern.eventType.replace(/_/g, ' ')}
+                      </span>
+                      <span className="text-sm text-gray-300">on</span>
+                      <span className="text-sm text-white font-medium">{pattern.pair}</span>
+                      <span className="text-sm text-gray-300">:</span>
+                      <span className="text-sm text-gray-300">
+                        {pattern.occurrences} of {pattern.totalForPair} ({percentage}%)
+                      </span>
+                      <span className="text-sm text-gray-500">between</span>
+                      <span className="text-sm text-blue-400">{hourStr}–{nextHour}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Insights */}
       {insights.length > 0 && (

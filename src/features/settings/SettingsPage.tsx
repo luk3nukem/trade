@@ -38,6 +38,9 @@ type ModalType =
   | 'renameTag'
   | 'deleteTag'
   | 'mergeTags'
+  | 'renameEventType'
+  | 'deleteEventType'
+  | 'mergeEventTypes'
   | null;
 
 const ALERT_TYPE_LABELS: Record<AlertType, { name: string; description: string }> = {
@@ -112,6 +115,14 @@ export function SettingsPage() {
   const [tagToDelete, setTagToDelete] = useState<TagWithStats | null>(null);
   const [selectedTagsForMerge, setSelectedTagsForMerge] = useState<string[]>([]);
   const [mergeTargetTag, setMergeTargetTag] = useState('');
+
+  // Event Types state
+  const [eventTypes, setEventTypes] = useState<TagWithStats[]>([]);
+  const [editingEventType, setEditingEventType] = useState<TagWithStats | null>(null);
+  const [eventTypeRenameValue, setEventTypeRenameValue] = useState('');
+  const [eventTypeToDelete, setEventTypeToDelete] = useState<TagWithStats | null>(null);
+  const [selectedEventTypesForMerge, setSelectedEventTypesForMerge] = useState<string[]>([]);
+  const [mergeTargetEventType, setMergeTargetEventType] = useState('');
 
   // Import state
   const [pendingBackup, setPendingBackup] = useState<BackupData | null>(null);
@@ -204,11 +215,34 @@ export function SettingsPage() {
     setTags(tagsWithStats);
   };
 
+  // Load event types with trade counts
+  const loadEventTypes = async () => {
+    const allTrades = await db.trades.toArray();
+    const eventTypeCounts = new Map<string, number>();
+
+    // Count trades per event type
+    for (const trade of allTrades) {
+      const events = trade.events || [];
+      const uniqueTypes = new Set(events.map(e => e.eventType));
+      for (const eventType of uniqueTypes) {
+        eventTypeCounts.set(eventType, (eventTypeCounts.get(eventType) || 0) + 1);
+      }
+    }
+
+    // Convert to sorted array
+    const eventTypesWithStats: TagWithStats[] = Array.from(eventTypeCounts.entries())
+      .map(([name, tradeCount]) => ({ name, tradeCount }))
+      .sort((a, b) => b.tradeCount - a.tradeCount);
+
+    setEventTypes(eventTypesWithStats);
+  };
+
   // Initial load
   useEffect(() => {
     loadAccounts();
     loadStrategies();
     loadTags();
+    loadEventTypes();
   }, []);
 
   // Account handlers
@@ -598,6 +632,132 @@ export function SettingsPage() {
   const toggleTagForMerge = (tagName: string) => {
     setSelectedTagsForMerge((prev) =>
       prev.includes(tagName) ? prev.filter((t) => t !== tagName) : [...prev, tagName]
+    );
+  };
+
+  // Event Type handlers
+  const handleRenameEventType = async () => {
+    if (!editingEventType || !eventTypeRenameValue.trim()) return;
+
+    const oldName = editingEventType.name;
+    const newName = eventTypeRenameValue.trim();
+
+    if (oldName === newName) {
+      setEditingEventType(null);
+      setEventTypeRenameValue('');
+      setActiveModal(null);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Update all trades that have this event type
+      await db.trades
+        .filter((trade) => (trade.events || []).some(e => e.eventType === oldName))
+        .modify((trade) => {
+          trade.events = (trade.events || []).map(e =>
+            e.eventType === oldName ? { ...e, eventType: newName } : e
+          );
+        });
+
+      await loadEventTypes();
+      setEditingEventType(null);
+      setEventTypeRenameValue('');
+      setActiveModal(null);
+      setMessage({ type: 'success', text: `Renamed "${oldName}" to "${newName}" across ${editingEventType.tradeCount} trades.` });
+    } catch (error) {
+      console.error('Failed to rename event type:', error);
+      setMessage({ type: 'error', text: 'Failed to rename event type. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteEventType = async () => {
+    if (!eventTypeToDelete) return;
+
+    setLoading(true);
+    try {
+      if (eventTypeToDelete.tradeCount > 0) {
+        // Remove event type from all trades that have it
+        await db.trades
+          .filter((trade) => (trade.events || []).some(e => e.eventType === eventTypeToDelete.name))
+          .modify((trade) => {
+            trade.events = (trade.events || []).filter((e) => e.eventType !== eventTypeToDelete.name);
+          });
+      }
+
+      await loadEventTypes();
+      setEventTypeToDelete(null);
+      setActiveModal(null);
+      setMessage({
+        type: 'success',
+        text: eventTypeToDelete.tradeCount > 0
+          ? `Removed event type "${eventTypeToDelete.name}" from ${eventTypeToDelete.tradeCount} trades.`
+          : `Event type "${eventTypeToDelete.name}" removed.`,
+      });
+    } catch (error) {
+      console.error('Failed to delete event type:', error);
+      setMessage({ type: 'error', text: 'Failed to delete event type. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMergeEventTypes = async () => {
+    if (selectedEventTypesForMerge.length < 2 || !mergeTargetEventType) return;
+
+    const typesToRemove = selectedEventTypesForMerge.filter((t) => t !== mergeTargetEventType);
+
+    setLoading(true);
+    try {
+      // Get all trades that have any of the event types to remove
+      const affectedTrades = await db.trades
+        .filter((trade) => {
+          const events = trade.events || [];
+          return typesToRemove.some((type) => events.some(e => e.eventType === type));
+        })
+        .toArray();
+
+      // Update each affected trade
+      for (const trade of affectedTrades) {
+        const updatedEvents = (trade.events || []).map(e =>
+          typesToRemove.includes(e.eventType) ? { ...e, eventType: mergeTargetEventType } : e
+        );
+
+        await db.trades.update(trade.id, { events: updatedEvents });
+      }
+
+      await loadEventTypes();
+      setSelectedEventTypesForMerge([]);
+      setMergeTargetEventType('');
+      setActiveModal(null);
+      setMessage({
+        type: 'success',
+        text: `Merged ${typesToRemove.join(', ')} into "${mergeTargetEventType}" across ${affectedTrades.length} trades.`,
+      });
+    } catch (error) {
+      console.error('Failed to merge event types:', error);
+      setMessage({ type: 'error', text: 'Failed to merge event types. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openRenameEventType = (eventType: TagWithStats) => {
+    setEditingEventType(eventType);
+    setEventTypeRenameValue(eventType.name);
+    setActiveModal('renameEventType');
+  };
+
+  const openDeleteEventType = (eventType: TagWithStats) => {
+    setEventTypeToDelete(eventType);
+    setActiveModal('deleteEventType');
+  };
+
+  const toggleEventTypeForMerge = (typeName: string) => {
+    setSelectedEventTypesForMerge((prev) =>
+      prev.includes(typeName) ? prev.filter((t) => t !== typeName) : [...prev, typeName]
     );
   };
 
@@ -1173,6 +1333,93 @@ export function SettingsPage() {
         {selectedTagsForMerge.length > 0 && selectedTagsForMerge.length < 2 && (
           <p className="mt-3 text-sm text-gray-400">
             Select at least 2 tags to merge them.
+          </p>
+        )}
+      </div>
+
+      {/* Event Types Section */}
+      <div className="bg-gray-800 rounded-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-medium text-white">Event Types</h2>
+            <p className="text-sm text-gray-400">Manage in-trade event types used across your trades</p>
+          </div>
+          <div className="flex gap-2">
+            {selectedEventTypesForMerge.length >= 2 && (
+              <button
+                onClick={() => setActiveModal('mergeEventTypes')}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded-lg transition-colors"
+              >
+                Merge Selected ({selectedEventTypesForMerge.length})
+              </button>
+            )}
+          </div>
+        </div>
+
+        {eventTypes.length === 0 ? (
+          <p className="text-gray-400 text-sm">No event types found. Event types appear here when used on trades.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-400 border-b border-gray-700">
+                  <th className="pb-2 font-medium w-10">
+                    <span className="sr-only">Select</span>
+                  </th>
+                  <th className="pb-2 font-medium">Event Type</th>
+                  <th className="pb-2 font-medium text-right">Trades</th>
+                  <th className="pb-2 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {eventTypes.map((eventType) => (
+                  <tr key={eventType.name} className="text-gray-200">
+                    <td className="py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedEventTypesForMerge.includes(eventType.name)}
+                        onChange={() => toggleEventTypeForMerge(eventType.name)}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                      />
+                    </td>
+                    <td className="py-3">
+                      <span className="px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-sm">
+                        {eventType.name.replace(/_/g, ' ')}
+                      </span>
+                    </td>
+                    <td className="py-3 text-right text-gray-400">{eventType.tradeCount}</td>
+                    <td className="py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => openRenameEventType(eventType)}
+                          className="p-1 text-gray-400 hover:text-white transition-colors"
+                          title="Rename"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => openDeleteEventType(eventType)}
+                          className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                          title="Delete"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {selectedEventTypesForMerge.length > 0 && selectedEventTypesForMerge.length < 2 && (
+          <p className="mt-3 text-sm text-gray-400">
+            Select at least 2 event types to merge them.
           </p>
         )}
       </div>
@@ -2063,6 +2310,119 @@ export function SettingsPage() {
                     className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
                   >
                     {loading ? 'Merging...' : 'Merge Tags'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Rename Event Type Modal */}
+            {activeModal === 'renameEventType' && editingEventType && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Rename Event Type</h3>
+                <p className="text-gray-400 mb-4">
+                  Renaming "{editingEventType.name.replace(/_/g, ' ')}" will update {editingEventType.tradeCount} trade{editingEventType.tradeCount !== 1 ? 's' : ''}.
+                </p>
+                <input
+                  type="text"
+                  value={eventTypeRenameValue}
+                  onChange={(e) => setEventTypeRenameValue(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="New event type name"
+                />
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setEditingEventType(null);
+                      setEventTypeRenameValue('');
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleRenameEventType}
+                    disabled={loading || !eventTypeRenameValue.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Renaming...' : 'Rename'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Delete Event Type Modal */}
+            {activeModal === 'deleteEventType' && eventTypeToDelete && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Delete Event Type</h3>
+                <p className="text-gray-400 mb-4">
+                  {eventTypeToDelete.tradeCount > 0
+                    ? `This will remove the event type "${eventTypeToDelete.name.replace(/_/g, ' ')}" from ${eventTypeToDelete.tradeCount} trade${eventTypeToDelete.tradeCount !== 1 ? 's' : ''}.`
+                    : `Delete event type "${eventTypeToDelete.name.replace(/_/g, ' ')}"?`}
+                </p>
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setEventTypeToDelete(null);
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeleteEventType}
+                    disabled={loading}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Merge Event Types Modal */}
+            {activeModal === 'mergeEventTypes' && selectedEventTypesForMerge.length >= 2 && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Merge Event Types</h3>
+                <p className="text-gray-400 mb-4">
+                  Select which event type to keep. The others will be replaced with the selected one.
+                </p>
+                <div className="space-y-2 mb-4">
+                  {selectedEventTypesForMerge.map((eventType) => (
+                    <label key={eventType} className="flex items-center gap-3 p-2 bg-gray-700 rounded-lg cursor-pointer">
+                      <input
+                        type="radio"
+                        name="mergeTargetEventType"
+                        value={eventType}
+                        checked={mergeTargetEventType === eventType}
+                        onChange={(e) => setMergeTargetEventType(e.target.value)}
+                        className="w-4 h-4 text-blue-600 bg-gray-600 border-gray-500 focus:ring-blue-500"
+                      />
+                      <span className="text-white">{eventType.replace(/_/g, ' ')}</span>
+                      <span className="text-gray-400 text-sm ml-auto">
+                        ({eventTypes.find(t => t.name === eventType)?.tradeCount || 0} trades)
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setSelectedEventTypesForMerge([]);
+                      setMergeTargetEventType('');
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleMergeEventTypes}
+                    disabled={loading || !mergeTargetEventType}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Merging...' : 'Merge Event Types'}
                   </button>
                 </div>
               </>

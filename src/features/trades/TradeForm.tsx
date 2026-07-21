@@ -15,6 +15,7 @@ import type {
   ExitType,
   EmotionalState,
   TradeExit,
+  TradeEvent,
   StopAdjustment,
   Screenshot,
   Account,
@@ -68,6 +69,7 @@ const getInitialFormData = (): TradeFormData => ({
   analysisTFs: [],
   entryTF: '',
   entryConfirmation: '',
+  confirmationTF: '',
   htfBias: '',
   marketCondition: '',
   levelSequence: [],
@@ -83,6 +85,7 @@ const getInitialFormData = (): TradeFormData => ({
   closeNotes: '',
   screenshots: [],
   tags: [],
+  events: [],
   commissions: '',
   swap: '',
   accountId: '', // Will be set to default account's ID on load
@@ -141,6 +144,15 @@ const ENTRY_CONFIRMATION_OPTIONS: { value: string; label: string }[] = [
 
 // Preset level timeframes for the combo input (MN = monthly, MTF = multi-timeframe)
 const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN', 'MTF'];
+
+// Preset confirmation timeframes (when structural or partial confirmation is used)
+const PRESET_CONFIRMATION_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
+
+// Preset event types for in-trade events
+const PRESET_EVENT_TYPES = [
+  'liquidity_sweep', 'spike_up', 'spike_down', 'dump', 'pump',
+  'stall_consolidation', 'reversal', 'news_reaction', 'session_open_move', 'retest'
+];
 
 // Normalize a timeframe string (trim whitespace, uppercase unit letter)
 const normalizeLevelTimeframe = (tf: string): string => {
@@ -301,6 +313,19 @@ export function TradeForm() {
   const [levelTfInputs, setLevelTfInputs] = useState<Record<number, string>>({}); // Input value per row index
   const [showLevelTfSuggestions, setShowLevelTfSuggestions] = useState<Record<number, boolean>>({});
 
+  // Confirmation TF combo input state
+  const [confirmationTfInput, setConfirmationTfInput] = useState('');
+  const [showConfirmationTfSuggestions, setShowConfirmationTfSuggestions] = useState(false);
+
+  // In-trade events state
+  const [previousEventTypes, setPreviousEventTypes] = useState<string[]>([]);
+  const [eventsExpanded, setEventsExpanded] = useState(false);
+  const [eventTypeInput, setEventTypeInput] = useState('');
+  const [showEventTypeSuggestions, setShowEventTypeSuggestions] = useState(false);
+  const [newEventTime, setNewEventTime] = useState('');
+  const [newEventType, setNewEventType] = useState('');
+  const [newEventDescription, setNewEventDescription] = useState('');
+
   // Load existing trade data for edit mode
   useEffect(() => {
     if (!id) return;
@@ -330,6 +355,7 @@ export function TradeForm() {
             analysisTFs: trade.analysisTFs || [],
             entryTF: trade.entryTF || '',
             entryConfirmation: trade.entryConfirmation || '',
+            confirmationTF: trade.confirmationTF || '',
             htfBias: trade.htfBias || '',
             marketCondition: trade.marketCondition || '',
             levelSequence: trade.levelSequence || [],
@@ -345,6 +371,7 @@ export function TradeForm() {
             closeNotes: trade.closeNotes || '',
             screenshots: trade.screenshots || [],
             tags: trade.tags || [],
+            events: trade.events || [],
             commissions: trade.commissions ? String(trade.commissions) : '',
             swap: trade.swap ? String(trade.swap) : '',
             accountId: trade.accountId,
@@ -397,6 +424,14 @@ export function TradeForm() {
       const prefs = await db.levelTypePrefs.toArray();
       setLevelTypePrefs(prefs);
 
+      // Collect all unique event types from all trades (excluding presets to only get custom ones)
+      const allEventTypes = trades.flatMap((t) =>
+        (t.events || []).map((e) => e.eventType).filter(Boolean)
+      );
+      const uniqueEventTypes = [...new Set(allEventTypes)]
+        .filter(et => et && !PRESET_EVENT_TYPES.includes(et));
+      setPreviousEventTypes(uniqueEventTypes);
+
       // Load glossary for tag descriptions
       const glossaryTerms = await db.glossaryTerms.toArray();
       const descMap: Record<string, string> = {};
@@ -426,6 +461,16 @@ export function TradeForm() {
     };
     loadSuggestions();
   }, [id, dashboardFilters.accountId, dashboardFilters.strategyId]);
+
+  // Auto-clear confirmationTF when entryConfirmation changes to non-structural
+  useEffect(() => {
+    if (formData.entryConfirmation !== 'structural' && formData.entryConfirmation !== 'partial_confirmation') {
+      if (formData.confirmationTF) {
+        setFormData(prev => ({ ...prev, confirmationTF: '' }));
+        setConfirmationTfInput('');
+      }
+    }
+  }, [formData.entryConfirmation]);
 
   // Auto-calculated values derived from exits
   const calculated = useMemo(() => {
@@ -903,6 +948,10 @@ export function TradeForm() {
         analysisTFs: formData.analysisTFs,
         entryTF: formData.entryTF || undefined,
         entryConfirmation: formData.entryConfirmation || undefined,
+        // Only save confirmationTF if structural or partial_confirmation
+        confirmationTF: (formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation')
+          ? (formData.confirmationTF || undefined)
+          : undefined,
         htfBias: formData.htfBias || undefined,
         marketCondition: formData.marketCondition || undefined,
         levelSequence: formData.levelSequence.map(level => ({
@@ -921,6 +970,7 @@ export function TradeForm() {
         closeNotes: formData.closeNotes.trim() || undefined,
         screenshots: formData.screenshots,
         tags: formData.tags,
+        events: formData.events,
         maePrice,
         mfePrice,
         firstTouchWorstPrice,
@@ -1057,6 +1107,63 @@ export function TradeForm() {
     }));
     setLevelTfInputs(prev => ({ ...prev, [index]: '' }));
     setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false }));
+  };
+
+  // Get filtered confirmation timeframe suggestions
+  const getFilteredConfirmationTFs = (): string[] => {
+    const inputValue = confirmationTfInput || formData.confirmationTF;
+    if (!inputValue) return PRESET_CONFIRMATION_TIMEFRAMES;
+    return PRESET_CONFIRMATION_TIMEFRAMES
+      .filter(tf => tf.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  // Select a confirmation timeframe from suggestions
+  const selectConfirmationTF = (tf: string) => {
+    handleChange('confirmationTF', tf);
+    setConfirmationTfInput('');
+    setShowConfirmationTfSuggestions(false);
+  };
+
+  // All event types = presets + custom previously used ones
+  const allEventTypes = [...PRESET_EVENT_TYPES, ...previousEventTypes.filter(et => !PRESET_EVENT_TYPES.includes(et))];
+
+  // Get filtered event type suggestions
+  const getFilteredEventTypes = (): string[] => {
+    const inputValue = eventTypeInput || newEventType;
+    if (!inputValue) return allEventTypes;
+    return allEventTypes
+      .filter(et => et.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  // Add a new in-trade event
+  const addEvent = () => {
+    if (!newEventType.trim()) return;
+    const newEvent: TradeEvent = {
+      id: uuidv4(),
+      time: newEventTime ? new Date(newEventTime) : new Date(),
+      eventType: newEventType.trim(),
+      description: newEventDescription.trim() || undefined,
+    };
+    setFormData((prev) => ({
+      ...prev,
+      events: [...prev.events, newEvent].sort((a, b) =>
+        new Date(a.time).getTime() - new Date(b.time).getTime()
+      ),
+    }));
+    setNewEventTime('');
+    setNewEventType('');
+    setNewEventDescription('');
+    setEventTypeInput('');
+  };
+
+  // Remove an in-trade event
+  const removeEvent = (eventId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      events: prev.events.filter((e) => e.id !== eventId),
+    }));
   };
 
   // Save zone preference for a custom level type
@@ -1529,6 +1636,51 @@ export function TradeForm() {
                 ))}
               </select>
             </div>
+            {/* Confirmation TF - only shown for structural/partial_confirmation */}
+            {(formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation') && (
+              <div className="relative">
+                <label className="block text-sm font-medium text-gray-300 mb-1">Confirmation TF</label>
+                <input
+                  type="text"
+                  value={showConfirmationTfSuggestions ? (confirmationTfInput || formData.confirmationTF) : formData.confirmationTF}
+                  onChange={(e) => {
+                    const newValue = e.target.value;
+                    setConfirmationTfInput(newValue);
+                    handleChange('confirmationTF', newValue);
+                    setShowConfirmationTfSuggestions(true);
+                  }}
+                  onFocus={() => {
+                    setConfirmationTfInput(formData.confirmationTF);
+                    setShowConfirmationTfSuggestions(true);
+                  }}
+                  onBlur={() => {
+                    // Normalize on blur
+                    const normalized = normalizeLevelTimeframe(formData.confirmationTF);
+                    if (normalized !== formData.confirmationTF) {
+                      handleChange('confirmationTF', normalized);
+                    }
+                    setTimeout(() => setShowConfirmationTfSuggestions(false), 200);
+                  }}
+                  placeholder="e.g. M5, H1"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                {showConfirmationTfSuggestions && getFilteredConfirmationTFs().length > 0 && (
+                  <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {getFilteredConfirmationTFs().map((tf) => (
+                      <button
+                        key={tf}
+                        type="button"
+                        onClick={() => selectConfirmationTF(tf)}
+                        className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                      >
+                        {tf}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p className="text-xs text-gray-500 mt-1">TF the confirmation was observed on</p>
+              </div>
+            )}
           </div>
 
           {/* Account & Strategy */}
@@ -1629,6 +1781,101 @@ export function TradeForm() {
               >
                 + Add Stop Adjustment
               </button>
+            </div>
+          </details>
+
+          {/* In-Trade Events (collapsed by default) */}
+          <details open={eventsExpanded} onToggle={(e) => setEventsExpanded((e.target as HTMLDetailsElement).open)} className="bg-gray-750 rounded-lg">
+            <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white">
+              In-Trade Events ({formData.events.length})
+            </summary>
+            <div className="px-3 pb-3 space-y-2">
+              {/* Existing events sorted by time */}
+              {formData.events.map((event) => (
+                <div key={event.id} className="flex gap-2 items-center flex-wrap bg-gray-800/50 p-2 rounded">
+                  <span className="text-xs text-gray-400">
+                    {event.time instanceof Date ? event.time.toLocaleString() : new Date(event.time).toLocaleString()}
+                  </span>
+                  <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-xs rounded">
+                    {event.eventType}
+                  </span>
+                  {event.description && (
+                    <span className="text-xs text-gray-300 flex-1">{event.description}</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeEvent(event.id)}
+                    className="p-1 text-red-400 hover:text-red-300"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              {/* Add new event row */}
+              <div className="flex gap-2 items-start flex-wrap pt-2 border-t border-gray-700">
+                <input
+                  type="datetime-local"
+                  value={newEventTime}
+                  onChange={(e) => setNewEventTime(e.target.value)}
+                  className="w-36 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                />
+                <div className="relative flex-1 min-w-[120px]">
+                  <input
+                    type="text"
+                    value={showEventTypeSuggestions ? eventTypeInput : newEventType}
+                    onChange={(e) => {
+                      setEventTypeInput(e.target.value);
+                      setNewEventType(e.target.value);
+                      setShowEventTypeSuggestions(true);
+                    }}
+                    onFocus={() => {
+                      setEventTypeInput(newEventType);
+                      setShowEventTypeSuggestions(true);
+                    }}
+                    onBlur={() => setTimeout(() => setShowEventTypeSuggestions(false), 200)}
+                    placeholder="Event type"
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                  />
+                  {showEventTypeSuggestions && getFilteredEventTypes().length > 0 && (
+                    <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {getFilteredEventTypes().map((et) => (
+                        <button
+                          key={et}
+                          type="button"
+                          onClick={() => {
+                            setNewEventType(et);
+                            setEventTypeInput('');
+                            setShowEventTypeSuggestions(false);
+                          }}
+                          className="w-full px-2 py-1.5 text-left text-gray-200 hover:bg-gray-600 text-xs flex items-center gap-1"
+                        >
+                          <span>{et}</span>
+                          {!PRESET_EVENT_TYPES.includes(et) && (
+                            <span className="text-blue-400">*</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={newEventDescription}
+                  onChange={(e) => setNewEventDescription(e.target.value)}
+                  placeholder="Description (optional)"
+                  className="flex-1 min-w-[100px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={addEvent}
+                  disabled={!newEventType.trim()}
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400 text-white text-xs rounded"
+                >
+                  Add
+                </button>
+              </div>
             </div>
           </details>
 
@@ -2400,6 +2647,112 @@ export function TradeForm() {
             </div>
           </FormSection>
 
+          {/* Section 5c: In-Trade Events */}
+          <FormSection title="In-Trade Events" defaultOpen={formData.events.length > 0}>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-sm font-medium text-gray-300">Events During Trade</label>
+              </div>
+
+              {/* Existing events sorted by time */}
+              {formData.events.length > 0 ? (
+                <div className="space-y-2">
+                  {formData.events.map((event) => (
+                    <div key={event.id} className="flex gap-2 items-center flex-wrap bg-gray-800/50 p-3 rounded-lg">
+                      <span className="text-sm text-gray-400">
+                        {event.time instanceof Date ? event.time.toLocaleString() : new Date(event.time).toLocaleString()}
+                      </span>
+                      <span className="px-2 py-1 bg-blue-500/20 text-blue-400 text-sm rounded">
+                        {event.eventType}
+                      </span>
+                      {event.description && (
+                        <span className="text-sm text-gray-300 flex-1">{event.description}</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => removeEvent(event.id)}
+                        className="p-1 text-red-400 hover:text-red-300 ml-auto"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500">No events recorded</p>
+              )}
+
+              {/* Add new event row */}
+              <div className="border-t border-gray-700 pt-4">
+                <p className="text-sm font-medium text-gray-300 mb-2">Add Event</p>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <input
+                    type="datetime-local"
+                    value={newEventTime}
+                    onChange={(e) => setNewEventTime(e.target.value)}
+                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={showEventTypeSuggestions ? eventTypeInput : newEventType}
+                      onChange={(e) => {
+                        setEventTypeInput(e.target.value);
+                        setNewEventType(e.target.value);
+                        setShowEventTypeSuggestions(true);
+                      }}
+                      onFocus={() => {
+                        setEventTypeInput(newEventType);
+                        setShowEventTypeSuggestions(true);
+                      }}
+                      onBlur={() => setTimeout(() => setShowEventTypeSuggestions(false), 200)}
+                      placeholder="Event type"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                    />
+                    {showEventTypeSuggestions && getFilteredEventTypes().length > 0 && (
+                      <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                        {getFilteredEventTypes().map((et) => (
+                          <button
+                            key={et}
+                            type="button"
+                            onClick={() => {
+                              setNewEventType(et);
+                              setEventTypeInput('');
+                              setShowEventTypeSuggestions(false);
+                            }}
+                            className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-1"
+                          >
+                            <span>{et}</span>
+                            {!PRESET_EVENT_TYPES.includes(et) && (
+                              <span className="text-blue-400">*</span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={newEventDescription}
+                    onChange={(e) => setNewEventDescription(e.target.value)}
+                    placeholder="Description (optional)"
+                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={addEvent}
+                    disabled={!newEventType.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400 text-white text-sm rounded-lg"
+                  >
+                    Add Event
+                  </button>
+                </div>
+              </div>
+            </div>
+          </FormSection>
+
           {/* Section 6: Setup & Market Context */}
           <FormSection title="Setup & Market Context" defaultOpen={false}>
             <div className="space-y-4">
@@ -2534,6 +2887,51 @@ export function TradeForm() {
                   </select>
                   <p className="text-xs text-gray-500 mt-1">How entry was executed</p>
                 </div>
+
+                {/* Confirmation TF - only shown for structural/partial_confirmation in quick log mode */}
+                {(formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation') && (
+                  <div className="relative">
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Confirmation TF</label>
+                    <input
+                      type="text"
+                      value={showConfirmationTfSuggestions ? (confirmationTfInput || formData.confirmationTF) : formData.confirmationTF}
+                      onChange={(e) => {
+                        const newValue = e.target.value;
+                        setConfirmationTfInput(newValue);
+                        handleChange('confirmationTF', newValue);
+                        setShowConfirmationTfSuggestions(true);
+                      }}
+                      onFocus={() => {
+                        setConfirmationTfInput(formData.confirmationTF);
+                        setShowConfirmationTfSuggestions(true);
+                      }}
+                      onBlur={() => {
+                        const normalized = normalizeLevelTimeframe(formData.confirmationTF);
+                        if (normalized !== formData.confirmationTF) {
+                          handleChange('confirmationTF', normalized);
+                        }
+                        setTimeout(() => setShowConfirmationTfSuggestions(false), 200);
+                      }}
+                      placeholder="e.g. M5, H1"
+                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    {showConfirmationTfSuggestions && getFilteredConfirmationTFs().length > 0 && (
+                      <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                        {getFilteredConfirmationTFs().map((tf) => (
+                          <button
+                            key={tf}
+                            type="button"
+                            onClick={() => selectConfirmationTF(tf)}
+                            className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                          >
+                            {tf}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">TF confirmation was observed on</p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1">HTF Bias</label>

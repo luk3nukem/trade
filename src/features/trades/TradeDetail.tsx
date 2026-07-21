@@ -624,6 +624,59 @@ export function TradeDetail() {
           </div>
         )}
 
+        {/* In-Trade Events Timeline */}
+        {trade.events && trade.events.length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
+            <h3 className="text-lg font-medium text-white mb-4">In-Trade Events</h3>
+            <div className="relative">
+              {/* Vertical timeline line */}
+              <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gray-700" />
+
+              <div className="space-y-4">
+                {[...trade.events]
+                  .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
+                  .map((event) => {
+                    // Color-code by event type category
+                    const getEventColor = (type: string) => {
+                      if (type.includes('spike') || type === 'pump') return 'bg-green-500';
+                      if (type === 'dump') return 'bg-red-500';
+                      if (type === 'liquidity_sweep' || type === 'retest') return 'bg-yellow-500';
+                      if (type === 'reversal') return 'bg-purple-500';
+                      if (type === 'news_reaction' || type === 'session_open_move') return 'bg-orange-500';
+                      if (type === 'stall_consolidation') return 'bg-gray-500';
+                      return 'bg-blue-500';
+                    };
+
+                    return (
+                      <div key={event.id} className="relative flex items-start gap-4 pl-6">
+                        {/* Timeline dot */}
+                        <div className={`absolute left-0 w-4 h-4 rounded-full ${getEventColor(event.eventType)} ring-4 ring-gray-800`} />
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs text-gray-400">
+                              {event.time instanceof Date
+                                ? event.time.toLocaleString()
+                                : new Date(event.time).toLocaleString()}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                              getEventColor(event.eventType).replace('bg-', 'bg-').replace('500', '500/20')
+                            } ${getEventColor(event.eventType).replace('bg-', 'text-').replace('500', '400')}`}>
+                              {event.eventType.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          {event.description && (
+                            <p className="text-sm text-gray-300 mt-1">{event.description}</p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Setup & Context Card */}
         <div className="bg-gray-800 rounded-lg p-6">
           <h3 className="text-lg font-medium text-white mb-4">Setup & Context</h3>
@@ -672,12 +725,19 @@ export function TradeDetail() {
               <span className="text-sm text-gray-400">Entry Confirmation</span>
               <span className="text-gray-200">
                 {trade.entryConfirmation
-                  ? {
-                      blind_limit: 'Blind — limit order',
-                      blind_market: 'Blind — market order',
-                      structural: 'Structural confirmation',
-                      partial_confirmation: 'Partial confirmation',
-                    }[trade.entryConfirmation] || trade.entryConfirmation
+                  ? (() => {
+                      const label = {
+                        blind_limit: 'Blind — limit order',
+                        blind_market: 'Blind — market order',
+                        structural: 'Structural confirmation',
+                        partial_confirmation: 'Partial confirmation',
+                      }[trade.entryConfirmation] || trade.entryConfirmation;
+                      // Append confirmationTF for structural/partial
+                      if ((trade.entryConfirmation === 'structural' || trade.entryConfirmation === 'partial_confirmation') && trade.confirmationTF) {
+                        return `${label} (${trade.confirmationTF})`;
+                      }
+                      return label;
+                    })()
                   : '-'}
               </span>
             </div>

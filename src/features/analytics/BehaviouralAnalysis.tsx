@@ -22,6 +22,9 @@ import {
   getTradesPerDayAnalysis,
   getBehaviouralInsights,
   getEntryConfirmationAnalysis,
+  getConfirmationTFAnalysis,
+  getConfirmationTFVsEntryTFMatrix,
+  getConfirmationTFInsights,
   CHART_TOOLTIP_STYLES,
 } from '../../utils';
 
@@ -39,9 +42,18 @@ export function BehaviouralAnalysis({ trades }: Props) {
   const streakAnalysis = useMemo(() => getStreakAnalysis(trades), [trades]);
   const tradesPerDay = useMemo(() => getTradesPerDayAnalysis(trades), [trades]);
   const entryConfirmationStats = useMemo(() => getEntryConfirmationAnalysis(trades), [trades]);
+  const confirmationTFStats = useMemo(() => getConfirmationTFAnalysis(trades), [trades]);
+  const confirmationTFMatrix = useMemo(() => getConfirmationTFVsEntryTFMatrix(trades), [trades]);
+  const confirmationTFInsights = useMemo(
+    () => getConfirmationTFInsights(confirmationTFStats, confirmationTFMatrix),
+    [confirmationTFStats, confirmationTFMatrix]
+  );
   const insights = useMemo(
-    () => getBehaviouralInsights(emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats),
-    [emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats]
+    () => [
+      ...getBehaviouralInsights(emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats),
+      ...confirmationTFInsights,
+    ],
+    [emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats, confirmationTFInsights]
   );
 
   const closedTrades = trades.filter(t => t.status === 'closed');
@@ -412,6 +424,104 @@ export function BehaviouralAnalysis({ trades }: Props) {
             }
             return null;
           })()}
+
+          {/* Confirmation Timeframe Breakdown - sub-table within Entry Confirmation */}
+          {confirmationTFStats.length > 0 && (
+            <div className="mt-6 pt-6 border-t border-gray-700">
+              <h4 className="text-md font-medium text-white mb-2">Confirmation Timeframe Breakdown</h4>
+              <p className="text-sm text-gray-400 mb-4">Performance breakdown by the timeframe used for structural/partial confirmation</p>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-700">
+                      <th className="text-left py-2 px-3 text-gray-400 font-medium">TF</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">Count</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">Win Rate</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg R</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">PF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {confirmationTFStats.map((stat) => (
+                      <tr
+                        key={stat.timeframe}
+                        className={`border-b border-gray-700/50 last:border-0 ${stat.count < 5 ? 'opacity-50' : ''}`}
+                      >
+                        <td className="py-2 px-3 text-gray-300">{stat.timeframe}</td>
+                        <td className="py-2 px-3 text-right text-white">
+                          {stat.count}
+                          {stat.count < 5 && <span className="text-gray-500 ml-1">(n&lt;5)</span>}
+                        </td>
+                        <td className="py-2 px-3 text-right text-white">{stat.winRate.toFixed(1)}%</td>
+                        <td className={`py-2 px-3 text-right font-medium ${stat.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {stat.avgR.toFixed(2)}R
+                        </td>
+                        <td className="py-2 px-3 text-right text-white">
+                          {stat.profitFactor > 10 ? '>10' : stat.profitFactor.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* TF Matrix Grid */}
+              {confirmationTFMatrix.length > 0 && (
+                <div className="mt-4">
+                  <h5 className="text-sm font-medium text-gray-400 mb-2">Confirmation TF vs Entry TF Matrix</h5>
+                  <div className="overflow-x-auto">
+                    {(() => {
+                      // Build matrix structure
+                      const entryTFs = [...new Set(confirmationTFMatrix.map(c => c.entryTF))].sort();
+                      const confirmTFs = [...new Set(confirmationTFMatrix.map(c => c.confirmationTF))].sort();
+                      const cellMap = new Map(confirmationTFMatrix.map(c => [`${c.confirmationTF}|${c.entryTF}`, c]));
+
+                      return (
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-gray-700">
+                              <th className="text-left py-2 px-2 text-gray-400 font-medium">Conf \ Entry</th>
+                              {entryTFs.map(tf => (
+                                <th key={tf} className="text-center py-2 px-2 text-gray-400 font-medium">{tf}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {confirmTFs.map(confTF => (
+                              <tr key={confTF} className="border-b border-gray-700/50 last:border-0">
+                                <td className="py-2 px-2 text-gray-300">{confTF}</td>
+                                {entryTFs.map(entryTF => {
+                                  const cell = cellMap.get(`${confTF}|${entryTF}`);
+                                  if (!cell) {
+                                    return (
+                                      <td key={entryTF} className="py-2 px-2 text-center text-gray-600">-</td>
+                                    );
+                                  }
+                                  const isLowSample = cell.count < 5;
+                                  return (
+                                    <td
+                                      key={entryTF}
+                                      className={`py-2 px-2 text-center ${isLowSample ? 'opacity-50' : ''}`}
+                                    >
+                                      <div className={`font-medium ${cell.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        {cell.avgR > 0 ? '+' : ''}{cell.avgR.toFixed(1)}R
+                                      </div>
+                                      <div className="text-xs text-gray-500">n={cell.count}</div>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

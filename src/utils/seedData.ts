@@ -11,6 +11,7 @@ import type {
   EmotionalState,
   ConfidenceLevel,
   TradeExit,
+  TradeEvent,
   LevelEntry,
   LevelReaction,
 } from '../types';
@@ -72,6 +73,14 @@ const TIMEFRAME_WEIGHTS = [35, 45, 20]; // 15m, 1H, 4H
 
 const HTF_BIASES: HTFBias[] = ['bullish', 'bearish', 'neutral', 'ranging'];
 const MARKET_CONDITIONS: MarketCondition[] = ['trending', 'ranging', 'volatile', 'breakout', 'reversal'];
+
+// Event types for in-trade events
+const EVENT_TYPES_WINNERS = ['retest', 'consolidation', 'spike_up', 'spike_down', 'stall_consolidation'];
+const EVENT_TYPES_LOSERS = ['liquidity_sweep', 'dump', 'spike_down', 'spike_up', 'news_reaction'];
+const EVENT_TYPES_NEUTRAL = ['session_open_move', 'reversal', 'pump'];
+
+// Confirmation timeframes (for structural/partial confirmation entries)
+const CONFIRMATION_TFS: Timeframe[] = ['M1', 'M5', 'M15', 'M30', 'H1'];
 
 // Helper functions
 function weightedRandom<T>(items: T[], weights: number[]): T {
@@ -327,6 +336,100 @@ function generateExits(
 }
 
 // Main seed data generation
+/**
+ * Generate in-trade events for a trade
+ * - ~20% of trades get events
+ * - Cluster events around specific hours (13:00-14:00 for liquidity sweeps, etc.)
+ * - Use appropriate event types for winners vs losers
+ */
+function generateTradeEvents(
+  entryTime: Date,
+  exitTime: Date | undefined,
+  _direction: TradeDirection,
+  isWinner: boolean,
+  pair: string
+): TradeEvent[] {
+  // Only ~20% of trades have events
+  if (Math.random() > 0.20) return [];
+
+  const events: TradeEvent[] = [];
+  const numEvents = randomInt(1, 3);
+
+  // Calculate time range for events (between entry and exit, or up to 24h for open trades)
+  const endTime = exitTime || new Date(entryTime.getTime() + 24 * 60 * 60 * 1000);
+  const tradeRange = endTime.getTime() - entryTime.getTime();
+
+  for (let i = 0; i < numEvents; i++) {
+    // Generate event time - cluster around specific hours for certain event types
+    let eventTime: Date;
+
+    if (i === 0) {
+      // First event: within 30-70% of trade duration
+      const offset = tradeRange * randomBetween(0.3, 0.7);
+      eventTime = new Date(entryTime.getTime() + offset);
+    } else {
+      // Subsequent events: random within trade
+      const offset = tradeRange * randomBetween(0.2, 0.9);
+      eventTime = new Date(entryTime.getTime() + offset);
+    }
+
+    // Select event type based on outcome
+    let eventType: string;
+    const rand = Math.random();
+    if (isWinner) {
+      eventType = rand < 0.7
+        ? randomElement(EVENT_TYPES_WINNERS)
+        : randomElement(EVENT_TYPES_NEUTRAL);
+    } else {
+      eventType = rand < 0.7
+        ? randomElement(EVENT_TYPES_LOSERS)
+        : randomElement(EVENT_TYPES_NEUTRAL);
+    }
+
+    // For liquidity_sweep events, cluster around 13:00-14:00 (London/NY overlap)
+    if (eventType === 'liquidity_sweep' && (pair.includes('EUR') || pair.includes('GBP'))) {
+      // Set hour to 13 or 14
+      eventTime.setHours(13 + randomInt(0, 1));
+      eventTime.setMinutes(randomInt(0, 59));
+    }
+
+    // For session_open_move, cluster around session opens
+    if (eventType === 'session_open_move') {
+      const sessionHours = [8, 13, 16]; // London, NY, close
+      eventTime.setHours(sessionHours[randomInt(0, 2)]);
+      eventTime.setMinutes(randomInt(0, 30));
+    }
+
+    // Generate optional description
+    let description: string | undefined;
+    if (Math.random() < 0.4) {
+      const descriptions: Record<string, string[]> = {
+        liquidity_sweep: ['Swept Asian highs', 'Took out stops', 'Grabbed liquidity'],
+        spike_up: ['News spike', 'Big bid came in', 'Short squeeze'],
+        spike_down: ['Big dump', 'News reaction', 'Stop cascade'],
+        stall_consolidation: ['Price stalling', 'Building liquidity', 'Accumulation'],
+        retest: ['Retesting entry', 'Back to POI', 'Testing level'],
+        reversal: ['V-reversal', 'Sharp turn', 'Rejection candle'],
+        session_open_move: ['London open move', 'NY open push', 'Session momentum'],
+      };
+      const options = descriptions[eventType];
+      if (options) {
+        description = randomElement(options);
+      }
+    }
+
+    events.push({
+      id: uuidv4(),
+      time: eventTime,
+      eventType,
+      description,
+    });
+  }
+
+  // Sort by time
+  return events.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+}
+
 // accountId and strategyId are the IDs of the default account/strategy (with isDefault: true)
 export function generateDemoTrades(accountId: string, strategyId: string): TradeRecord[] {
   const trades: TradeRecord[] = [];
@@ -761,6 +864,23 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       pairConfig.priceDecimals
     );
 
+    // Generate entry confirmation type (~70% have it set)
+    let entryConfirmation: string | undefined;
+    let confirmationTF: string | undefined;
+    if (Math.random() < 0.7) {
+      const confirmTypes = ['blind_limit', 'blind_market', 'structural', 'partial_confirmation'];
+      const confirmWeights = [25, 15, 40, 20]; // Structural most common
+      entryConfirmation = weightedRandom(confirmTypes, confirmWeights);
+
+      // Set confirmationTF for structural/partial entries
+      if (entryConfirmation === 'structural' || entryConfirmation === 'partial_confirmation') {
+        confirmationTF = randomElement(CONFIRMATION_TFS);
+      }
+    }
+
+    // Generate in-trade events
+    const events = generateTradeEvents(entryTime, exitTime, direction, isWinner, pairConfig.pair);
+
     const trade: TradeRecord = {
       // Let Dexie Cloud generate the ID with @id schema
       accountId,
@@ -784,6 +904,8 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       setupTags: setupConfig.tags,
       analysisTFs,
       entryTF,
+      entryConfirmation,
+      confirmationTF,
       htfBias,
       marketCondition,
       levelSequence,
@@ -797,6 +919,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       closeNotes: closeNotes || undefined,
       screenshots: [],
       tags,
+      events,
       session: deriveSession(entryTime),
       plannedRR,
       actualRR,
@@ -889,6 +1012,8 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       setupTags: setupConfig.tags,
       analysisTFs,
       entryTF,
+      entryConfirmation: Math.random() < 0.6 ? 'structural' : undefined,
+      confirmationTF: Math.random() < 0.6 ? randomElement(CONFIRMATION_TFS) : undefined,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),
       levelSequence: [],
@@ -897,6 +1022,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       followedPlan: true,
       screenshots: [],
       tags: [],
+      events: [], // Open trades don't have events yet
       session: deriveSession(entryTime),
       plannedRR,
       stopDistance: roundToDecimals(stopDistance, pairConfig.priceDecimals),
@@ -1037,6 +1163,8 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       setupTags: setupConfig.tags,
       analysisTFs,
       entryTF,
+      entryConfirmation: undefined, // Missed trades didn't get entered
+      confirmationTF: undefined,
       htfBias: randomElement(HTF_BIASES),
       marketCondition: randomElement(MARKET_CONDITIONS),
       levelSequence: [],
@@ -1045,6 +1173,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       followedPlan: true,
       screenshots: [],
       tags: ['missed-trade'],
+      events: [], // No events for missed trades
       session: deriveSession(entryTime),
       plannedRR,
       actualRR,

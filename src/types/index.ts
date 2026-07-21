@@ -92,6 +92,14 @@ export interface Screenshot {
   createdAt: Date;
 }
 
+// In-trade event record
+export interface TradeEvent {
+  id: string;
+  time: Date;
+  eventType: string;
+  description?: string;
+}
+
 // Account entity
 export interface Account {
   id?: string; // Optional - Dexie Cloud generates with @id
@@ -174,6 +182,7 @@ export interface TradeRecord {
   analysisTFs: string[]; // Timeframes used to identify the setup (e.g. W1, D1, H4)
   entryTF?: Timeframe; // Timeframe used to execute entry (e.g. 15m, 1H)
   entryConfirmation?: string; // How the entry was executed (blind_limit, blind_market, structural, partial_confirmation)
+  confirmationTF?: string; // Timeframe the confirmation was observed on (only for structural/partial_confirmation)
   htfBias?: HTFBias;
   marketCondition?: MarketCondition;
   levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
@@ -195,6 +204,9 @@ export interface TradeRecord {
   closeNotes?: string;    // Immediate review as the trade closes
   screenshots: Screenshot[];
   tags: string[];
+
+  // === In-Trade Events ===
+  events: TradeEvent[]; // Events that occurred during the trade
 
   // === MAE/MFE (for stop/exit analysis) ===
   maePrice: number | null; // Maximum Adverse Excursion - worst price reached during trade
@@ -384,6 +396,7 @@ export interface TradeFormData {
   analysisTFs: string[];
   entryTF: Timeframe | '';
   entryConfirmation: string; // blind_limit, blind_market, structural, partial_confirmation, or ''
+  confirmationTF: string; // TF the confirmation was observed on (only for structural/partial_confirmation)
   htfBias: HTFBias | '';
   marketCondition: MarketCondition | '';
   levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
@@ -405,6 +418,9 @@ export interface TradeFormData {
   closeNotes: string;
   screenshots: Screenshot[];
   tags: string[];
+
+  // In-Trade Events
+  events: TradeEvent[];
 
   // Fees
   commissions: string;

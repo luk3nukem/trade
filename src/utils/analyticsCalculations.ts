@@ -5229,3 +5229,340 @@ export function getZonePenetrationInsights(
 
   return insights;
 }
+
+// ==========================================
+// CONFIRMATION TIMEFRAME ANALYSIS
+// ==========================================
+
+export interface ConfirmationTFStats {
+  timeframe: string;
+  count: number;
+  winRate: number;
+  avgR: number;
+  profitFactor: number;
+}
+
+export interface TFMatrixCell {
+  confirmationTF: string;
+  entryTF: string;
+  count: number;
+  avgR: number;
+}
+
+/**
+ * Analyze performance by confirmation timeframe
+ * Only considers trades with structural or partial_confirmation entry types
+ */
+export function getConfirmationTFAnalysis(trades: TradeRecord[]): ConfirmationTFStats[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    (t.entryConfirmation === 'structural' || t.entryConfirmation === 'partial_confirmation') &&
+    t.confirmationTF
+  );
+
+  const groups = new Map<string, TradeRecord[]>();
+  for (const trade of relevantTrades) {
+    const tf = trade.confirmationTF!;
+    const existing = groups.get(tf) || [];
+    existing.push(trade);
+    groups.set(tf, existing);
+  }
+
+  const results: ConfirmationTFStats[] = [];
+
+  for (const [timeframe, groupTrades] of groups) {
+    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+
+    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+
+    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+    results.push({
+      timeframe,
+      count: groupTrades.length,
+      winRate: groupTrades.length > 0 ? (wins.length / groupTrades.length) * 100 : 0,
+      avgR: Number(avgR.toFixed(2)),
+      profitFactor: Number(profitFactor.toFixed(2)),
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Generate confirmation TF vs entry TF matrix
+ * Shows how different confirmation/entry TF combinations perform
+ */
+export function getConfirmationTFVsEntryTFMatrix(trades: TradeRecord[]): TFMatrixCell[] {
+  const relevantTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    (t.entryConfirmation === 'structural' || t.entryConfirmation === 'partial_confirmation') &&
+    t.confirmationTF &&
+    t.entryTF
+  );
+
+  const groups = new Map<string, TradeRecord[]>();
+  for (const trade of relevantTrades) {
+    const key = `${trade.confirmationTF}|${trade.entryTF}`;
+    const existing = groups.get(key) || [];
+    existing.push(trade);
+    groups.set(key, existing);
+  }
+
+  const results: TFMatrixCell[] = [];
+
+  for (const [key, groupTrades] of groups) {
+    const [confirmationTF, entryTF] = key.split('|');
+    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+
+    results.push({
+      confirmationTF,
+      entryTF,
+      count: groupTrades.length,
+      avgR: Number(avgR.toFixed(2)),
+    });
+  }
+
+  return results;
+}
+
+// ==========================================
+// IN-TRADE EVENT ANALYSIS
+// ==========================================
+
+export interface EventHeatmapCell {
+  hour: number;
+  eventType: string;
+  count: number;
+}
+
+export interface EventOutcomeCorrelation {
+  eventType: string;
+  count: number;
+  winRate: number;
+  avgR: number;
+}
+
+export interface RecurringEventPattern {
+  eventType: string;
+  pair: string;
+  hour: number;
+  occurrences: number;
+  totalForPair: number;
+}
+
+/**
+ * Generate event heatmap data - X=hour, Y=eventType, cell=count
+ */
+export function getEventHeatmap(trades: TradeRecord[], assetFilter?: string): EventHeatmapCell[] {
+  let filteredTrades = trades;
+  if (assetFilter) {
+    filteredTrades = trades.filter(t => t.pair === assetFilter);
+  }
+
+  const countMap = new Map<string, number>();
+
+  for (const trade of filteredTrades) {
+    if (!trade.events || trade.events.length === 0) continue;
+
+    for (const event of trade.events) {
+      const eventTime = event.time instanceof Date ? event.time : new Date(event.time);
+      const hour = eventTime.getHours();
+      const key = `${hour}|${event.eventType}`;
+      countMap.set(key, (countMap.get(key) || 0) + 1);
+    }
+  }
+
+  const results: EventHeatmapCell[] = [];
+  for (const [key, count] of countMap) {
+    const [hourStr, eventType] = key.split('|');
+    results.push({
+      hour: parseInt(hourStr, 10),
+      eventType,
+      count,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Correlate events with trade outcomes
+ * For each event type, calculate the win rate and avgR of trades containing that event
+ */
+export function getEventOutcomeCorrelation(trades: TradeRecord[]): EventOutcomeCorrelation[] {
+  const closedTrades = trades.filter(t => t.status === 'closed');
+
+  // Group trades by event types they contain
+  const eventTypeToTrades = new Map<string, TradeRecord[]>();
+
+  for (const trade of closedTrades) {
+    if (!trade.events || trade.events.length === 0) continue;
+
+    // Get unique event types in this trade
+    const eventTypes = [...new Set(trade.events.map(e => e.eventType))];
+
+    for (const eventType of eventTypes) {
+      const existing = eventTypeToTrades.get(eventType) || [];
+      existing.push(trade);
+      eventTypeToTrades.set(eventType, existing);
+    }
+  }
+
+  const results: EventOutcomeCorrelation[] = [];
+
+  for (const [eventType, groupTrades] of eventTypeToTrades) {
+    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+
+    results.push({
+      eventType,
+      count: groupTrades.length,
+      winRate: groupTrades.length > 0 ? (wins.length / groupTrades.length) * 100 : 0,
+      avgR: Number(avgR.toFixed(2)),
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Find recurring event patterns - events that cluster at specific hours for specific pairs
+ * Only considers patterns with 3+ occurrences
+ */
+export function getRecurringEventPatterns(trades: TradeRecord[]): RecurringEventPattern[] {
+  // Count events by eventType + pair + hour
+  const countMap = new Map<string, { occurrences: number; pair: string; eventType: string; hour: number }>();
+  const pairTotalEvents = new Map<string, number>();
+
+  for (const trade of trades) {
+    if (!trade.events || trade.events.length === 0) continue;
+
+    for (const event of trade.events) {
+      const eventTime = event.time instanceof Date ? event.time : new Date(event.time);
+      const hour = eventTime.getHours();
+      const key = `${event.eventType}|${trade.pair}|${hour}`;
+
+      const existing = countMap.get(key);
+      if (existing) {
+        existing.occurrences++;
+      } else {
+        countMap.set(key, {
+          occurrences: 1,
+          pair: trade.pair,
+          eventType: event.eventType,
+          hour,
+        });
+      }
+
+      // Track total events per pair
+      const pairKey = `${event.eventType}|${trade.pair}`;
+      pairTotalEvents.set(pairKey, (pairTotalEvents.get(pairKey) || 0) + 1);
+    }
+  }
+
+  const results: RecurringEventPattern[] = [];
+
+  for (const [, data] of countMap) {
+    if (data.occurrences < 3) continue;
+
+    const pairKey = `${data.eventType}|${data.pair}`;
+    const totalForPair = pairTotalEvents.get(pairKey) || data.occurrences;
+
+    results.push({
+      eventType: data.eventType,
+      pair: data.pair,
+      hour: data.hour,
+      occurrences: data.occurrences,
+      totalForPair,
+    });
+  }
+
+  // Sort by occurrences descending
+  return results.sort((a, b) => b.occurrences - a.occurrences);
+}
+
+/**
+ * Generate insights about confirmation timeframes
+ */
+export function getConfirmationTFInsights(
+  confirmationStats: ConfirmationTFStats[],
+  matrixData: TFMatrixCell[]
+): string[] {
+  const insights: string[] = [];
+
+  // Find best performing confirmation TF (min 5 trades)
+  const significantStats = confirmationStats.filter(s => s.count >= 5);
+  if (significantStats.length >= 2) {
+    const sorted = [...significantStats].sort((a, b) => b.avgR - a.avgR);
+    const best = sorted[0];
+    const worst = sorted[sorted.length - 1];
+
+    if (best.avgR > worst.avgR && best.avgR > 0) {
+      insights.push(
+        `Your structural confirmations on ${best.timeframe} produce avg ${best.avgR > 0 ? '+' : ''}${best.avgR}R vs ${worst.avgR > 0 ? '+' : ''}${worst.avgR}R on ${worst.timeframe}`
+      );
+    }
+  }
+
+  // Find best TF combination from matrix (min 5 trades)
+  const significantCells = matrixData.filter(c => c.count >= 5);
+  if (significantCells.length > 0) {
+    const best = [...significantCells].sort((a, b) => b.avgR - a.avgR)[0];
+    if (best.avgR > 0) {
+      insights.push(
+        `Best TF combination: ${best.confirmationTF} confirmation + ${best.entryTF} entry (${best.avgR > 0 ? '+' : ''}${best.avgR}R avg, n=${best.count})`
+      );
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * Generate insights about in-trade events
+ */
+export function getEventInsights(
+  eventCorrelation: EventOutcomeCorrelation[],
+  recurringPatterns: RecurringEventPattern[]
+): string[] {
+  const insights: string[] = [];
+
+  // Find events that correlate with better outcomes (min 5 trades)
+  const significantEvents = eventCorrelation.filter(e => e.count >= 5);
+  if (significantEvents.length > 0) {
+    const bestEvent = [...significantEvents].sort((a, b) => b.avgR - a.avgR)[0];
+    const worstEvent = [...significantEvents].sort((a, b) => a.avgR - b.avgR)[0];
+
+    if (bestEvent.avgR > 0) {
+      insights.push(
+        `Trades with "${bestEvent.eventType.replace(/_/g, ' ')}" events average ${bestEvent.avgR > 0 ? '+' : ''}${bestEvent.avgR}R (${bestEvent.winRate.toFixed(0)}% WR, n=${bestEvent.count})`
+      );
+    }
+
+    if (worstEvent.avgR < 0 && worstEvent.eventType !== bestEvent.eventType) {
+      insights.push(
+        `Trades with "${worstEvent.eventType.replace(/_/g, ' ')}" events average ${worstEvent.avgR}R — consider as warning signal`
+      );
+    }
+  }
+
+  // Report recurring patterns
+  if (recurringPatterns.length > 0) {
+    const topPattern = recurringPatterns[0];
+    const percentage = ((topPattern.occurrences / topPattern.totalForPair) * 100).toFixed(0);
+    const hourStr = `${topPattern.hour.toString().padStart(2, '0')}:00`;
+    const nextHour = `${((topPattern.hour + 1) % 24).toString().padStart(2, '0')}:00`;
+
+    insights.push(
+      `"${topPattern.eventType.replace(/_/g, ' ')}" on ${topPattern.pair}: ${topPattern.occurrences} of ${topPattern.totalForPair} (${percentage}%) occur between ${hourStr}–${nextHour}`
+    );
+  }
+
+  return insights;
+}
