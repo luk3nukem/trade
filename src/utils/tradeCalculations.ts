@@ -814,3 +814,190 @@ export function getTradeRMetrics(trade: TradeRecord): TradeRMetrics | null {
     isImplausible: mfeImplausible || maeImplausible,
   };
 }
+
+// ============================================
+// HOLD REPLAY ANALYSIS
+// ============================================
+
+/**
+ * Result of replay hold simulation
+ */
+export type HoldReplayOutcome =
+  | { type: 'stopped'; stopLevel: number; beforeReaching: number }  // Stopped at [stopLevel] before reaching [favourable extreme]
+  | { type: 'survived'; favourableExtremeR: number }                // Survived to favourable extreme [R]
+  | { type: 'no_sequence' };                                        // No sequence data available
+
+/**
+ * Replay a hypothetical hold with a given stop level against the post-exit price sequence.
+ *
+ * Walks the postExitSequence in chronological order and determines:
+ * - If the stop would have been hit before reaching the favourable extreme
+ * - Or if the trade would have survived to reach the favourable extreme
+ *
+ * A milestone breaches the stop if its price is at or beyond the stop in the adverse direction.
+ * This is conservative - any adverse milestone at/past the stop kills the hold.
+ *
+ * @param trade - The trade record containing postExitSequence
+ * @param stopLevel - The stop level to test (e.g., originalStopLoss or an adjusted stop)
+ * @returns The outcome of the simulated hold
+ */
+export function replayHold(trade: TradeRecord, stopLevel: number): HoldReplayOutcome {
+  const sequence = trade.postExitSequence;
+
+  // No sequence data
+  if (!sequence || sequence.length === 0) {
+    return { type: 'no_sequence' };
+  }
+
+  const direction = trade.direction;
+  const entryPrice = trade.entryPrice;
+  const stopDistance = trade.originalStopLoss
+    ? Math.abs(entryPrice - trade.originalStopLoss)
+    : trade.stopDistance ?? Math.abs(entryPrice - trade.stopLoss);
+
+  if (!stopDistance || stopDistance === 0) {
+    return { type: 'no_sequence' };
+  }
+
+  // Find the favourable extreme in the sequence
+  const favourableExtreme = sequence.find(m => m.kind === 'favourable_extreme');
+  if (!favourableExtreme) {
+    return { type: 'no_sequence' };
+  }
+
+  // Check if a price breaches the stop
+  const breachesStop = (price: number): boolean => {
+    if (direction === 'long') {
+      // For longs, stop is below entry; breach if price <= stop
+      return price <= stopLevel;
+    } else {
+      // For shorts, stop is above entry; breach if price >= stop
+      return price >= stopLevel;
+    }
+  };
+
+  // Walk the sequence in chronological order
+  for (const milestone of sequence) {
+    // Check if we've reached the favourable extreme
+    if (milestone.id === favourableExtreme.id) {
+      // We reached the favourable extreme - survived!
+      const favourableR = calculateRMultipleFromPrice(
+        entryPrice,
+        favourableExtreme.price,
+        stopDistance,
+        direction
+      );
+      return { type: 'survived', favourableExtremeR: favourableR };
+    }
+
+    // Check if this milestone breaches the stop
+    if (breachesStop(milestone.price)) {
+      // Stopped out before reaching the favourable extreme
+      const favourableR = calculateRMultipleFromPrice(
+        entryPrice,
+        favourableExtreme.price,
+        stopDistance,
+        direction
+      );
+      return { type: 'stopped', stopLevel, beforeReaching: favourableR };
+    }
+  }
+
+  // If we didn't find the favourable extreme in the loop, calculate it anyway
+  // This shouldn't happen if the data is correct, but handle it gracefully
+  const favourableR = calculateRMultipleFromPrice(
+    entryPrice,
+    favourableExtreme.price,
+    stopDistance,
+    direction
+  );
+  return { type: 'survived', favourableExtremeR: favourableR };
+}
+
+/**
+ * Helper to calculate R-multiple from a price level
+ */
+function calculateRMultipleFromPrice(
+  entryPrice: number,
+  targetPrice: number,
+  stopDistance: number,
+  direction: TradeDirection
+): number {
+  const priceDiff = targetPrice - entryPrice;
+  const signedMove = direction === 'long' ? priceDiff : -priceDiff;
+  return Number((signedMove / stopDistance).toFixed(2));
+}
+
+/**
+ * Full replay analysis for a trade with multiple stop variants
+ */
+export interface HoldReplayAnalysis {
+  hasSequence: boolean;
+  originalStopOutcome: HoldReplayOutcome;
+  finalStopOutcome?: HoldReplayOutcome;  // Only if there were stop adjustments
+  replayMissedR: number | null;          // Replay-based missed R (null if no sequence)
+  replayExitEfficiency: number | null;   // Replay-based exit efficiency (null if no sequence)
+  holdSurvived: boolean;                 // Did the original hold survive?
+}
+
+/**
+ * Perform full replay analysis for a trade
+ *
+ * This replaces the naive "post-exit best price" analysis with sequence-aware replay:
+ * - missedR reflects the stop outcome, not just the best price
+ * - If the hold would have been stopped before reaching the best price, exit is "validated"
+ */
+export function getHoldReplayAnalysis(trade: TradeRecord): HoldReplayAnalysis {
+  const sequence = trade.postExitSequence;
+  const hasSequence = !!(sequence && sequence.length >= 2 &&
+    sequence.some(m => m.kind === 'favourable_extreme') &&
+    sequence.some(m => m.kind === 'adverse_extreme'));
+
+  const originalStop = trade.originalStopLoss ?? trade.stopLoss;
+  const originalStopOutcome = replayHold(trade, originalStop);
+
+  // Check if there were stop adjustments
+  const hasStopAdjustments = trade.stopAdjustments && trade.stopAdjustments.length > 0;
+  let finalStopOutcome: HoldReplayOutcome | undefined;
+
+  if (hasStopAdjustments) {
+    // Get the final adjusted stop (last adjustment)
+    const finalStop = trade.stopAdjustments![trade.stopAdjustments!.length - 1].newStop;
+    finalStopOutcome = replayHold(trade, finalStop);
+  }
+
+  // Calculate replay-based missed R
+  let replayMissedR: number | null = null;
+  let replayExitEfficiency: number | null = null;
+  let holdSurvived = false;
+
+  if (originalStopOutcome.type === 'survived') {
+    holdSurvived = true;
+    // Would have survived to the favourable extreme
+    // Missed R = favourable extreme R - actual R achieved
+    if (trade.rMultiple !== undefined) {
+      replayMissedR = Math.max(0, originalStopOutcome.favourableExtremeR - trade.rMultiple);
+      if (originalStopOutcome.favourableExtremeR > 0) {
+        replayExitEfficiency = (trade.rMultiple / originalStopOutcome.favourableExtremeR) * 100;
+      }
+    }
+  } else if (originalStopOutcome.type === 'stopped') {
+    holdSurvived = false;
+    // Would have been stopped before reaching the high
+    // Missed R = 0 or negative (exit was validated)
+    // Actually, if stopped, the outcome would be worse than actual exit
+    // So missed R is effectively 0 or the exit actually saved money
+    replayMissedR = 0;
+    // Can't calculate meaningful efficiency when stop would have been hit
+    replayExitEfficiency = null;
+  }
+
+  return {
+    hasSequence,
+    originalStopOutcome,
+    finalStopOutcome,
+    replayMissedR,
+    replayExitEfficiency,
+    holdSurvived,
+  };
+}

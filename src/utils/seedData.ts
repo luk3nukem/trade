@@ -936,6 +936,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       firstTouchWorstPrice,
       maeR,
       mfeR,
+      postExitSequence: [], // Seed data uses legacy format
       postExitBestPrice,
       postExitWorstPrice,
       reachedTargetPostExit,
@@ -1030,6 +1031,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       maePrice: null,
       mfePrice: null,
       firstTouchWorstPrice: null,
+      postExitSequence: [],
       postExitBestPrice: null,
       postExitWorstPrice: null,
       reachedTargetPostExit: null,
@@ -1188,6 +1190,7 @@ export function generateDemoTrades(accountId: string, strategyId: string): Trade
       maePrice: null,
       mfePrice: null,
       firstTouchWorstPrice: null,
+      postExitSequence: [],
       postExitBestPrice: null,
       postExitWorstPrice: null,
       reachedTargetPostExit: null,

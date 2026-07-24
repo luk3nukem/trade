@@ -1,5 +1,5 @@
 import type { TradeRecord, TradingSession } from '../types';
-import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR, getTradeRMetrics } from './tradeCalculations';
+import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR, getTradeRMetrics, getHoldReplayAnalysis } from './tradeCalculations';
 
 // Generic group performance stats
 export interface GroupStats {
@@ -3693,6 +3693,222 @@ export function getVoluntaryExitPostExitAnalysis(trades: TradeRecord[]): Volunta
     avgMissedR: totalMissedR / withData.length,
     avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
     reachedTargetPercent: targetInfoCount > 0 ? (reachedTargetCount / targetInfoCount) * 100 : 0,
+  };
+}
+
+// ============================================
+// HOLD REPLAY ANALYSIS (Sequence-based)
+// ============================================
+
+/**
+ * Hold replay analysis results
+ */
+export interface HoldReplayBuckets {
+  // Trades where hold would have survived to favourable extreme
+  survivedToHigh: {
+    count: number;
+    avgMissedR: number;
+    trades: TradeRecord[];
+  };
+  // Trades where hold would have been stopped before reaching the high
+  stoppedFirst: {
+    count: number;
+    avgSavedR: number;  // R saved by exiting instead of holding
+    trades: TradeRecord[];
+  };
+  // Trades with no sequence data (legacy calculation applies)
+  sequenceUnknown: {
+    count: number;
+    avgLegacyMissedR: number;
+    trades: TradeRecord[];
+  };
+  // Summary stats
+  totalTrades: number;
+  holdSurvivedPercent: number;
+  headline: string;
+}
+
+/**
+ * Get hold replay analysis with buckets
+ * Replaces the naive favourable-first/adverse-first split with replay-based logic
+ */
+export function getHoldReplayBuckets(trades: TradeRecord[]): HoldReplayBuckets {
+  const closedTrades = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.exitType !== 'sl_hit' // Only voluntary exits (stopouts are different)
+  );
+
+  const survivedTrades: TradeRecord[] = [];
+  const stoppedTrades: TradeRecord[] = [];
+  const unknownTrades: TradeRecord[] = [];
+
+  let totalSurvivedMissedR = 0;
+  let totalStoppedSavedR = 0;
+  let totalUnknownMissedR = 0;
+
+  for (const trade of closedTrades) {
+    const replayAnalysis = getHoldReplayAnalysis(trade);
+
+    if (!replayAnalysis.hasSequence) {
+      // Fall back to legacy calculation
+      unknownTrades.push(trade);
+      if (trade.postExitBestPrice !== null && trade.exitPrice !== undefined && trade.stopDistance) {
+        const legacyMissedR = calculateMissedR(
+          trade.exitPrice,
+          trade.postExitBestPrice,
+          trade.stopDistance,
+          trade.direction
+        ) ?? 0;
+        totalUnknownMissedR += legacyMissedR;
+      }
+    } else if (replayAnalysis.holdSurvived) {
+      // Would have survived to the high
+      survivedTrades.push(trade);
+      totalSurvivedMissedR += replayAnalysis.replayMissedR ?? 0;
+    } else {
+      // Would have been stopped first
+      stoppedTrades.push(trade);
+      // Calculate what the exit "saved" - if holding would have hit stop, actual result was better
+      if (trade.rMultiple !== undefined) {
+        // Saved R = actual R - (-1R for stop hit) = actual R + 1
+        // But if actual R was already negative, the "saved" amount is less
+        const savedR = trade.rMultiple - (-1); // What they got vs what stop would give
+        totalStoppedSavedR += Math.max(0, savedR);
+      }
+    }
+  }
+
+  const totalWithReplayData = survivedTrades.length + stoppedTrades.length;
+  const holdSurvivedPercent = totalWithReplayData > 0
+    ? (survivedTrades.length / totalWithReplayData) * 100
+    : 0;
+
+  // Generate headline insight
+  let headline = '';
+  if (totalWithReplayData < 5) {
+    headline = 'Need more trades with post-exit sequences for meaningful replay analysis.';
+  } else if (holdSurvivedPercent >= 60) {
+    const avgMissed = survivedTrades.length > 0 ? totalSurvivedMissedR / survivedTrades.length : 0;
+    headline = `${holdSurvivedPercent.toFixed(0)}% of exits could have been held longer — averaging ${avgMissed.toFixed(1)}R left on the table.`;
+  } else if (holdSurvivedPercent <= 40) {
+    const avgSaved = stoppedTrades.length > 0 ? totalStoppedSavedR / stoppedTrades.length : 0;
+    headline = `${(100 - holdSurvivedPercent).toFixed(0)}% of exits were validated by subsequent stop hits — your exits saved an average of ${avgSaved.toFixed(1)}R.`;
+  } else {
+    headline = `Mixed results: ${holdSurvivedPercent.toFixed(0)}% would have survived to highs, ${(100 - holdSurvivedPercent).toFixed(0)}% would have been stopped.`;
+  }
+
+  return {
+    survivedToHigh: {
+      count: survivedTrades.length,
+      avgMissedR: survivedTrades.length > 0 ? totalSurvivedMissedR / survivedTrades.length : 0,
+      trades: survivedTrades,
+    },
+    stoppedFirst: {
+      count: stoppedTrades.length,
+      avgSavedR: stoppedTrades.length > 0 ? totalStoppedSavedR / stoppedTrades.length : 0,
+      trades: stoppedTrades,
+    },
+    sequenceUnknown: {
+      count: unknownTrades.length,
+      avgLegacyMissedR: unknownTrades.length > 0 ? totalUnknownMissedR / unknownTrades.length : 0,
+      trades: unknownTrades,
+    },
+    totalTrades: closedTrades.length,
+    holdSurvivedPercent,
+    headline,
+  };
+}
+
+/**
+ * Get per-stop-variant replay analysis
+ * Compares outcomes with original stop vs final adjusted stop
+ */
+export interface StopVariantComparison {
+  originalStopSurvived: number;
+  originalStopStopped: number;
+  finalStopSurvived: number;
+  finalStopStopped: number;
+  tradesWithAdjustments: number;
+  originalBetterCount: number;  // Cases where original stop would have been better
+  finalBetterCount: number;     // Cases where final stop was better
+  insight: string;
+}
+
+export function getStopVariantComparison(trades: TradeRecord[]): StopVariantComparison | null {
+  const tradesWithAdjustments = trades.filter(t =>
+    t.status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.stopAdjustments &&
+    t.stopAdjustments.length > 0 &&
+    t.postExitSequence &&
+    t.postExitSequence.length >= 2 &&
+    t.postExitSequence.some(m => m.kind === 'favourable_extreme') &&
+    t.postExitSequence.some(m => m.kind === 'adverse_extreme')
+  );
+
+  if (tradesWithAdjustments.length < 3) {
+    return null;
+  }
+
+  let originalSurvived = 0;
+  let originalStopped = 0;
+  let finalSurvived = 0;
+  let finalStopped = 0;
+  let originalBetter = 0;
+  let finalBetter = 0;
+
+  for (const trade of tradesWithAdjustments) {
+    const replayAnalysis = getHoldReplayAnalysis(trade);
+
+    // Original stop outcome
+    if (replayAnalysis.originalStopOutcome.type === 'survived') {
+      originalSurvived++;
+    } else if (replayAnalysis.originalStopOutcome.type === 'stopped') {
+      originalStopped++;
+    }
+
+    // Final stop outcome
+    if (replayAnalysis.finalStopOutcome) {
+      if (replayAnalysis.finalStopOutcome.type === 'survived') {
+        finalSurvived++;
+      } else if (replayAnalysis.finalStopOutcome.type === 'stopped') {
+        finalStopped++;
+      }
+
+      // Compare which was better
+      const originalSurvivedBool = replayAnalysis.originalStopOutcome.type === 'survived';
+      const finalSurvivedBool = replayAnalysis.finalStopOutcome.type === 'survived';
+
+      if (originalSurvivedBool && !finalSurvivedBool) {
+        // Original would have survived but final got stopped
+        originalBetter++;
+      } else if (!originalSurvivedBool && finalSurvivedBool) {
+        // Final survived but original would have been stopped
+        finalBetter++;
+      }
+    }
+  }
+
+  // Generate insight
+  let insight = '';
+  if (originalBetter > finalBetter) {
+    insight = `Your stop adjustments hurt ${originalBetter} trades (would have survived with original stop).`;
+  } else if (finalBetter > originalBetter) {
+    insight = `Your stop adjustments helped ${finalBetter} trades survive to the high.`;
+  } else {
+    insight = 'Stop adjustments had neutral impact on hold survival.';
+  }
+
+  return {
+    originalStopSurvived: originalSurvived,
+    originalStopStopped: originalStopped,
+    finalStopSurvived: finalSurvived,
+    finalStopStopped: finalStopped,
+    tradesWithAdjustments: tradesWithAdjustments.length,
+    originalBetterCount: originalBetter,
+    finalBetterCount: finalBetter,
+    insight,
   };
 }
 

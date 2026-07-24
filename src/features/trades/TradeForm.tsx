@@ -23,6 +23,7 @@ import type {
   LevelEntry,
   LevelReaction,
   LevelTypePref,
+  PostExitMilestoneKind,
 } from '../../types';
 import { ZONE_LEVEL_TYPES } from '../../types';
 
@@ -44,7 +45,6 @@ import {
   parseLocalDateTime,
   getCurrentDateTimeString,
   toLocalDateTimeString,
-  isPostExitReviewComplete,
 } from '../../utils';
 
 // Initial form state
@@ -90,6 +90,7 @@ const getInitialFormData = (): TradeFormData => ({
   swap: '',
   accountId: '', // Will be set to default account's ID on load
   strategyId: '', // Will be set to default strategy's ID on load
+  postExitSequence: [],
   postExitBestPrice: '',
   postExitWorstPrice: '',
   reachedTargetPostExit: null,
@@ -376,6 +377,7 @@ export function TradeForm() {
             swap: trade.swap ? String(trade.swap) : '',
             accountId: trade.accountId,
             strategyId: trade.strategyId,
+            postExitSequence: trade.postExitSequence || [],
             postExitBestPrice: trade.postExitBestPrice != null ? String(trade.postExitBestPrice) : '',
             postExitWorstPrice: trade.postExitWorstPrice != null ? String(trade.postExitWorstPrice) : '',
             reachedTargetPostExit: trade.reachedTargetPostExit ?? null,
@@ -989,20 +991,38 @@ export function TradeForm() {
         // Preserve original stop loss on edit, set on first save for new trades
         originalStopLoss: isEditMode ? originalStopLoss : stopLoss,
         // Post-exit tracking fields
-        postExitBestPrice: formData.postExitBestPrice ? parseFloat(formData.postExitBestPrice) : null,
-        postExitWorstPrice: formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null,
+        postExitSequence: formData.postExitSequence,
+        // Derive best/worst prices from sequence for backward compatibility
+        // Find favourable_extreme and adverse_extreme from the sequence
+        postExitBestPrice: (() => {
+          const favourable = formData.postExitSequence.find(m => m.kind === 'favourable_extreme');
+          if (favourable) return favourable.price;
+          // Fallback to manual input if no sequence
+          return formData.postExitBestPrice ? parseFloat(formData.postExitBestPrice) : null;
+        })(),
+        postExitWorstPrice: (() => {
+          const adverse = formData.postExitSequence.find(m => m.kind === 'adverse_extreme');
+          if (adverse) return adverse.price;
+          // Fallback to manual input if no sequence
+          return formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null;
+        })(),
         reachedTargetPostExit: formData.reachedTargetPostExit,
         postExitNotes: formData.postExitNotes.trim(),
-        // Only set reviewedAt when ALL four post-exit fields are complete
-        // If editing and fields are cleared, unset reviewedAt so trade reappears in review queue
-        reviewedAt: isPostExitReviewComplete(
-          formData.postExitBestPrice ? parseFloat(formData.postExitBestPrice) : null,
-          formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null,
-          formData.reachedTargetPostExit,
-          formData.postExitNotes
-        )
-          ? (existingReviewedAt || now.toISOString())
-          : null,
+        // Review is complete when:
+        // - At least 2 milestones (favourable and adverse extremes) OR legacy best/worst prices
+        // - reachedTargetPostExit is set
+        // - postExitNotes is filled
+        reviewedAt: (() => {
+          const hasFavourable = formData.postExitSequence.some(m => m.kind === 'favourable_extreme');
+          const hasAdverse = formData.postExitSequence.some(m => m.kind === 'adverse_extreme');
+          const hasSequence = hasFavourable && hasAdverse;
+          const hasLegacyPrices = !!(formData.postExitBestPrice && formData.postExitWorstPrice);
+          const hasPriceData = hasSequence || hasLegacyPrices;
+          const hasReachedTarget = formData.reachedTargetPostExit !== null;
+          const hasNotes = formData.postExitNotes.trim() !== '';
+          const isComplete = hasPriceData && hasReachedTarget && hasNotes;
+          return isComplete ? (existingReviewedAt || now.toISOString()) : null;
+        })(),
         createdAt: isEditMode ? createdAt! : now,
         updatedAt: now,
       };
@@ -3624,7 +3644,7 @@ export function TradeForm() {
                 {!existingReviewedAt && (
                   <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
                     <p className="text-blue-400 text-sm">
-                      Record what happened after you exited this trade. This data helps you analyze whether your exits were optimal.
+                      Record the price sequence after you exited. This helps analyze whether you should have held longer or if your exit was validated.
                     </p>
                   </div>
                 )}
@@ -3679,36 +3699,288 @@ export function TradeForm() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Post-Exit Best Price
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={formData.postExitBestPrice}
-                      onChange={(e) => handleChange('postExitBestPrice', e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Best price in your favour after exit"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Best price in your favour after you exited</p>
+                {/* Post-Exit Price Sequence Builder */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Post-Exit Price Sequence
+                  </label>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Add price milestones in chronological order (first move after exit = first row). Need at least a favourable and adverse extreme.
+                  </p>
+
+                  {/* Quick-add chips from trade data */}
+                  {(() => {
+                    const entryPrice = parseFloat(formData.entryPrice);
+                    const originalSL = originalStopLoss ?? parseFloat(formData.stopLoss);
+                    const targetPrice = parseFloat(formData.targetPrice);
+                    const chips: { label: string; price: number }[] = [];
+
+                    // Original SL
+                    if (!isNaN(originalSL)) {
+                      chips.push({ label: `Original SL [${originalSL}]`, price: originalSL });
+                    }
+
+                    // Stop adjustments
+                    formData.stopAdjustments.forEach((adj) => {
+                      const reasonLabel = adj.reason.toLowerCase().includes('be')
+                        ? `BE [${adj.newStop}]`
+                        : `${adj.reason} [${adj.newStop}]`;
+                      chips.push({ label: reasonLabel, price: adj.newStop });
+                    });
+
+                    // Target
+                    if (!isNaN(targetPrice)) {
+                      chips.push({ label: `Target [${targetPrice}]`, price: targetPrice });
+                    }
+
+                    // Entry price reference
+                    if (!isNaN(entryPrice)) {
+                      chips.push({ label: `Entry [${entryPrice}]`, price: entryPrice });
+                    }
+
+                    // Filter out chips that are already in the sequence
+                    const existingPrices = new Set(formData.postExitSequence.map(m => m.price));
+                    const availableChips = chips.filter(c => !existingPrices.has(c.price));
+
+                    if (availableChips.length === 0) return null;
+
+                    return (
+                      <div className="flex flex-wrap gap-2 mb-3">
+                        <span className="text-xs text-gray-500 self-center">Quick add:</span>
+                        {availableChips.map((chip) => (
+                          <button
+                            key={chip.label}
+                            type="button"
+                            onClick={() => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                postExitSequence: [
+                                  ...prev.postExitSequence,
+                                  {
+                                    id: uuidv4(),
+                                    price: chip.price,
+                                    kind: 'leg' as PostExitMilestoneKind,
+                                    note: chip.label.split('[')[0].trim(),
+                                  },
+                                ],
+                              }));
+                            }}
+                            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
+                          >
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Milestone rows */}
+                  <div className="space-y-2">
+                    {formData.postExitSequence.map((milestone, index) => {
+                      // Auto-infer kind based on prices in the sequence
+                      const direction = formData.direction;
+                      const allPrices = formData.postExitSequence.map(m => m.price);
+                      const maxPrice = Math.max(...allPrices);
+                      const minPrice = Math.min(...allPrices);
+
+                      // For longs: highest = favourable, lowest = adverse
+                      // For shorts: lowest = favourable, highest = adverse
+                      const inferredKind = (() => {
+                        if (allPrices.length < 2) return milestone.kind;
+                        if (direction === 'long') {
+                          if (milestone.price === maxPrice) return 'favourable_extreme';
+                          if (milestone.price === minPrice) return 'adverse_extreme';
+                        } else {
+                          if (milestone.price === minPrice) return 'favourable_extreme';
+                          if (milestone.price === maxPrice) return 'adverse_extreme';
+                        }
+                        return 'leg';
+                      })();
+
+                      return (
+                        <div
+                          key={milestone.id}
+                          className="flex items-center gap-2 p-2 bg-gray-750 rounded-lg"
+                        >
+                          {/* Reorder buttons */}
+                          <div className="flex flex-col gap-0.5">
+                            <button
+                              type="button"
+                              disabled={index === 0}
+                              onClick={() => {
+                                if (index === 0) return;
+                                setFormData((prev) => {
+                                  const newSeq = [...prev.postExitSequence];
+                                  [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
+                                  return { ...prev, postExitSequence: newSeq };
+                                });
+                              }}
+                              className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={index === formData.postExitSequence.length - 1}
+                              onClick={() => {
+                                if (index === formData.postExitSequence.length - 1) return;
+                                setFormData((prev) => {
+                                  const newSeq = [...prev.postExitSequence];
+                                  [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
+                                  return { ...prev, postExitSequence: newSeq };
+                                });
+                              }}
+                              className={`p-0.5 rounded ${index === formData.postExitSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </button>
+                          </div>
+
+                          {/* Index */}
+                          <span className="text-xs text-gray-500 w-4">{index + 1}</span>
+
+                          {/* Price input */}
+                          <input
+                            type="number"
+                            step="any"
+                            value={milestone.price}
+                            onChange={(e) => {
+                              const newPrice = parseFloat(e.target.value);
+                              setFormData((prev) => ({
+                                ...prev,
+                                postExitSequence: prev.postExitSequence.map((m, i) =>
+                                  i === index ? { ...m, price: isNaN(newPrice) ? 0 : newPrice } : m
+                                ),
+                              }));
+                            }}
+                            className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            placeholder="Price"
+                          />
+
+                          {/* Kind selector */}
+                          <select
+                            value={milestone.kind}
+                            onChange={(e) => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                postExitSequence: prev.postExitSequence.map((m, i) =>
+                                  i === index ? { ...m, kind: e.target.value as PostExitMilestoneKind } : m
+                                ),
+                              }));
+                            }}
+                            className={`w-36 px-2 py-1 rounded text-sm border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                              milestone.kind === 'favourable_extreme'
+                                ? 'bg-green-500/20 text-green-400 border-green-500/50'
+                                : milestone.kind === 'adverse_extreme'
+                                  ? 'bg-red-500/20 text-red-400 border-red-500/50'
+                                  : 'bg-gray-700 text-gray-300 border-gray-600'
+                            }`}
+                          >
+                            <option value="leg">Leg (swing)</option>
+                            <option value="favourable_extreme">Favourable extreme</option>
+                            <option value="adverse_extreme">Adverse extreme</option>
+                          </select>
+
+                          {/* Auto-infer indicator */}
+                          {inferredKind !== milestone.kind && formData.postExitSequence.length >= 2 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  postExitSequence: prev.postExitSequence.map((m, i) =>
+                                    i === index ? { ...m, kind: inferredKind } : m
+                                  ),
+                                }));
+                              }}
+                              className="text-xs text-amber-400 hover:text-amber-300"
+                              title={`Auto-detected as ${inferredKind.replace('_', ' ')}`}
+                            >
+                              → {inferredKind === 'favourable_extreme' ? 'fav' : inferredKind === 'adverse_extreme' ? 'adv' : 'leg'}?
+                            </button>
+                          )}
+
+                          {/* Note input */}
+                          <input
+                            type="text"
+                            value={milestone.note || ''}
+                            onChange={(e) => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                postExitSequence: prev.postExitSequence.map((m, i) =>
+                                  i === index ? { ...m, note: e.target.value || undefined } : m
+                                ),
+                              }));
+                            }}
+                            className="flex-1 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            placeholder="Note (optional)"
+                          />
+
+                          {/* Delete button */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                postExitSequence: prev.postExitSequence.filter((_, i) => i !== index),
+                              }));
+                            }}
+                            className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Post-Exit Worst Price
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={formData.postExitWorstPrice}
-                      onChange={(e) => handleChange('postExitWorstPrice', e.target.value)}
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      placeholder="Worst price against you after exit"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">Worst price against you after exit (validates your exit if this went far against)</p>
-                  </div>
+                  {/* Add milestone button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData((prev) => ({
+                        ...prev,
+                        postExitSequence: [
+                          ...prev.postExitSequence,
+                          {
+                            id: uuidv4(),
+                            price: 0,
+                            kind: 'leg' as PostExitMilestoneKind,
+                          },
+                        ],
+                      }));
+                    }}
+                    className="mt-2 px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add milestone
+                  </button>
+
+                  {/* Validation hint */}
+                  {(() => {
+                    const hasFav = formData.postExitSequence.some(m => m.kind === 'favourable_extreme');
+                    const hasAdv = formData.postExitSequence.some(m => m.kind === 'adverse_extreme');
+                    if (formData.postExitSequence.length > 0 && (!hasFav || !hasAdv)) {
+                      return (
+                        <p className="text-xs text-amber-400 mt-2">
+                          {!hasFav && !hasAdv
+                            ? 'Mark at least one milestone as favourable extreme and one as adverse extreme'
+                            : !hasFav
+                              ? 'Mark the best price (in your favour) as favourable extreme'
+                              : 'Mark the worst price (against you) as adverse extreme'}
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
 
                 <div>

@@ -39,6 +39,8 @@ import {
   getMissedRByExitType,
   getPostExitScatterData,
   getPostExitInsights,
+  getHoldReplayBuckets,
+  getStopVariantComparison,
   CHART_TOOLTIP_STYLES,
   type SimulationStrategy,
   type SimulationResult,
@@ -125,6 +127,10 @@ export function ExitManagement({ trades }: Props) {
   const missedRByExitType = useMemo(() => getMissedRByExitType(trades), [trades]);
   const postExitScatter = useMemo(() => getPostExitScatterData(trades), [trades]);
   const postExitInsights = useMemo(() => getPostExitInsights(trades, minRThreshold), [trades, minRThreshold]);
+
+  // Hold Replay analysis (sequence-based)
+  const holdReplayBuckets = useMemo(() => getHoldReplayBuckets(trades), [trades]);
+  const stopVariantComparison = useMemo(() => getStopVariantComparison(trades), [trades]);
 
   const combinedEquityCurve = useMemo(() => {
     if (!simulations.actual) return [];
@@ -1026,6 +1032,84 @@ export function ExitManagement({ trades }: Props) {
                 </div>
               )}
             </div>
+
+            {/* Hold Replay Analysis (Sequence-based) */}
+            {(holdReplayBuckets.survivedToHigh.count > 0 || holdReplayBuckets.stoppedFirst.count > 0) && (
+              <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-4">
+                <h4 className="text-sm font-medium text-purple-400 mb-3">Hold Replay Analysis</h4>
+                <p className="text-xs text-gray-400 mb-4">
+                  Based on post-exit price sequences — simulates what would have happened if you held with your original stop.
+                </p>
+
+                {/* Headline insight */}
+                <div className="bg-gray-750 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-gray-200">{holdReplayBuckets.headline}</p>
+                </div>
+
+                {/* Buckets */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Survived to High */}
+                  <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-green-400 text-lg">✓</span>
+                      <span className="text-sm font-medium text-green-400">Hold Survived</span>
+                    </div>
+                    <p className="text-2xl font-bold text-green-400">{holdReplayBuckets.survivedToHigh.count}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Avg missed: {holdReplayBuckets.survivedToHigh.avgMissedR.toFixed(2)}R
+                    </p>
+                  </div>
+
+                  {/* Stopped First */}
+                  <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-gray-400 text-lg">✗</span>
+                      <span className="text-sm font-medium text-gray-300">Exit Validated</span>
+                    </div>
+                    <p className="text-2xl font-bold text-gray-300">{holdReplayBuckets.stoppedFirst.count}</p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      Avg saved: {holdReplayBuckets.stoppedFirst.avgSavedR.toFixed(2)}R
+                    </p>
+                  </div>
+
+                  {/* Sequence Unknown */}
+                  {holdReplayBuckets.sequenceUnknown.count > 0 && (
+                    <div className="bg-gray-700/30 border border-gray-700 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-gray-500 text-lg">?</span>
+                        <span className="text-sm font-medium text-gray-500">Unknown</span>
+                      </div>
+                      <p className="text-2xl font-bold text-gray-500">{holdReplayBuckets.sequenceUnknown.count}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Legacy: {holdReplayBuckets.sequenceUnknown.avgLegacyMissedR.toFixed(2)}R missed
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Stop Variant Comparison */}
+                {stopVariantComparison && (
+                  <div className="mt-4 pt-4 border-t border-purple-500/20">
+                    <h5 className="text-xs font-medium text-gray-400 mb-2">Original vs Final Stop Comparison</h5>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <span className="text-gray-500">Original stop:</span>
+                        <span className="ml-2 text-gray-300">
+                          {stopVariantComparison.originalStopSurvived} survived, {stopVariantComparison.originalStopStopped} stopped
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Final stop:</span>
+                        <span className="ml-2 text-gray-300">
+                          {stopVariantComparison.finalStopSurvived} survived, {stopVariantComparison.finalStopStopped} stopped
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-xs text-purple-300 mt-2">{stopVariantComparison.insight}</p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Overall Summary (smaller) */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

@@ -697,6 +697,30 @@ class TradingDiaryDB extends Dexie {
           });
       });
 
+    // Version 25 - Add postExitSequence field for ordered post-exit price milestones
+    this.version(25)
+      .stores({
+        trades: '@id, accountId, strategyId, pair, *setupTags, session, status, entryTime, exitTime, direction, entryTF, tradeTaken',
+        accounts: '@id, isDefault',
+        strategies: '@id, isDefault',
+        dailyJournals: '@id, date, accountId',
+        glossaryTerms: '@id, term, category',
+        levelTypePrefs: '@id, levelType',
+      })
+      .upgrade((tx) => {
+        return tx
+          .table('trades')
+          .toCollection()
+          .modify((trade) => {
+            // Initialize postExitSequence as empty array for all existing trades
+            // Trades with existing best/worst prices keep them for backward compatibility
+            // but sequence remains empty (treated as "sequence unknown" in analytics)
+            if (trade.postExitSequence === undefined) {
+              trade.postExitSequence = [];
+            }
+          });
+      });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {

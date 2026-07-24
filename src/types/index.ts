@@ -100,6 +100,16 @@ export interface TradeEvent {
   description?: string;
 }
 
+// Post-exit milestone for price sequence tracking
+export type PostExitMilestoneKind = 'favourable_extreme' | 'adverse_extreme' | 'leg';
+
+export interface PostExitMilestone {
+  id: string;
+  price: number;
+  kind: PostExitMilestoneKind;
+  note?: string;
+}
+
 // Account entity
 export interface Account {
   id?: string; // Optional - Dexie Cloud generates with @id
@@ -216,8 +226,9 @@ export interface TradeRecord {
   firstTouchWorstPrice: number | null; // Worst price before initial move in trader's favour (pre-reaction extreme)
 
   // === Post-Exit Tracking ===
-  postExitBestPrice: number | null; // Best price in your favour after full exit
-  postExitWorstPrice: number | null; // Worst price against your direction after exit
+  postExitSequence: PostExitMilestone[]; // Ordered chronologically, first element = first move after exit
+  postExitBestPrice: number | null; // Best price in your favour after full exit (derived from sequence favourable_extreme)
+  postExitWorstPrice: number | null; // Worst price against your direction after exit (derived from sequence adverse_extreme)
   reachedTargetPostExit: boolean | null; // Did price hit targetPrice after you exited?
   postExitNotes: string; // Reflection on what happened after exit
   reviewedAt: string | null; // Timestamp of when the trade was reviewed post-exit
@@ -431,6 +442,7 @@ export interface TradeFormData {
   strategyId: string;
 
   // Post-Exit Review
+  postExitSequence: PostExitMilestone[];
   postExitBestPrice: string;
   postExitWorstPrice: string;
   reachedTargetPostExit: boolean | null;

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
-import type { TradeRecord } from '../../types';
+import type { TradeRecord, PostExitMilestone } from '../../types';
 import { ZONE_LEVEL_TYPES } from '../../types';
 import { formatDuration } from '../../utils';
 
@@ -9,7 +9,7 @@ import { formatDuration } from '../../utils';
 const isZoneLevelType = (levelType: string): boolean => {
   return ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
 };
-import { derivePostExitMetrics, isPostExitReviewComplete, isPostExitReviewPartial, getReviewDueDate, isReviewDue } from '../../utils/tradeCalculations';
+import { derivePostExitMetrics, getReviewDueDate, isReviewDue } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
 // Emotional state emoji map
@@ -72,8 +72,77 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
 
   const stopoutInsight = getStopoutInsight();
 
+  // Helper to render price sequence path
+  const renderSequencePath = () => {
+    const sequence = trade.postExitSequence;
+    if (!sequence || sequence.length === 0) return null;
+
+    const direction = trade.direction;
+    const originalStop = trade.originalStopLoss ?? trade.stopLoss;
+    const entryPrice = trade.entryPrice;
+
+    // Check if a milestone breaches the original stop
+    const breachesStop = (milestone: PostExitMilestone): boolean => {
+      // For longs: adverse is below entry, stop is below entry
+      // A milestone breaches stop if it's at or past the stop in adverse direction
+      if (direction === 'long') {
+        return milestone.price <= originalStop;
+      } else {
+        return milestone.price >= originalStop;
+      }
+    };
+
+    // Check if milestone is above or below entry
+    const getArrow = (milestone: PostExitMilestone): string => {
+      if (direction === 'long') {
+        return milestone.price >= entryPrice ? '↑' : '↓';
+      } else {
+        return milestone.price <= entryPrice ? '↑' : '↓';
+      }
+    };
+
+    return (
+      <div className="bg-gray-750 rounded-lg p-4">
+        <h4 className="text-sm font-medium text-gray-400 mb-3">After exit:</h4>
+        <div className="flex flex-wrap items-center gap-2">
+          {sequence.map((milestone, index) => {
+            const arrow = getArrow(milestone);
+            const stoppedThrough = breachesStop(milestone);
+            const kindColor = milestone.kind === 'favourable_extreme'
+              ? 'text-green-400'
+              : milestone.kind === 'adverse_extreme'
+                ? 'text-red-400'
+                : 'text-gray-300';
+
+            return (
+              <span key={milestone.id} className="flex items-center gap-1">
+                {index > 0 && <span className="text-gray-500 mx-1">→</span>}
+                <span className={kindColor}>
+                  {arrow}{milestone.price.toFixed(5)}
+                </span>
+                {stoppedThrough && (
+                  <span className="text-xs text-amber-400 ml-1">
+                    — through original SL
+                  </span>
+                )}
+                {milestone.note && (
+                  <span className="text-xs text-gray-500 ml-1">
+                    ({milestone.note})
+                  </span>
+                )}
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6">
+      {/* Post-Exit Sequence Path */}
+      {renderSequencePath()}
+
       {/* Stopout Insight Banner */}
       {stopoutInsight && (
         <div className={`rounded-lg p-4 ${
@@ -1010,18 +1079,22 @@ export function TradeDetail() {
 
         {/* Post-Exit Review Section - Only for closed trades */}
         {trade.status === 'closed' && (() => {
-          const isReviewComplete = isPostExitReviewComplete(
-            trade.postExitBestPrice,
-            trade.postExitWorstPrice,
-            trade.reachedTargetPostExit,
-            trade.postExitNotes
-          );
-          const isPartialReview = isPostExitReviewPartial(
-            trade.postExitBestPrice,
-            trade.postExitWorstPrice,
-            trade.reachedTargetPostExit,
-            trade.postExitNotes
-          );
+          // Check if sequence has required extremes
+          const hasFavourable = trade.postExitSequence?.some(m => m.kind === 'favourable_extreme') ?? false;
+          const hasAdverse = trade.postExitSequence?.some(m => m.kind === 'adverse_extreme') ?? false;
+          const hasSequence = hasFavourable && hasAdverse;
+
+          // Review is complete with either sequence or legacy prices
+          const hasLegacyPrices = trade.postExitBestPrice !== null && trade.postExitWorstPrice !== null;
+          const hasPriceData = hasSequence || hasLegacyPrices;
+          const hasReachedTarget = trade.reachedTargetPostExit !== null;
+          const hasNotes = trade.postExitNotes && trade.postExitNotes.trim() !== '';
+
+          const isReviewComplete = hasPriceData && hasReachedTarget && hasNotes;
+
+          // Partial review: some data but not all
+          const hasAnyData = (trade.postExitSequence?.length ?? 0) > 0 || hasLegacyPrices || hasReachedTarget || hasNotes;
+          const isPartialReview = hasAnyData && !isReviewComplete;
           const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
           // Use market-hours-aware calculation (skips weekends for non-crypto)
           const reviewDue = exitTime ? isReviewDue(exitTime, trade.assetClass) : false;
@@ -1099,7 +1172,7 @@ export function TradeDetail() {
                       </h4>
                       <p className="text-gray-400 mb-4">
                         {isPartialReview ? (
-                          <>Fill in all fields to complete your review — best price, worst price, reached target, and notes.</>
+                          <>Fill in all fields to complete your review — post-exit price sequence (with favourable and adverse extremes), reached target, and notes.</>
                         ) : reviewDue ? (
                           <>Record what happened after your exit to improve your exit strategy.</>
                         ) : exitTime && reviewDueDate ? (
