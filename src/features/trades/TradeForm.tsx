@@ -3972,10 +3972,10 @@ export function TradeForm() {
                       return (
                         <p className="text-xs text-amber-400 mt-2">
                           {!hasFav && !hasAdv
-                            ? 'Mark at least one milestone as favourable extreme and one as adverse extreme'
+                            ? 'Missing: favourable extreme and adverse extreme — mark the best and worst prices'
                             : !hasFav
-                              ? 'Mark the best price (in your favour) as favourable extreme'
-                              : 'Mark the worst price (against you) as adverse extreme'}
+                              ? 'No favourable extreme marked — select the best price in your favour'
+                              : 'No adverse extreme marked — select the worst price against you'}
                         </p>
                       );
                     }
