@@ -23,6 +23,8 @@ import {
   getPairwiseOrderAnalysis,
   getEntryDepthAnalysis,
   getLevelSequenceInsights,
+  getFrontRunDistanceAnalysis,
+  getTurnOffsetAnalysis,
   getZonePenetrationStats,
   getZoneEntryPlacementInsights,
   getLevelsInsideZonesAnalysis,
@@ -82,9 +84,11 @@ export function SetupPerformance({ trades }: Props) {
   const levelTypeStats = useMemo(() => getLevelTypeReactionStats(trades), [trades]);
   const pairwiseStats = useMemo(() => getPairwiseOrderAnalysis(trades), [trades]);
   const entryDepthAnalysis = useMemo(() => getEntryDepthAnalysis(trades), [trades]);
+  const frontRunAnalysis = useMemo(() => getFrontRunDistanceAnalysis(trades), [trades]);
+  const turnOffsetAnalysis = useMemo(() => getTurnOffsetAnalysis(trades), [trades]);
   const levelSequenceInsights = useMemo(
-    () => getLevelSequenceInsights(levelTypeStats, pairwiseStats, entryDepthAnalysis),
-    [levelTypeStats, pairwiseStats, entryDepthAnalysis]
+    () => getLevelSequenceInsights(levelTypeStats, pairwiseStats, entryDepthAnalysis, frontRunAnalysis, turnOffsetAnalysis),
+    [levelTypeStats, pairwiseStats, entryDepthAnalysis, frontRunAnalysis, turnOffsetAnalysis]
   );
 
   // Zone Penetration Analytics
@@ -474,6 +478,9 @@ export function SetupPerformance({ trades }: Props) {
                         <span className="text-blue-400">Front-run</span>
                       </th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
+                        <span className="text-blue-400">Avg FR Dist</span>
+                      </th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
                         <span className="text-amber-400">Swept</span>
                       </th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">
@@ -497,6 +504,11 @@ export function SetupPerformance({ trades }: Props) {
                         </td>
                         <td className="px-4 py-2 text-sm text-blue-400 text-right">
                           {stat.frontRunPercent.toFixed(0)}%
+                        </td>
+                        <td className="px-4 py-2 text-sm text-blue-400 text-right">
+                          {stat.avgFrontRunDistanceR !== null && stat.frontRunsWithDistance > 0
+                            ? `${stat.avgFrontRunDistanceR.toFixed(2)}R`
+                            : '—'}
                         </td>
                         <td className="px-4 py-2 text-sm text-amber-400 text-right">
                           {stat.sweptPercent.toFixed(0)}%
@@ -562,6 +574,73 @@ export function SetupPerformance({ trades }: Props) {
               </div>
               {pairwiseStats.some(s => s.count < 5) && (
                 <p className="text-xs text-gray-500 mt-2">* Low sample size (n &lt; 5) - stats may not be reliable</p>
+              )}
+            </div>
+          )}
+
+          {/* Front-Run Distance Distribution */}
+          {frontRunAnalysis.frontRunsWithData >= 3 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Front-Run Distance Distribution</h4>
+              <p className="text-xs text-gray-500 mb-4">
+                How far short of your levels does price turn?
+              </p>
+
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Avg Distance</p>
+                  <p className="text-xl font-bold text-blue-400">
+                    {frontRunAnalysis.avgDistanceR.toFixed(2)}R
+                  </p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Median Distance</p>
+                  <p className="text-xl font-bold text-blue-400">
+                    {frontRunAnalysis.medianDistanceR.toFixed(2)}R
+                  </p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Range</p>
+                  <p className="text-lg font-bold text-gray-300">
+                    {frontRunAnalysis.minDistanceR.toFixed(2)}R – {frontRunAnalysis.maxDistanceR.toFixed(2)}R
+                  </p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <p className="text-xs text-gray-400">Sample Size</p>
+                  <p className="text-xl font-bold text-gray-300">
+                    {frontRunAnalysis.frontRunsWithData}
+                  </p>
+                  <p className="text-xs text-gray-500">of {frontRunAnalysis.totalFrontRuns} front-runs</p>
+                </div>
+              </div>
+
+              {/* Histogram */}
+              <div className="space-y-2">
+                {frontRunAnalysis.distribution.map((bucket) => (
+                  <div key={bucket.label} className="flex items-center gap-3">
+                    <span className="text-xs text-gray-400 w-16">{bucket.label}</span>
+                    <div className="flex-1 bg-gray-700 rounded-full h-4 overflow-hidden">
+                      <div
+                        className="bg-blue-500 h-full rounded-full transition-all"
+                        style={{ width: `${Math.min(100, bucket.percent)}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-300 w-12 text-right">
+                      {bucket.count} ({bucket.percent.toFixed(0)}%)
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Insight */}
+              {frontRunAnalysis.medianDistanceR > 0 && (
+                <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                  <p className="text-sm text-blue-300">
+                    When price front-runs your levels, it typically turns {frontRunAnalysis.medianDistanceR.toFixed(2)}R short.
+                    Consider placing entries {frontRunAnalysis.medianDistanceR.toFixed(2)}R ahead of your level prices.
+                  </p>
+                </div>
               )}
             </div>
           )}

@@ -20,6 +20,7 @@ import {
   getStrategyStats,
 } from '../../utils';
 import type { AlertType, Account, Strategy, BackupData, ImportResult, TradeEvent } from '../../types';
+import { NOT_TAKEN_REASON_PRESETS, NOT_TAKEN_REASON_LABELS, PROTECTED_NOT_TAKEN_REASONS } from '../../types';
 
 type ModalType =
   | 'loadDemo'
@@ -41,6 +42,10 @@ type ModalType =
   | 'renameEventType'
   | 'deleteEventType'
   | 'mergeEventTypes'
+  | 'addNotTakenReason'
+  | 'renameNotTakenReason'
+  | 'deleteNotTakenReason'
+  | 'mergeNotTakenReasons'
   | null;
 
 const ALERT_TYPE_LABELS: Record<AlertType, { name: string; description: string }> = {
@@ -119,6 +124,15 @@ export function SettingsPage() {
   const [eventTypeToDelete, setEventTypeToDelete] = useState<TagWithStats | null>(null);
   const [selectedEventTypesForMerge, setSelectedEventTypesForMerge] = useState<string[]>([]);
   const [mergeTargetEventType, setMergeTargetEventType] = useState('');
+
+  // Not-Taken Reasons state
+  const [notTakenReasons, setNotTakenReasons] = useState<TagWithStats[]>([]);
+  const [editingNotTakenReason, setEditingNotTakenReason] = useState<TagWithStats | null>(null);
+  const [notTakenReasonRenameValue, setNotTakenReasonRenameValue] = useState('');
+  const [notTakenReasonToDelete, setNotTakenReasonToDelete] = useState<TagWithStats | null>(null);
+  const [selectedNotTakenReasonsForMerge, setSelectedNotTakenReasonsForMerge] = useState<string[]>([]);
+  const [mergeTargetNotTakenReason, setMergeTargetNotTakenReason] = useState('');
+  const [newNotTakenReason, setNewNotTakenReason] = useState('');
 
   // Import state
   const [pendingBackup, setPendingBackup] = useState<BackupData | null>(null);
@@ -233,12 +247,46 @@ export function SettingsPage() {
     setEventTypes(eventTypesWithStats);
   };
 
+  // Load not-taken reasons with trade counts
+  const loadNotTakenReasons = async () => {
+    const allTrades = await db.trades.toArray();
+    const reasonCounts = new Map<string, number>();
+
+    // Start with preset reasons (count 0)
+    for (const preset of NOT_TAKEN_REASON_PRESETS) {
+      reasonCounts.set(preset, 0);
+    }
+
+    // Count trades per reason (only missed trades have notTakenReason)
+    for (const trade of allTrades) {
+      if (!trade.tradeTaken && trade.notTakenReason) {
+        const reason = trade.notTakenReason;
+        reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+      }
+    }
+
+    // Convert to sorted array (protected reasons first, then by count)
+    const reasonsWithStats: TagWithStats[] = Array.from(reasonCounts.entries())
+      .map(([name, tradeCount]) => ({ name, tradeCount }))
+      .sort((a, b) => {
+        // Protected reasons always come first
+        const aProtected = PROTECTED_NOT_TAKEN_REASONS.includes(a.name as typeof PROTECTED_NOT_TAKEN_REASONS[number]);
+        const bProtected = PROTECTED_NOT_TAKEN_REASONS.includes(b.name as typeof PROTECTED_NOT_TAKEN_REASONS[number]);
+        if (aProtected && !bProtected) return -1;
+        if (!aProtected && bProtected) return 1;
+        return b.tradeCount - a.tradeCount;
+      });
+
+    setNotTakenReasons(reasonsWithStats);
+  };
+
   // Initial load
   useEffect(() => {
     loadAccounts();
     loadStrategies();
     loadTags();
     loadEventTypes();
+    loadNotTakenReasons();
   }, []);
 
   // Account handlers
@@ -755,6 +803,167 @@ export function SettingsPage() {
     setSelectedEventTypesForMerge((prev) =>
       prev.includes(typeName) ? prev.filter((t) => t !== typeName) : [...prev, typeName]
     );
+  };
+
+  // Not-Taken Reasons handlers
+  const handleAddNotTakenReason = async () => {
+    const reason = newNotTakenReason.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!reason) return;
+
+    // Check if already exists
+    if (notTakenReasons.some((r) => r.name === reason)) {
+      setMessage({ type: 'error', text: `Reason "${reason}" already exists.` });
+      return;
+    }
+
+    // Just add to the list with 0 count - it will appear on trades when used
+    setNotTakenReasons((prev) => [...prev, { name: reason, tradeCount: 0 }]);
+    setNewNotTakenReason('');
+    setActiveModal(null);
+    setMessage({ type: 'success', text: `Reason "${reason.replace(/_/g, ' ')}" added.` });
+  };
+
+  const handleRenameNotTakenReason = async () => {
+    if (!editingNotTakenReason || !notTakenReasonRenameValue.trim()) return;
+
+    const oldName = editingNotTakenReason.name;
+    const newName = notTakenReasonRenameValue.trim().toLowerCase().replace(/\s+/g, '_');
+
+    // Don't allow renaming protected reasons
+    if (PROTECTED_NOT_TAKEN_REASONS.includes(oldName as typeof PROTECTED_NOT_TAKEN_REASONS[number])) {
+      setMessage({ type: 'error', text: `Cannot rename protected reason "${oldName}".` });
+      return;
+    }
+
+    if (oldName === newName) {
+      setEditingNotTakenReason(null);
+      setNotTakenReasonRenameValue('');
+      setActiveModal(null);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Update all missed trades that have this reason
+      await db.trades
+        .filter((trade) => !trade.tradeTaken && trade.notTakenReason === oldName)
+        .modify((trade) => {
+          trade.notTakenReason = newName;
+        });
+
+      await loadNotTakenReasons();
+      setEditingNotTakenReason(null);
+      setNotTakenReasonRenameValue('');
+      setActiveModal(null);
+      setMessage({ type: 'success', text: `Renamed "${oldName.replace(/_/g, ' ')}" to "${newName.replace(/_/g, ' ')}" across ${editingNotTakenReason.tradeCount} trades.` });
+    } catch (error) {
+      console.error('Failed to rename not-taken reason:', error);
+      setMessage({ type: 'error', text: 'Failed to rename reason. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteNotTakenReason = async () => {
+    if (!notTakenReasonToDelete) return;
+
+    // Don't allow deleting protected reasons
+    if (PROTECTED_NOT_TAKEN_REASONS.includes(notTakenReasonToDelete.name as typeof PROTECTED_NOT_TAKEN_REASONS[number])) {
+      setMessage({ type: 'error', text: `Cannot delete protected reason "${notTakenReasonToDelete.name}".` });
+      setNotTakenReasonToDelete(null);
+      setActiveModal(null);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      if (notTakenReasonToDelete.tradeCount > 0) {
+        // Clear the reason from affected trades (leave notTakenReason empty)
+        await db.trades
+          .filter((trade) => !trade.tradeTaken && trade.notTakenReason === notTakenReasonToDelete.name)
+          .modify((trade) => {
+            trade.notTakenReason = '';
+          });
+      }
+
+      await loadNotTakenReasons();
+      setNotTakenReasonToDelete(null);
+      setActiveModal(null);
+      setMessage({
+        type: 'success',
+        text: notTakenReasonToDelete.tradeCount > 0
+          ? `Removed reason "${notTakenReasonToDelete.name.replace(/_/g, ' ')}" from ${notTakenReasonToDelete.tradeCount} trades.`
+          : `Reason "${notTakenReasonToDelete.name.replace(/_/g, ' ')}" removed.`,
+      });
+    } catch (error) {
+      console.error('Failed to delete not-taken reason:', error);
+      setMessage({ type: 'error', text: 'Failed to delete reason. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMergeNotTakenReasons = async () => {
+    if (selectedNotTakenReasonsForMerge.length < 2 || !mergeTargetNotTakenReason) return;
+
+    const reasonsToRemove = selectedNotTakenReasonsForMerge.filter((r) => r !== mergeTargetNotTakenReason);
+
+    // Don't allow merging away protected reasons
+    const protectedToRemove = reasonsToRemove.filter((r) =>
+      PROTECTED_NOT_TAKEN_REASONS.includes(r as typeof PROTECTED_NOT_TAKEN_REASONS[number])
+    );
+    if (protectedToRemove.length > 0) {
+      setMessage({ type: 'error', text: `Cannot merge away protected reasons: ${protectedToRemove.join(', ')}` });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Get all missed trades that have any of the reasons to remove
+      const affectedTrades = await db.trades
+        .filter((trade) => !trade.tradeTaken && reasonsToRemove.includes(trade.notTakenReason))
+        .toArray();
+
+      // Update each affected trade
+      for (const trade of affectedTrades) {
+        await db.trades.update(trade.id, { notTakenReason: mergeTargetNotTakenReason });
+      }
+
+      await loadNotTakenReasons();
+      setSelectedNotTakenReasonsForMerge([]);
+      setMergeTargetNotTakenReason('');
+      setActiveModal(null);
+      setMessage({
+        type: 'success',
+        text: `Merged ${reasonsToRemove.map(r => r.replace(/_/g, ' ')).join(', ')} into "${mergeTargetNotTakenReason.replace(/_/g, ' ')}" across ${affectedTrades.length} trades.`,
+      });
+    } catch (error) {
+      console.error('Failed to merge not-taken reasons:', error);
+      setMessage({ type: 'error', text: 'Failed to merge reasons. See console for details.' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openRenameNotTakenReason = (reason: TagWithStats) => {
+    setEditingNotTakenReason(reason);
+    setNotTakenReasonRenameValue(reason.name);
+    setActiveModal('renameNotTakenReason');
+  };
+
+  const openDeleteNotTakenReason = (reason: TagWithStats) => {
+    setNotTakenReasonToDelete(reason);
+    setActiveModal('deleteNotTakenReason');
+  };
+
+  const toggleNotTakenReasonForMerge = (reasonName: string) => {
+    setSelectedNotTakenReasonsForMerge((prev) =>
+      prev.includes(reasonName) ? prev.filter((r) => r !== reasonName) : [...prev, reasonName]
+    );
+  };
+
+  const isProtectedReason = (reasonName: string) => {
+    return PROTECTED_NOT_TAKEN_REASONS.includes(reasonName as typeof PROTECTED_NOT_TAKEN_REASONS[number]);
   };
 
   // Demo data handler
@@ -1416,6 +1625,116 @@ export function SettingsPage() {
         {selectedEventTypesForMerge.length > 0 && selectedEventTypesForMerge.length < 2 && (
           <p className="mt-3 text-sm text-gray-400">
             Select at least 2 event types to merge them.
+          </p>
+        )}
+      </div>
+
+      {/* Not-Taken Reasons Section */}
+      <div className="bg-gray-800 rounded-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-medium text-white">Not-Taken Reasons</h2>
+            <p className="text-sm text-gray-400">Manage reasons for missed/paper trades</p>
+          </div>
+          <div className="flex gap-2">
+            {selectedNotTakenReasonsForMerge.length >= 2 && (
+              <button
+                onClick={() => setActiveModal('mergeNotTakenReasons')}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded-lg transition-colors"
+              >
+                Merge Selected ({selectedNotTakenReasonsForMerge.length})
+              </button>
+            )}
+            <button
+              onClick={() => setActiveModal('addNotTakenReason')}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors"
+            >
+              + Add Reason
+            </button>
+          </div>
+        </div>
+
+        {notTakenReasons.length === 0 ? (
+          <p className="text-gray-400 text-sm">No not-taken reasons found.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-400 border-b border-gray-700">
+                  <th className="pb-2 font-medium w-10">
+                    <span className="sr-only">Select</span>
+                  </th>
+                  <th className="pb-2 font-medium">Reason</th>
+                  <th className="pb-2 font-medium text-right">Trades</th>
+                  <th className="pb-2 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {notTakenReasons.map((reason) => {
+                  const protected_ = isProtectedReason(reason.name);
+                  const label = NOT_TAKEN_REASON_LABELS[reason.name] || reason.name.replace(/_/g, ' ');
+                  return (
+                    <tr key={reason.name} className="text-gray-200">
+                      <td className="py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedNotTakenReasonsForMerge.includes(reason.name)}
+                          onChange={() => toggleNotTakenReasonForMerge(reason.name)}
+                          className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                        />
+                      </td>
+                      <td className="py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2 py-1 bg-orange-500/20 text-orange-400 rounded text-sm">
+                            {label}
+                          </span>
+                          {protected_ && (
+                            <span title="Protected - cannot be renamed or deleted">
+                              <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                              </svg>
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 text-right text-gray-400">{reason.tradeCount}</td>
+                      <td className="py-3 text-right">
+                        {protected_ ? (
+                          <span className="text-gray-500 text-xs">Protected</span>
+                        ) : (
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() => openRenameNotTakenReason(reason)}
+                              className="p-1 text-gray-400 hover:text-white transition-colors"
+                              title="Rename"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                            <button
+                              onClick={() => openDeleteNotTakenReason(reason)}
+                              className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                              title="Delete"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {selectedNotTakenReasonsForMerge.length > 0 && selectedNotTakenReasonsForMerge.length < 2 && (
+          <p className="mt-3 text-sm text-gray-400">
+            Select at least 2 reasons to merge them.
           </p>
         )}
       </div>
@@ -2419,6 +2738,169 @@ export function SettingsPage() {
                     className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
                   >
                     {loading ? 'Merging...' : 'Merge Event Types'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Add Not-Taken Reason Modal */}
+            {activeModal === 'addNotTakenReason' && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Add Not-Taken Reason</h3>
+                <p className="text-gray-400 mb-4">
+                  Add a new reason for missed/paper trades.
+                </p>
+                <input
+                  type="text"
+                  value={newNotTakenReason}
+                  onChange={(e) => setNewNotTakenReason(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g., spread_too_wide"
+                />
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setNewNotTakenReason('');
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddNotTakenReason}
+                    disabled={loading || !newNotTakenReason.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
+                  >
+                    Add Reason
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Rename Not-Taken Reason Modal */}
+            {activeModal === 'renameNotTakenReason' && editingNotTakenReason && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Rename Not-Taken Reason</h3>
+                <p className="text-gray-400 mb-4">
+                  Renaming "{editingNotTakenReason.name.replace(/_/g, ' ')}" will update {editingNotTakenReason.tradeCount} trade{editingNotTakenReason.tradeCount !== 1 ? 's' : ''}.
+                </p>
+                <input
+                  type="text"
+                  value={notTakenReasonRenameValue}
+                  onChange={(e) => setNotTakenReasonRenameValue(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="New reason name"
+                />
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setEditingNotTakenReason(null);
+                      setNotTakenReasonRenameValue('');
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleRenameNotTakenReason}
+                    disabled={loading || !notTakenReasonRenameValue.trim()}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Renaming...' : 'Rename'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Delete Not-Taken Reason Modal */}
+            {activeModal === 'deleteNotTakenReason' && notTakenReasonToDelete && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Delete Not-Taken Reason</h3>
+                <p className="text-gray-400 mb-4">
+                  {notTakenReasonToDelete.tradeCount > 0
+                    ? `This will clear the reason "${notTakenReasonToDelete.name.replace(/_/g, ' ')}" from ${notTakenReasonToDelete.tradeCount} trade${notTakenReasonToDelete.tradeCount !== 1 ? 's' : ''}.`
+                    : `Delete reason "${notTakenReasonToDelete.name.replace(/_/g, ' ')}"?`}
+                </p>
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setNotTakenReasonToDelete(null);
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeleteNotTakenReason}
+                    disabled={loading}
+                    className="px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Merge Not-Taken Reasons Modal */}
+            {activeModal === 'mergeNotTakenReasons' && selectedNotTakenReasonsForMerge.length >= 2 && (
+              <>
+                <h3 className="text-lg font-medium text-white mb-2">Merge Not-Taken Reasons</h3>
+                <p className="text-gray-400 mb-4">
+                  Select which reason to keep. The others will be replaced with the selected one.
+                </p>
+                <div className="space-y-2 mb-4">
+                  {selectedNotTakenReasonsForMerge.map((reason) => {
+                    const protected_ = isProtectedReason(reason);
+                    return (
+                      <label key={reason} className="flex items-center gap-3 p-2 bg-gray-700 rounded-lg cursor-pointer">
+                        <input
+                          type="radio"
+                          name="mergeTargetNotTakenReason"
+                          value={reason}
+                          checked={mergeTargetNotTakenReason === reason}
+                          onChange={(e) => setMergeTargetNotTakenReason(e.target.value)}
+                          className="w-4 h-4 text-blue-600 bg-gray-600 border-gray-500 focus:ring-blue-500"
+                        />
+                        <span className="text-white">{reason.replace(/_/g, ' ')}</span>
+                        {protected_ && (
+                          <span title="Protected">
+                            <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                            </svg>
+                          </span>
+                        )}
+                        <span className="text-gray-400 text-sm ml-auto">
+                          ({notTakenReasons.find(r => r.name === reason)?.tradeCount || 0} trades)
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedNotTakenReasonsForMerge.some(r => isProtectedReason(r) && r !== mergeTargetNotTakenReason) && (
+                  <p className="text-yellow-400 text-sm mb-4">
+                    Note: Protected reasons cannot be merged away. Select the protected reason as the target.
+                  </p>
+                )}
+                <div className="flex justify-end gap-3 mt-6">
+                  <button
+                    onClick={() => {
+                      setSelectedNotTakenReasonsForMerge([]);
+                      setMergeTargetNotTakenReason('');
+                      setActiveModal(null);
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleMergeNotTakenReasons}
+                    disabled={loading || !mergeTargetNotTakenReason}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
+                  >
+                    {loading ? 'Merging...' : 'Merge Reasons'}
                   </button>
                 </div>
               </>

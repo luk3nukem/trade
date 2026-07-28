@@ -19,7 +19,7 @@ import type {
   LevelReaction,
   LevelTypePref,
 } from '../../types';
-import { ZONE_LEVEL_TYPES, DETAIL_LEVEL_TYPES, EVENT_TYPE_PRESETS, NOT_TAKEN_REASON_PRESETS } from '../../types';
+import { ZONE_LEVEL_TYPES, DETAIL_LEVEL_TYPES, EVENT_TYPE_PRESETS, NOT_TAKEN_REASON_PRESETS, NOT_TAKEN_REASON_LABELS } from '../../types';
 import {
   deriveSession,
   calculateStopDistance,
@@ -107,6 +107,7 @@ const getInitialFormData = (): TradeFormData => ({
   confirmationTF: '',
   tradeTaken: true,
   notTakenReason: '',
+  frontRunTurnPrice: '',
   entryNotes: '',
   closeNotes: '',
   postExitNotes: '',
@@ -198,6 +199,7 @@ interface ValidationErrors {
   stopLoss?: string;
   entryTime?: string;
   notTakenReason?: string;
+  frontRunTurnPrice?: string;
 }
 
 interface ValidationWarnings {
@@ -301,6 +303,7 @@ export function TradeForm() {
             confirmationTF: trade.confirmationTF || '',
             tradeTaken: trade.tradeTaken ?? true,
             notTakenReason: trade.notTakenReason || '',
+            frontRunTurnPrice: trade.frontRunTurnPrice?.toString() || '',
             entryNotes: trade.entryNotes || '',
             closeNotes: trade.closeNotes || '',
             postExitNotes: trade.postExitNotes || '',
@@ -506,6 +509,11 @@ export function TradeForm() {
     // notTakenReason is REQUIRED when tradeTaken === false
     if (!formData.tradeTaken && !formData.notTakenReason.trim()) {
       newErrors.notTakenReason = 'Reason is required for missed trades';
+    }
+
+    // frontRunTurnPrice is REQUIRED when notTakenReason === 'front_run'
+    if (!formData.tradeTaken && formData.notTakenReason === 'front_run' && !formData.frontRunTurnPrice.trim()) {
+      newErrors.frontRunTurnPrice = 'Turn price is required for front-run misses';
     }
 
     // Stop loss validation (direction consistency)
@@ -762,6 +770,9 @@ export function TradeForm() {
           : undefined,
         tradeTaken: formData.tradeTaken,
         notTakenReason: !formData.tradeTaken ? formData.notTakenReason.trim() : '',
+        frontRunTurnPrice: !formData.tradeTaken && formData.notTakenReason === 'front_run' && formData.frontRunTurnPrice.trim()
+          ? parseFloat(formData.frontRunTurnPrice)
+          : null,
         entryNotes: formData.entryNotes.trim() || undefined,
         closeNotes: formData.closeNotes.trim() || undefined,
         postExitNotes: formData.postExitNotes.trim() || undefined,
@@ -1169,11 +1180,57 @@ export function TradeForm() {
               <option value="">Select a reason...</option>
               {NOT_TAKEN_REASON_PRESETS.map((reason) => (
                 <option key={reason} value={reason}>
-                  {reason.replace(/_/g, ' ')}
+                  {NOT_TAKEN_REASON_LABELS[reason] || reason.replace(/_/g, ' ')}
                 </option>
               ))}
             </select>
             {errors.notTakenReason && <p className="text-red-400 text-xs mt-1">{errors.notTakenReason}</p>}
+
+            {/* Front-run turn price input (only shown when reason is front_run) */}
+            {formData.notTakenReason === 'front_run' && (
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-orange-400 mb-1">
+                  Turn Price <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  value={formData.frontRunTurnPrice}
+                  onChange={(e) => handleChange('frontRunTurnPrice', e.target.value)}
+                  placeholder="Where price turned"
+                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                    errors.frontRunTurnPrice ? 'border-red-500' : 'border-orange-500/50'
+                  }`}
+                />
+                <p className="text-xs text-gray-400 mt-1">Where price turned, short of your planned entry</p>
+                {errors.frontRunTurnPrice && <p className="text-red-400 text-xs mt-1">{errors.frontRunTurnPrice}</p>}
+
+                {/* Sanity warning: turn price on wrong side of entry */}
+                {formData.frontRunTurnPrice && formData.entryPrice && (() => {
+                  const turnPrice = parseFloat(formData.frontRunTurnPrice);
+                  const entryPrice = parseFloat(formData.entryPrice);
+                  const direction = formData.direction;
+                  if (!isNaN(turnPrice) && !isNaN(entryPrice)) {
+                    // For a long, price should turn above entry (short of entry means higher)
+                    // For a short, price should turn below entry (short of entry means lower)
+                    const wrongSide = direction === 'long'
+                      ? turnPrice < entryPrice  // Long: turn price should be >= entry
+                      : turnPrice > entryPrice; // Short: turn price should be <= entry
+                    if (wrongSide) {
+                      return (
+                        <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                          <p className="text-xs text-amber-400">
+                            Turn price is on the wrong side of entry for a {direction} trade.
+                            For front-runs, price should turn <em>before</em> reaching your entry level.
+                          </p>
+                        </div>
+                      );
+                    }
+                  }
+                  return null;
+                })()}
+              </div>
+            )}
           </div>
         )}
       </FormSection>
@@ -1328,6 +1385,7 @@ export function TradeForm() {
                     priceFar: null,
                     deepestPrice: null,
                     penetrationPercent: null,
+                    turnPrice: null,
                     reaction: null,
                   };
                   setFormData((prev) => ({
@@ -1696,6 +1754,34 @@ export function TradeForm() {
                               {penetration}% penetrated
                             </span>
                           )}
+                        </div>
+                      )}
+
+                      {/* Turn price row - shown for front_run or swept_then_bounced on line levels */}
+                      {(level.reaction === 'front_run' || (level.reaction === 'swept_then_bounced' && !isZone)) && (
+                        <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-amber-600/50">
+                          <span className="text-xs text-amber-400 w-20">Turn price:</span>
+                          <input
+                            type="number"
+                            step="any"
+                            value={level.turnPrice || ''}
+                            onChange={(e) => {
+                              const turnPrice = parseFloat(e.target.value) || null;
+                              setFormData((prev) => ({
+                                ...prev,
+                                levelSequence: prev.levelSequence.map((l, i) =>
+                                  i === index ? { ...l, turnPrice } : l
+                                ),
+                              }));
+                            }}
+                            placeholder={level.reaction === 'front_run' ? 'Where price turned' : 'Sweep extreme'}
+                            className="w-28 px-2 py-1 bg-gray-700 border border-amber-600/50 rounded text-white text-sm"
+                          />
+                          <span className="text-xs text-gray-500">
+                            {level.reaction === 'front_run'
+                              ? 'Where price actually turned, short of this level'
+                              : 'How far through the level price swept before turning'}
+                          </span>
                         </div>
                       )}
                     </div>

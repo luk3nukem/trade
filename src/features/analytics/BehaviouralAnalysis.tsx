@@ -195,7 +195,6 @@ export function BehaviouralAnalysis({ trades }: Props) {
                   <th className="text-right py-2 px-3 text-gray-400 font-medium">Win Rate</th>
                   <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg R</th>
                   <th className="text-right py-2 px-3 text-gray-400 font-medium">PF</th>
-                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg 1st Touch</th>
                   <th className="text-right py-2 px-3 text-gray-400 font-medium">Avg MAE</th>
                 </tr>
               </thead>
@@ -210,11 +209,6 @@ export function BehaviouralAnalysis({ trades }: Props) {
                     </td>
                     <td className="py-2 px-3 text-right text-white">
                       {stat.profitFactor > 10 ? '>10' : stat.profitFactor.toFixed(2)}
-                    </td>
-                    <td className="py-2 px-3 text-right text-gray-300">
-                      {stat.avgFirstTouchAdverse !== null
-                        ? stat.avgFirstTouchAdverse.toFixed(2) + 'R'
-                        : '-'}
                     </td>
                     <td className="py-2 px-3 text-right text-gray-300">
                       {stat.avgMae !== null ? stat.avgMae.toFixed(2) + 'R' : '-'}

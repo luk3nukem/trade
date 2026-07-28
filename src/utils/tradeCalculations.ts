@@ -324,6 +324,102 @@ export function getPostExitEvents(trade: TradeRecord): TradeEvent[] {
 }
 
 /**
+ * Alias for getPostExitEvents - post-exit milestones for replay analysis
+ */
+export function getPostExitMilestones(trade: TradeRecord): TradeEvent[] {
+  return getPostExitEvents(trade);
+}
+
+/**
+ * Get all stop_moved events from the timeline, ordered by their position
+ */
+export function getStopMoves(trade: TradeRecord): TradeEvent[] {
+  return getSortedTimeline(trade).filter(e => e.eventType === 'stop_moved');
+}
+
+/**
+ * Get the effective stop loss at a given time.
+ * Returns the most recent stop_moved price before the given time, or the original stopLoss.
+ * For untimed stop_moved events, uses order position relative to timed neighbours.
+ */
+export function getEffectiveStopAt(trade: TradeRecord, time: Date): number {
+  const stopMoves = getStopMoves(trade).filter(e => e.price !== null);
+
+  if (stopMoves.length === 0) {
+    return trade.stopLoss;
+  }
+
+  const targetTime = time.getTime();
+  let effectiveStop = trade.stopLoss;
+
+  for (const move of stopMoves) {
+    if (move.time) {
+      const moveTime = new Date(move.time).getTime();
+      if (moveTime <= targetTime) {
+        effectiveStop = move.price!;
+      }
+    } else {
+      // Untimed event - check by order position relative to exits
+      // If there are exits with times, use them to determine if this stop_moved happened "before"
+      const exitTime = deriveExitTime(trade);
+      if (exitTime && exitTime.getTime() >= targetTime) {
+        // The query time is before or at exit, so pre-exit stop moves apply
+        effectiveStop = move.price!;
+      }
+    }
+  }
+
+  return effectiveStop;
+}
+
+/**
+ * Get the favourable extreme from post-exit milestones (direction-aware)
+ * For longs: highest price after exit
+ * For shorts: lowest price after exit
+ */
+export function getFavourableExtreme(trade: TradeRecord): { price: number; r: number } | null {
+  const postExitEvents = getPostExitMilestones(trade);
+  const favourableEvent = postExitEvents.find(e => e.eventType === 'favourable_extreme');
+
+  if (!favourableEvent || favourableEvent.price === null) {
+    return null;
+  }
+
+  const stopDistance = calculateStopDistance(trade.entryPrice, trade.stopLoss);
+  if (stopDistance === 0) return null;
+
+  const priceDiff = favourableEvent.price - trade.entryPrice;
+  const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
+  const r = Number((signedMove / stopDistance).toFixed(2));
+
+  return { price: favourableEvent.price, r };
+}
+
+/**
+ * Get the adverse extreme from post-exit milestones (direction-aware)
+ * For longs: lowest price after exit
+ * For shorts: highest price after exit
+ */
+export function getAdverseExtreme(trade: TradeRecord): { price: number; r: number } | null {
+  const postExitEvents = getPostExitMilestones(trade);
+  const adverseEvent = postExitEvents.find(e => e.eventType === 'adverse_extreme');
+
+  if (!adverseEvent || adverseEvent.price === null) {
+    return null;
+  }
+
+  const stopDistance = calculateStopDistance(trade.entryPrice, trade.stopLoss);
+  if (stopDistance === 0) return null;
+
+  const priceDiff = adverseEvent.price - trade.entryPrice;
+  // For adverse, the sign is reversed (adverse for long is negative move)
+  const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
+  const r = Number((signedMove / stopDistance).toFixed(2));
+
+  return { price: adverseEvent.price, r };
+}
+
+/**
  * Get the effective stop loss at a given timeline order.
  * Returns the most recent stop_moved price before the given order, or the original stopLoss.
  */

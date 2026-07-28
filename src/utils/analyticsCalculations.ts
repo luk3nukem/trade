@@ -1,6 +1,17 @@
 import type { TradeRecord, TradingSession, LevelEntry, TradeEvent } from '../types';
 import { DETAIL_LEVEL_TYPES } from '../types';
-import { getTradeRMetrics, getHoldReplayAnalysis, deriveAnalysisTFs, deriveExitType, type TradeRMetrics } from './tradeCalculations';
+import {
+  getTradeRMetrics,
+  getHoldReplayAnalysis,
+  deriveAnalysisTFs,
+  deriveExitType,
+  getStopMoves,
+  replayHold,
+  getPostExitMilestones,
+  getFavourableExtreme,
+  calculateStopDistance,
+  type TradeRMetrics,
+} from './tradeCalculations';
 
 // Helper function to calculate MAE distance
 function calculateMaeDistance(entryPrice: number, maePrice: number | null | undefined): number | null {
@@ -1568,7 +1579,6 @@ export interface EntryConfirmationStats {
   winRate: number;
   avgR: number;
   profitFactor: number;
-  avgFirstTouchAdverse: number | null; // Average firstTouchWorstPrice distance in R
   avgMae: number | null; // Average MAE in R
 }
 
@@ -1606,10 +1616,6 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
     const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
-    // Calculate avg first touch adverse in R
-    // TODO: firstTouchWorstPrice removed in v2 schema
-    const avgFirstTouchAdverse: number | null = null;
-
     // Calculate avg MAE in R - use metrics
     const tradesWithMae = groupTrades.filter(t => {
       const metrics = getCachedMetrics(t);
@@ -1630,7 +1636,6 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
       winRate: (wins.length / groupTrades.length) * 100,
       avgR,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgFirstTouchAdverse,
       avgMae,
     });
   }
@@ -1654,7 +1659,6 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
       winRate: (wins.length / groupTrades.length) * 100,
       avgR,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgFirstTouchAdverse: null,
       avgMae: null,
     });
   }
@@ -2199,51 +2203,239 @@ export interface StopDestinationStats {
 }
 
 /**
+ * Check if a stop move is a "move to BE" based on description or price proximity
+ */
+function isBEStopMove(trade: TradeRecord, stopMove: TradeEvent): boolean {
+  // Check description for "BE" (case-insensitive)
+  if (stopMove.description && /\bBE\b/i.test(stopMove.description)) {
+    return true;
+  }
+
+  // Check if price is within 0.1R of entry
+  if (stopMove.price !== null) {
+    const stopDistance = calculateStopDistance(trade.entryPrice, trade.stopLoss);
+    if (stopDistance > 0) {
+      const distanceFromEntry = Math.abs(stopMove.price - trade.entryPrice);
+      const rFromEntry = distanceFromEntry / stopDistance;
+      if (rFromEntry <= 0.1) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
  * Analyze break-even move effectiveness
  * @param minRThreshold - Minimum R move to consider BE as having "cost you" a valid trade
  *
- * TODO: Stubbed out in v2 schema - stopAdjustments and postExitBestPrice removed.
- * Re-implement when timeline stop_moved events are fully available.
+ * Sources from timeline stop_moved events.
  */
-export function getBEAnalysis(_trades: TradeRecord[], _minRThreshold: number = 1.0): BEAnalysisStats {
-  // Stubbed - stopAdjustments and postExitBestPrice removed in v2 schema
+export function getBEAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): BEAnalysisStats {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  const movedToBETrades: TradeRecord[] = [];
+  const stayedOriginalTrades: TradeRecord[] = [];
+
+  // Categorize trades
+  for (const trade of closedTrades) {
+    const stopMoves = getStopMoves(trade);
+    const hasBEMove = stopMoves.some(sm => isBEStopMove(trade, sm));
+
+    if (hasBEMove) {
+      movedToBETrades.push(trade);
+    } else {
+      stayedOriginalTrades.push(trade);
+    }
+  }
+
+  // Calculate stats for each group
+  const calcGroupStats = (groupTrades: TradeRecord[]) => {
+    if (groupTrades.length === 0) {
+      return { count: 0, avgR: 0, winRate: 0, totalPnl: 0 };
+    }
+
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const totalR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+
+    return {
+      count: groupTrades.length,
+      avgR: totalR / groupTrades.length,
+      winRate: (wins.length / groupTrades.length) * 100,
+      totalPnl,
+    };
+  };
+
+  // Calculate BE outcomes
+  let heldForWin = 0;
+  let savedByBE = 0;
+  let missedProfit = 0;
+
+  for (const trade of movedToBETrades) {
+    const metrics = getCachedMetrics(trade);
+    const rMultiple = metrics.rMultiple ?? 0;
+
+    if (rMultiple > 0) {
+      // Won despite moving to BE
+      heldForWin++;
+    } else if (rMultiple === 0) {
+      // BE stop was hit - check if it saved from a loss
+      // Replay with original stop to see what would have happened
+      const originalReplay = replayHold(trade, trade.stopLoss);
+      if (originalReplay.type === 'stopped') {
+        savedByBE++;
+      } else if (originalReplay.type === 'survived' && originalReplay.favourableExtremeR >= 1) {
+        // Would have reached 1R+ if held
+        missedProfit++;
+      }
+    } else {
+      // Lost - shouldn't normally happen with BE (stop at entry)
+      // But could happen with partial exits
+      savedByBE++;
+    }
+  }
+
+  // Post-exit validation for BE stops
+  let tradesWithPostExitData = 0;
+  let thesisCostYou = 0;
+  let belowThreshold = 0;
+  let totalPostExitMoveR = 0;
+
+  for (const trade of movedToBETrades) {
+    const favExtreme = getFavourableExtreme(trade);
+    if (favExtreme) {
+      tradesWithPostExitData++;
+      totalPostExitMoveR += favExtreme.r;
+
+      if (favExtreme.r >= minRThreshold) {
+        thesisCostYou++;
+      } else {
+        belowThreshold++;
+      }
+    }
+  }
+
   return {
-    movedToBE: { count: 0, avgR: 0, winRate: 0, totalPnl: 0 },
-    stayedOriginal: { count: 0, avgR: 0, winRate: 0, totalPnl: 0 },
+    movedToBE: calcGroupStats(movedToBETrades),
+    stayedOriginal: calcGroupStats(stayedOriginalTrades),
     beOutcomes: {
-      heldForWin: 0,
-      savedByBE: 0,
-      missedProfit: 0,
+      heldForWin,
+      savedByBE,
+      missedProfit,
     },
     postExitValidation: {
-      tradesWithPostExitData: 0,
-      thesisCostYou: 0,
-      belowThreshold: 0,
-      avgPostExitMoveR: 0,
+      tradesWithPostExitData,
+      thesisCostYou,
+      belowThreshold,
+      avgPostExitMoveR: tradesWithPostExitData > 0 ? totalPostExitMoveR / tradesWithPostExitData : 0,
     },
   };
 }
 
 /**
  * Analyze stop adjustments by trigger (what caused the move)
- *
- * TODO: Stubbed out in v2 schema - stopAdjustments removed.
- * Re-implement when timeline stop_moved events are fully available.
+ * Groups stop_moved events by their description field.
  */
-export function getStopAdjustmentTriggerAnalysis(_trades: TradeRecord[]): StopAdjustmentTriggerStats[] {
-  // Stubbed - stopAdjustments removed in v2 schema
-  return [];
+export function getStopAdjustmentTriggerAnalysis(trades: TradeRecord[]): StopAdjustmentTriggerStats[] {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  // Group by trigger (description)
+  const triggerGroups = new Map<string, TradeRecord[]>();
+
+  for (const trade of closedTrades) {
+    const stopMoves = getStopMoves(trade);
+    for (const move of stopMoves) {
+      const trigger = move.description?.trim() || 'No reason given';
+      if (!triggerGroups.has(trigger)) {
+        triggerGroups.set(trigger, []);
+      }
+      // Add trade to this trigger group (only once per trigger type per trade)
+      const existing = triggerGroups.get(trigger)!;
+      if (!existing.includes(trade)) {
+        existing.push(trade);
+      }
+    }
+  }
+
+  const results: StopAdjustmentTriggerStats[] = [];
+
+  for (const [trigger, groupTrades] of triggerGroups) {
+    if (groupTrades.length === 0) continue;
+
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const totalR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+
+    results.push({
+      trigger,
+      count: groupTrades.length,
+      avgRAfter: totalR / groupTrades.length,
+      winRate: (wins.length / groupTrades.length) * 100,
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.count - a.count);
 }
 
 /**
  * Analyze stop adjustments by destination/reason
- *
- * TODO: Stubbed out in v2 schema - stopAdjustments removed.
- * Re-implement when timeline stop_moved events are fully available.
+ * Groups stop_moved events by their description and analyzes subsequent outcomes.
  */
-export function getStopDestinationAnalysis(_trades: TradeRecord[]): StopDestinationStats[] {
-  // Stubbed - stopAdjustments removed in v2 schema
-  return [];
+export function getStopDestinationAnalysis(trades: TradeRecord[]): StopDestinationStats[] {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  // Group by destination (description)
+  const destGroups = new Map<string, TradeRecord[]>();
+
+  for (const trade of closedTrades) {
+    const stopMoves = getStopMoves(trade);
+    for (const move of stopMoves) {
+      // Use description as destination identifier
+      let destination = move.description?.trim() || 'Unspecified';
+
+      // Normalize common patterns
+      if (/\bBE\b/i.test(destination)) {
+        destination = 'Break-even';
+      } else if (/trail/i.test(destination)) {
+        destination = 'Trail stop';
+      }
+
+      if (!destGroups.has(destination)) {
+        destGroups.set(destination, []);
+      }
+      const existing = destGroups.get(destination)!;
+      if (!existing.includes(trade)) {
+        existing.push(trade);
+      }
+    }
+  }
+
+  const results: StopDestinationStats[] = [];
+
+  for (const [destination, groupTrades] of destGroups) {
+    if (groupTrades.length === 0) continue;
+
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const totalR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+
+    results.push({
+      destination,
+      count: groupTrades.length,
+      avgR: totalR / groupTrades.length,
+      winRate: (wins.length / groupTrades.length) * 100,
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.count - a.count);
 }
 
 /**
@@ -2564,6 +2756,117 @@ export function getSelectivityInsights(allTrades: TradeRecord[]): string[] {
   }
 
   return insights;
+}
+
+// ============================================
+// FRONT-RUN MISS ANALYSIS
+// ============================================
+
+export interface FrontRunMissAnalysis {
+  count: number;
+  avgDistanceR: number;
+  medianDistanceR: number;
+  avgOutcomeIfTaken: number; // hypothetical net R based on reachedTargetPostExit
+  winsIfTaken: number;
+  lossesIfTaken: number;
+  unknownOutcome: number;
+  histogram: { bucket: string; count: number }[];
+}
+
+/**
+ * Analyze front-run misses (trades where price turned before entry was hit)
+ */
+export function getFrontRunMissAnalysis(trades: TradeRecord[]): FrontRunMissAnalysis | null {
+  // Filter for missed trades with front_run reason and frontRunTurnPrice set
+  const frontRunMisses = trades.filter(
+    t => !t.tradeTaken &&
+         t.notTakenReason === 'front_run' &&
+         t.frontRunTurnPrice != null &&
+         t.entryPrice &&
+         t.stopLoss
+  );
+
+  if (frontRunMisses.length === 0) {
+    return null;
+  }
+
+  // Calculate front-run distance in R for each trade
+  const distancesR: number[] = [];
+  let totalOutcomeR = 0;
+  let winsIfTaken = 0;
+  let lossesIfTaken = 0;
+  let unknownOutcome = 0;
+
+  for (const trade of frontRunMisses) {
+    const entryPrice = trade.entryPrice;
+    const stopLoss = trade.stopLoss;
+    const turnPrice = trade.frontRunTurnPrice!;
+
+    // Risk per R
+    const riskPerR = Math.abs(entryPrice - stopLoss);
+    if (riskPerR === 0) continue;
+
+    // Distance from entry to turn price in R
+    const distanceR = Math.abs(entryPrice - turnPrice) / riskPerR;
+    distancesR.push(distanceR);
+
+    // Check hypothetical outcome using reachedTargetPostExit
+    if (trade.reachedTargetPostExit === true) {
+      winsIfTaken++;
+      // Assume ~2R win for simplicity since we don't have exact TP data on missed trades
+      const targetPrice = trade.targetPrice;
+      if (targetPrice) {
+        const plannedR = Math.abs(targetPrice - entryPrice) / riskPerR;
+        totalOutcomeR += plannedR;
+      } else {
+        totalOutcomeR += 2; // Default 2R win
+      }
+    } else if (trade.reachedTargetPostExit === false) {
+      lossesIfTaken++;
+      totalOutcomeR -= 1; // -1R loss
+    } else {
+      unknownOutcome++;
+    }
+  }
+
+  if (distancesR.length === 0) {
+    return null;
+  }
+
+  // Calculate stats
+  const sortedDistances = [...distancesR].sort((a, b) => a - b);
+  const avgDistanceR = distancesR.reduce((sum, d) => sum + d, 0) / distancesR.length;
+  const medianDistanceR = sortedDistances.length % 2 === 0
+    ? (sortedDistances[sortedDistances.length / 2 - 1] + sortedDistances[sortedDistances.length / 2]) / 2
+    : sortedDistances[Math.floor(sortedDistances.length / 2)];
+
+  const knownOutcomes = winsIfTaken + lossesIfTaken;
+  const avgOutcomeIfTaken = knownOutcomes > 0 ? totalOutcomeR / knownOutcomes : 0;
+
+  // Create histogram buckets
+  const buckets = [
+    { min: 0, max: 0.1, label: '0-0.1R' },
+    { min: 0.1, max: 0.25, label: '0.1-0.25R' },
+    { min: 0.25, max: 0.5, label: '0.25-0.5R' },
+    { min: 0.5, max: 1.0, label: '0.5-1R' },
+    { min: 1.0, max: Infinity, label: '1R+' },
+  ];
+
+  const histogram = buckets.map(bucket => ({
+    bucket: bucket.label,
+    count: distancesR.filter(d => d >= bucket.min && d < bucket.max).length,
+  }));
+
+  return {
+    count: frontRunMisses.length,
+    avgDistanceR,
+    medianDistanceR,
+    avgOutcomeIfTaken,
+    winsIfTaken,
+    lossesIfTaken,
+    unknownOutcome,
+    histogram,
+  };
 }
 
 // ============================================
@@ -3059,19 +3362,46 @@ export interface PostExitScatterPoint {
 
 /**
  * Get overall post-exit analysis
- *
- * TODO: Stubbed out in v2 schema - postExitBestPrice, postExitWorstPrice, reachedTargetPostExit removed.
+ * Uses replay analysis and reachedTargetPostExit field.
  */
 export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
   const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false);
-  // Stubbed - post-exit tracking removed in v2 schema
+
+  let tradesWithData = 0;
+  let totalMissedR = 0;
+  let totalEfficiency = 0;
+  let efficiencyCount = 0;
+  let tradesReachedTarget = 0;
+
+  for (const trade of closedTrades) {
+    const replayAnalysis = getHoldReplayAnalysis(trade);
+
+    if (replayAnalysis.hasSequence) {
+      tradesWithData++;
+
+      if (replayAnalysis.replayMissedR !== null) {
+        totalMissedR += replayAnalysis.replayMissedR;
+      }
+
+      if (replayAnalysis.replayExitEfficiency !== null) {
+        totalEfficiency += replayAnalysis.replayExitEfficiency;
+        efficiencyCount++;
+      }
+    }
+
+    // Use the direct reachedTargetPostExit field
+    if (trade.reachedTargetPostExit === true) {
+      tradesReachedTarget++;
+    }
+  }
+
   return {
-    tradesWithData: 0,
+    tradesWithData,
     totalClosedTrades: closedTrades.length,
-    avgExitEfficiency: 0,
-    avgMissedR: 0,
-    reachedTargetPercent: 0,
-    tradesReachedTarget: 0,
+    avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
+    avgMissedR: tradesWithData > 0 ? totalMissedR / tradesWithData : 0,
+    reachedTargetPercent: closedTrades.length > 0 ? (tradesReachedTarget / closedTrades.length) * 100 : 0,
+    tradesReachedTarget,
   };
 }
 
@@ -3079,36 +3409,99 @@ export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
  * Get stopout-specific post-exit analysis
  * For stopouts, we measure how far price moved in the trader's favour AFTER being stopped out
  * This helps identify if the thesis was correct but stop placement was wrong
- *
- * TODO: Stubbed out in v2 schema - postExitBestPrice, exitType removed.
+ * Uses getFavourableExtreme from post-exit milestones.
  */
-export function getStopoutPostExitAnalysis(_trades: TradeRecord[], _minRThreshold: number = 1.0): StopoutAnalysis {
-  // Stubbed - post-exit tracking and exitType removed in v2 schema
+export function getStopoutPostExitAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): StopoutAnalysis {
+  const stopoutTrades = trades.filter(t => {
+    const exitType = deriveExitType(t);
+    return getCachedMetrics(t).status === 'closed' &&
+      t.tradeTaken !== false &&
+      exitType === 'sl_hit';
+  });
+
+  let stopoutsWithPostExitData = 0;
+  let totalPostStopMoveR = 0;
+  let stopoutsAboveThreshold = 0;
+  let totalAboveThreshold = 0;
+  let totalBelowThreshold = 0;
+  let countAbove = 0;
+  let countBelow = 0;
+
+  for (const trade of stopoutTrades) {
+    const favExtreme = getFavourableExtreme(trade);
+
+    if (favExtreme) {
+      stopoutsWithPostExitData++;
+      totalPostStopMoveR += favExtreme.r;
+
+      if (favExtreme.r >= minRThreshold) {
+        stopoutsAboveThreshold++;
+        totalAboveThreshold += favExtreme.r;
+        countAbove++;
+      } else {
+        totalBelowThreshold += favExtreme.r;
+        countBelow++;
+      }
+    }
+  }
+
   return {
-    totalStopouts: 0,
-    stopoutsWithPostExitData: 0,
-    avgPostStopMoveR: 0,
-    stopoutsAboveThreshold: 0,
-    stopoutsAboveThresholdPercent: 0,
-    avgPostStopMoveAboveThreshold: 0,
-    avgPostStopMoveBelowThreshold: 0,
+    totalStopouts: stopoutTrades.length,
+    stopoutsWithPostExitData,
+    avgPostStopMoveR: stopoutsWithPostExitData > 0 ? totalPostStopMoveR / stopoutsWithPostExitData : 0,
+    stopoutsAboveThreshold,
+    stopoutsAboveThresholdPercent: stopoutsWithPostExitData > 0 ? (stopoutsAboveThreshold / stopoutsWithPostExitData) * 100 : 0,
+    avgPostStopMoveAboveThreshold: countAbove > 0 ? totalAboveThreshold / countAbove : 0,
+    avgPostStopMoveBelowThreshold: countBelow > 0 ? totalBelowThreshold / countBelow : 0,
   };
 }
 
 /**
  * Get voluntary exit (non-stopout) post-exit analysis
  * For voluntary exits, we use the traditional missedR calculation (how much more could have been captured)
- *
- * TODO: Stubbed out in v2 schema - postExitBestPrice, exitPrice, exitType, reachedTargetPostExit removed.
+ * Uses replay analysis for sequence-based calculations.
  */
-export function getVoluntaryExitPostExitAnalysis(_trades: TradeRecord[]): VoluntaryExitAnalysis {
-  // Stubbed - post-exit tracking removed in v2 schema
+export function getVoluntaryExitPostExitAnalysis(trades: TradeRecord[]): VoluntaryExitAnalysis {
+  const voluntaryTrades = trades.filter(t => {
+    const exitType = deriveExitType(t);
+    return getCachedMetrics(t).status === 'closed' &&
+      t.tradeTaken !== false &&
+      exitType !== 'sl_hit';
+  });
+
+  let withPostExitData = 0;
+  let totalMissedR = 0;
+  let totalEfficiency = 0;
+  let efficiencyCount = 0;
+  let reachedTargetCount = 0;
+
+  for (const trade of voluntaryTrades) {
+    const replayAnalysis = getHoldReplayAnalysis(trade);
+
+    if (replayAnalysis.hasSequence) {
+      withPostExitData++;
+
+      if (replayAnalysis.replayMissedR !== null) {
+        totalMissedR += replayAnalysis.replayMissedR;
+      }
+
+      if (replayAnalysis.replayExitEfficiency !== null) {
+        totalEfficiency += replayAnalysis.replayExitEfficiency;
+        efficiencyCount++;
+      }
+    }
+
+    if (trade.reachedTargetPostExit === true) {
+      reachedTargetCount++;
+    }
+  }
+
   return {
-    totalVoluntaryExits: 0,
-    withPostExitData: 0,
-    avgMissedR: 0,
-    avgExitEfficiency: 0,
-    reachedTargetPercent: 0,
+    totalVoluntaryExits: voluntaryTrades.length,
+    withPostExitData,
+    avgMissedR: withPostExitData > 0 ? totalMissedR / withPostExitData : 0,
+    avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
+    reachedTargetPercent: voluntaryTrades.length > 0 ? (reachedTargetCount / voluntaryTrades.length) * 100 : 0,
   };
 }
 
@@ -3169,9 +3562,8 @@ export function getHoldReplayBuckets(trades: TradeRecord[]): HoldReplayBuckets {
     const metrics = getCachedMetrics(trade);
 
     if (!replayAnalysis.hasSequence) {
-      // Fall back to legacy calculation - but postExitBestPrice is removed in v2
+      // No sequence data - cannot compute missed R for this trade
       unknownTrades.push(trade);
-      // TODO: Legacy missed R calculation removed - postExitBestPrice no longer available
     } else if (replayAnalysis.holdSurvived) {
       // Would have survived to the high
       survivedTrades.push(trade);
@@ -3246,44 +3638,257 @@ export interface StopVariantComparison {
 }
 
 /**
- * TODO: Stubbed out in v2 schema - stopAdjustments, postExitSequence, finalStopOutcome removed.
- * Re-implement when timeline stop_moved events are fully available.
+ * Per-variant hold replay: compares outcomes with original stop vs final adjusted stop.
+ * For trades with stop moves + post-exit data, reports both replays.
  */
-export function getStopVariantComparison(_trades: TradeRecord[]): StopVariantComparison | null {
-  // Stubbed - stopAdjustments and postExitSequence removed in v2 schema
-  return null;
+export function getStopVariantComparison(trades: TradeRecord[]): StopVariantComparison | null {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  // Only consider trades with both stop moves AND post-exit milestones
+  const tradesWithBoth = closedTrades.filter(t => {
+    const stopMoves = getStopMoves(t);
+    const postExit = getPostExitMilestones(t);
+    return stopMoves.length > 0 && postExit.length >= 2;
+  });
+
+  if (tradesWithBoth.length < 3) {
+    return null;
+  }
+
+  let originalStopSurvived = 0;
+  let originalStopStopped = 0;
+  let finalStopSurvived = 0;
+  let finalStopStopped = 0;
+  let originalBetterCount = 0;
+  let finalBetterCount = 0;
+
+  for (const trade of tradesWithBoth) {
+    const stopMoves = getStopMoves(trade).filter(sm => sm.price !== null);
+    const finalStopLevel = stopMoves.length > 0
+      ? stopMoves[stopMoves.length - 1].price!
+      : trade.stopLoss;
+
+    // Replay with original stop
+    const originalReplay = replayHold(trade, trade.stopLoss);
+    // Replay with final adjusted stop
+    const finalReplay = replayHold(trade, finalStopLevel);
+
+    if (originalReplay.type === 'survived') {
+      originalStopSurvived++;
+    } else if (originalReplay.type === 'stopped') {
+      originalStopStopped++;
+    }
+
+    if (finalReplay.type === 'survived') {
+      finalStopSurvived++;
+    } else if (finalReplay.type === 'stopped') {
+      finalStopStopped++;
+    }
+
+    // Compare which was better
+    if (originalReplay.type === 'survived' && finalReplay.type === 'stopped') {
+      originalBetterCount++;
+    } else if (finalReplay.type === 'survived' && originalReplay.type === 'stopped') {
+      finalBetterCount++;
+    } else if (originalReplay.type === 'survived' && finalReplay.type === 'survived') {
+      // Both survived - compare R achieved
+      if (originalReplay.favourableExtremeR > (finalReplay as { favourableExtremeR: number }).favourableExtremeR) {
+        // Original would have achieved more (tighter final stop might have limited gains)
+        // This comparison is a bit nuanced - for now, count as equal
+      }
+    }
+  }
+
+  // Generate insight
+  let insight = '';
+  if (originalBetterCount > finalBetterCount) {
+    insight = `Original stops would have been better in ${originalBetterCount} of ${tradesWithBoth.length} trades — your adjustments may be premature.`;
+  } else if (finalBetterCount > originalBetterCount) {
+    insight = `Adjusted stops were better in ${finalBetterCount} of ${tradesWithBoth.length} trades — your stop management is adding value.`;
+  } else {
+    insight = `Stop adjustments had mixed results across ${tradesWithBoth.length} trades.`;
+  }
+
+  return {
+    originalStopSurvived,
+    originalStopStopped,
+    finalStopSurvived,
+    finalStopStopped,
+    tradesWithAdjustments: tradesWithBoth.length,
+    originalBetterCount,
+    finalBetterCount,
+    insight,
+  };
 }
 
 /**
  * Cross-reference stop adjustments with post-exit data
  * Groups by the stop adjustment reason (especially "moved to BE")
- *
- * TODO: Stubbed out in v2 schema - stopAdjustments, postExitBestPrice, exitPrice, stopDistance removed.
+ * Uses replayHold to determine missed R based on sequence data.
  */
-export function getMissedRByStopReason(_trades: TradeRecord[]): MissedRByStopReason[] {
-  // Stubbed - stopAdjustments and post-exit tracking removed in v2 schema
-  return [];
+export function getMissedRByStopReason(trades: TradeRecord[]): MissedRByStopReason[] {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  // Group trades by stop reason
+  const reasonGroups = new Map<string, TradeRecord[]>();
+
+  for (const trade of closedTrades) {
+    const stopMoves = getStopMoves(trade);
+    if (stopMoves.length === 0) continue;
+
+    // Use the first (or primary) stop move reason
+    const primaryMove = stopMoves[0];
+    let reason = primaryMove.description?.trim() || 'No reason given';
+
+    // Normalize BE moves
+    if (isBEStopMove(trade, primaryMove)) {
+      reason = 'Moved to BE';
+    }
+
+    if (!reasonGroups.has(reason)) {
+      reasonGroups.set(reason, []);
+    }
+    reasonGroups.get(reason)!.push(trade);
+  }
+
+  const results: MissedRByStopReason[] = [];
+
+  for (const [reason, groupTrades] of reasonGroups) {
+    if (groupTrades.length === 0) continue;
+
+    let totalMissedR = 0;
+    let tradesWithData = 0;
+    let reachedTargetCount = 0;
+
+    for (const trade of groupTrades) {
+      const replayAnalysis = getHoldReplayAnalysis(trade);
+
+      if (replayAnalysis.hasSequence && replayAnalysis.replayMissedR !== null) {
+        totalMissedR += replayAnalysis.replayMissedR;
+        tradesWithData++;
+      }
+
+      if (trade.reachedTargetPostExit === true) {
+        reachedTargetCount++;
+      }
+    }
+
+    results.push({
+      reason,
+      tradeCount: groupTrades.length,
+      avgMissedR: tradesWithData > 0 ? totalMissedR / tradesWithData : 0,
+      reachedTargetPercent: groupTrades.length > 0 ? (reachedTargetCount / groupTrades.length) * 100 : 0,
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.tradeCount - a.tradeCount);
 }
 
 /**
  * Groups missed R by exit type from the exits array
- *
- * TODO: Stubbed out in v2 schema - postExitBestPrice, exitPrice, stopDistance, exitType removed.
+ * Uses replay analysis to determine missed R.
  */
-export function getMissedRByExitType(_trades: TradeRecord[]): MissedRByExitType[] {
-  // Stubbed - post-exit tracking and exitType removed in v2 schema
-  return [];
+export function getMissedRByExitType(trades: TradeRecord[]): MissedRByExitType[] {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  // Group by exit type
+  const exitTypeGroups = new Map<string, TradeRecord[]>();
+
+  for (const trade of closedTrades) {
+    const exitType = deriveExitType(trade);
+    const exitTypeLabel = exitType
+      ? exitType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+      : 'Unknown';
+
+    if (!exitTypeGroups.has(exitTypeLabel)) {
+      exitTypeGroups.set(exitTypeLabel, []);
+    }
+    exitTypeGroups.get(exitTypeLabel)!.push(trade);
+  }
+
+  const results: MissedRByExitType[] = [];
+
+  for (const [exitType, groupTrades] of exitTypeGroups) {
+    if (groupTrades.length === 0) continue;
+
+    let totalMissedR = 0;
+    let totalEfficiency = 0;
+    let tradesWithData = 0;
+
+    for (const trade of groupTrades) {
+      const replayAnalysis = getHoldReplayAnalysis(trade);
+
+      if (replayAnalysis.hasSequence) {
+        if (replayAnalysis.replayMissedR !== null) {
+          totalMissedR += replayAnalysis.replayMissedR;
+        }
+        if (replayAnalysis.replayExitEfficiency !== null) {
+          totalEfficiency += replayAnalysis.replayExitEfficiency;
+        }
+        tradesWithData++;
+      }
+    }
+
+    results.push({
+      exitType,
+      tradeCount: groupTrades.length,
+      avgMissedR: tradesWithData > 0 ? totalMissedR / tradesWithData : 0,
+      avgExitEfficiency: tradesWithData > 0 ? totalEfficiency / tradesWithData : 0,
+    });
+  }
+
+  // Sort by count descending
+  return results.sort((a, b) => b.tradeCount - a.tradeCount);
 }
 
 /**
  * Get scatter data for "should-have-held" visualization
  * X: actual R achieved, Y: would-have R (if held to post-exit best price)
- *
- * TODO: Stubbed out in v2 schema - postExitBestPrice, stopDistance, stopAdjustments removed.
+ * Uses replay analysis for would-have R calculation.
  */
-export function getPostExitScatterData(_trades: TradeRecord[]): PostExitScatterPoint[] {
-  // Stubbed - post-exit tracking removed in v2 schema
-  return [];
+export function getPostExitScatterData(trades: TradeRecord[]): PostExitScatterPoint[] {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false
+  );
+
+  const results: PostExitScatterPoint[] = [];
+
+  for (const trade of closedTrades) {
+    const metrics = getCachedMetrics(trade);
+    const replayAnalysis = getHoldReplayAnalysis(trade);
+
+    if (metrics.rMultiple === null) continue;
+
+    // Determine would-have R from replay
+    let wouldHaveR = metrics.rMultiple; // Default to actual if no sequence
+    if (replayAnalysis.originalStopOutcome.type === 'survived') {
+      wouldHaveR = replayAnalysis.originalStopOutcome.favourableExtremeR;
+    } else if (replayAnalysis.originalStopOutcome.type === 'stopped') {
+      // Would have been stopped at -1R
+      wouldHaveR = -1;
+    }
+
+    // Check if trade had BE adjustment
+    const stopMoves = getStopMoves(trade);
+    const hadBEAdjustment = stopMoves.some(sm => isBEStopMove(trade, sm));
+
+    results.push({
+      tradeId: trade.id!,
+      pair: trade.pair,
+      actualR: metrics.rMultiple,
+      wouldHaveR,
+      hadBEAdjustment,
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -3369,215 +3974,6 @@ export function getPostExitInsights(trades: TradeRecord[], minRThreshold: number
 }
 
 // ============================================
-// FIRST-TOUCH REACTION ANALYSIS
-// ============================================
-
-/**
- * First-touch reaction summary statistics
- */
-export interface FirstTouchSummary {
-  totalTrades: number;
-  tradesWithFirstTouch: number;
-  avgFirstTouchAdverseR: number;
-  avgFirstTouchAdversePercent: number;
-  avgReactionR: number;
-  levelWorkedPercent: number; // % of trades where price moved favorably after first touch
-  levelWorkedCount: number;
-}
-
-/**
- * Entry quality vs outcome grouping
- */
-export interface EntryQualityGroup {
-  category: 'level_worked_won' | 'level_worked_lost' | 'level_failed';
-  label: string;
-  count: number;
-  percent: number;
-  avgFirstTouchAdverseR: number;
-  avgReactionR: number;
-}
-
-/**
- * First-touch stop simulator result
- */
-export interface FirstTouchStopSimulation {
-  bufferPercent: number;
-  simulatedTrades: number;
-  originalTotalR: number;
-  simulatedTotalR: number;
-  netRImpact: number;
-  originalWinRate: number;
-  simulatedWinRate: number;
-  avgWinnerR: number;
-  originalAvgWinnerR: number;
-  stoppedOutCount: number;
-  improvedCount: number;
-}
-
-/**
- * Scatter point for first-touch vs reaction visualization
- */
-export interface FirstTouchScatterPoint {
-  tradeId: string;
-  pair: string;
-  firstTouchAdverseR: number;
-  reactionR: number;
-  isWinner: boolean;
-}
-
-/**
- * First-touch analysis by setup tag
- */
-export interface FirstTouchByTag {
-  tag: string;
-  count: number;
-  avgFirstTouchAdverseR: number;
-  avgReactionR: number;
-  levelWorkedPercent: number;
-  cleanEntryScore: number; // Derived metric combining low adverse + high reaction
-}
-
-/**
- * Get first-touch reaction summary
- *
- * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
- */
-export function getFirstTouchSummary(trades: TradeRecord[]): FirstTouchSummary {
-  const closedTrades = trades.filter(t =>
-    getCachedMetrics(t).status === 'closed' &&
-    t.tradeTaken !== false
-  );
-
-  // Stubbed - firstTouchWorstPrice removed in v2 schema
-  return {
-    totalTrades: closedTrades.length,
-    tradesWithFirstTouch: 0,
-    avgFirstTouchAdverseR: 0,
-    avgFirstTouchAdversePercent: 0,
-    avgReactionR: 0,
-    levelWorkedPercent: 0,
-    levelWorkedCount: 0,
-  };
-}
-
-/**
- * Get entry level quality vs trade outcome groupings
- * Groups trades into: "Level worked, trade won" / "Level worked, trade lost" / "Level failed"
- *
- * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
- */
-export function getEntryQualityAnalysis(_trades: TradeRecord[]): EntryQualityGroup[] {
-  // Stubbed - firstTouchWorstPrice removed in v2 schema
-  return [];
-}
-
-/**
- * Simulate stop placement at first-touch extreme + buffer
- *
- * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, maePrice, stopDistance removed from TradeRecord.
- */
-export function simulateFirstTouchStop(
-  _trades: TradeRecord[],
-  bufferPercent: number = 0
-): FirstTouchStopSimulation {
-  // Stubbed - firstTouchWorstPrice removed in v2 schema
-  return {
-    bufferPercent,
-    simulatedTrades: 0,
-    originalTotalR: 0,
-    simulatedTotalR: 0,
-    netRImpact: 0,
-    originalWinRate: 0,
-    simulatedWinRate: 0,
-    avgWinnerR: 0,
-    originalAvgWinnerR: 0,
-    stoppedOutCount: 0,
-    improvedCount: 0,
-  };
-}
-
-/**
- * Get scatter data for first-touch adverse vs reaction size visualization
- *
- * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
- */
-export function getFirstTouchScatterData(_trades: TradeRecord[]): FirstTouchScatterPoint[] {
-  // Stubbed - firstTouchWorstPrice removed in v2 schema
-  return [];
-}
-
-/**
- * Get first-touch analysis grouped by setup tags
- *
- * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
- */
-export function getFirstTouchByTag(_trades: TradeRecord[]): FirstTouchByTag[] {
-  // Stubbed - firstTouchWorstPrice removed in v2 schema
-  return [];
-}
-
-/**
- * Generate insights from first-touch reaction analysis
- */
-export function getFirstTouchInsights(
-  summary: FirstTouchSummary,
-  entryQuality: EntryQualityGroup[],
-  byTag: FirstTouchByTag[]
-): string[] {
-  const insights: string[] = [];
-
-  if (summary.tradesWithFirstTouch < 5) {
-    return insights;
-  }
-
-  // Entry level quality vs outcome insight
-  const levelWorked = entryQuality.filter(g =>
-    g.category === 'level_worked_won' || g.category === 'level_worked_lost'
-  );
-  const totalLevelWorked = levelWorked.reduce((sum, g) => sum + g.count, 0);
-  const workedAndWon = entryQuality.find(g => g.category === 'level_worked_won');
-
-  if (totalLevelWorked > 0 && workedAndWon) {
-    const levelWorkedPercent = (totalLevelWorked / summary.tradesWithFirstTouch) * 100;
-    const wonPercent = (workedAndWon.count / summary.tradesWithFirstTouch) * 100;
-
-    if (levelWorkedPercent - wonPercent >= 15) {
-      insights.push(
-        `Your entry levels produce a favourable reaction on ${levelWorkedPercent.toFixed(0)}% of trades, ` +
-        `but only ${wonPercent.toFixed(0)}% become winners — your entries are better than your results. ` +
-        `The gap is stop/target framing.`
-      );
-    }
-  }
-
-  // Tag-specific insight
-  if (byTag.length >= 2) {
-    const bestTag = byTag[0];
-    if (bestTag.avgFirstTouchAdverseR < 0.3 && bestTag.avgReactionR > 2) {
-      insights.push(
-        `Your [${bestTag.tag}] entries react cleanest — avg ${bestTag.avgFirstTouchAdverseR.toFixed(2)}R ` +
-        `adverse before a ${bestTag.avgReactionR.toFixed(1)}R reaction. Consider tighter stops on these setups specifically.`
-      );
-    }
-  }
-
-  // Average metrics insight
-  if (summary.avgFirstTouchAdverseR > 0.5) {
-    insights.push(
-      `Average first-touch adverse is ${summary.avgFirstTouchAdverseR.toFixed(2)}R — you're taking significant heat ` +
-      `before your levels react. Look for cleaner entry confirmations.`
-    );
-  } else if (summary.avgFirstTouchAdverseR < 0.2 && summary.avgReactionR > 2) {
-    insights.push(
-      `Excellent entry precision: ${summary.avgFirstTouchAdverseR.toFixed(2)}R adverse with ` +
-      `${summary.avgReactionR.toFixed(1)}R reactions. Your level identification is strong.`
-    );
-  }
-
-  return insights;
-}
-
-// ============================================
 // LEVEL SEQUENCE ANALYSIS
 // ============================================
 
@@ -3597,6 +3993,51 @@ export interface LevelTypeReactionStats {
   frontRunPercent: number;
   sweptPercent: number;
   brokenPercent: number;
+  // Front-run distance stats (when reaction === 'front_run' and turnPrice is set)
+  avgFrontRunDistanceR: number | null;
+  frontRunsWithDistance: number;
+}
+
+/**
+ * Front-run distance bucket for histogram
+ */
+export interface FrontRunDistanceBucket {
+  label: string;
+  min: number;
+  max: number;
+  count: number;
+  percent: number;
+}
+
+/**
+ * Front-run distance analysis results
+ */
+export interface FrontRunDistanceAnalysis {
+  totalFrontRuns: number;
+  frontRunsWithData: number;
+  avgDistanceR: number;
+  medianDistanceR: number;
+  minDistanceR: number;
+  maxDistanceR: number;
+  distribution: FrontRunDistanceBucket[];
+  // All individual distances for scatter/histogram
+  distances: Array<{
+    distanceR: number;
+    distancePercent: number | null; // % of distance from prior level
+    levelType: string;
+    timeframe: string;
+  }>;
+}
+
+/**
+ * Turn offset analysis for entry placement optimization
+ */
+export interface TurnOffsetAnalysis {
+  minTurnOffsetR: number;
+  maxTurnOffsetR: number;
+  medianTurnOffsetR: number;
+  suggestedEntryOffsetR: number;
+  tradesAnalyzed: number;
 }
 
 /**
@@ -3660,9 +4101,13 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
     frontRun: number;
     swept: number;
     broken: number;
+    frontRunDistancesR: number[];
   }>();
 
   for (const trade of relevantTrades) {
+    const metrics = getCachedMetrics(trade);
+    const stopDistance = metrics.stopDistance || 0;
+
     for (const level of trade.levelSequence) {
       if (!level.reaction) continue;
 
@@ -3678,6 +4123,7 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
           frontRun: 0,
           swept: 0,
           broken: 0,
+          frontRunDistancesR: [],
         });
       }
 
@@ -3686,7 +4132,14 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
 
       switch (level.reaction) {
         case 'bounced': stats.bounced++; break;
-        case 'front_run': stats.frontRun++; break;
+        case 'front_run':
+          stats.frontRun++;
+          // Calculate front-run distance in R
+          if (level.turnPrice !== null && level.turnPrice !== undefined && stopDistance > 0) {
+            const distanceR = Math.abs(level.price - level.turnPrice) / stopDistance;
+            stats.frontRunDistancesR.push(distanceR);
+          }
+          break;
         case 'swept_then_bounced': stats.swept++; break;
         case 'broken': stats.broken++; break;
       }
@@ -3695,6 +4148,10 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
 
   const results: LevelTypeReactionStats[] = [];
   for (const [key, stats] of statsMap.entries()) {
+    const avgFrontRunDistanceR = stats.frontRunDistancesR.length > 0
+      ? stats.frontRunDistancesR.reduce((a, b) => a + b, 0) / stats.frontRunDistancesR.length
+      : null;
+
     results.push({
       levelType: stats.levelType,
       timeframe: stats.timeframe,
@@ -3708,6 +4165,8 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
       frontRunPercent: (stats.frontRun / stats.total) * 100,
       sweptPercent: (stats.swept / stats.total) * 100,
       brokenPercent: (stats.broken / stats.total) * 100,
+      avgFrontRunDistanceR,
+      frontRunsWithDistance: stats.frontRunDistancesR.length,
     });
   }
 
@@ -3871,8 +4330,7 @@ export function getEntryDepthAnalysis(trades: TradeRecord[]): EntryVsTurnAnalysi
     if (turnPos > entryPos) {
       couldImproveCount++;
 
-      // Calculate potential adverse reduction using metrics
-      // TODO: firstTouchWorstPrice removed in v2 schema - use maeR from metrics instead
+      // Calculate potential adverse reduction using MAE from metrics
       const metrics = getCachedMetrics(trade);
       if (metrics.maeR !== undefined && metrics.maeR !== null && metrics.stopDistance) {
         const currentAdverse = metrics.maeR;
@@ -3924,7 +4382,9 @@ export function getEntryDepthAnalysis(trades: TradeRecord[]): EntryVsTurnAnalysi
 export function getLevelSequenceInsights(
   levelTypeStats: LevelTypeReactionStats[],
   pairwiseStats: PairwiseOrderStats[],
-  entryDepthAnalysis: EntryVsTurnAnalysis
+  entryDepthAnalysis: EntryVsTurnAnalysis,
+  _frontRunAnalysis?: FrontRunDistanceAnalysis,
+  turnOffsetAnalysis?: TurnOffsetAnalysis | null
 ): string[] {
   const insights: string[] = [];
 
@@ -3938,6 +4398,19 @@ export function getLevelSequenceInsights(
     insights.push(
       `Your ${best.key} levels hold ${holdRate}% of the time (${best.bouncedCount} bounced, ${best.sweptCount} swept then bounced).`
     );
+  }
+
+  // Front-run distance insights per level type
+  const levelsWithFrontRunData = levelTypeStats.filter(l =>
+    l.frontRunCount >= 3 && l.avgFrontRunDistanceR !== null
+  );
+  if (levelsWithFrontRunData.length > 0) {
+    for (const level of levelsWithFrontRunData.slice(0, 2)) {
+      insights.push(
+        `${level.key} levels get front-run ${level.frontRunPercent.toFixed(0)}% of the time, ` +
+        `by an avg ${level.avgFrontRunDistanceR!.toFixed(2)}R.`
+      );
+    }
   }
 
   // Fib level detail insight - compare different fib ratios
@@ -4004,6 +4477,25 @@ export function getLevelSequenceInsights(
     }
   }
 
+  // Entry placement insight - combine front-run and penetration data
+  if (turnOffsetAnalysis && turnOffsetAnalysis.tradesAnalyzed >= 10) {
+    const minR = turnOffsetAnalysis.minTurnOffsetR;
+    const maxR = turnOffsetAnalysis.maxTurnOffsetR;
+    const medianR = turnOffsetAnalysis.medianTurnOffsetR;
+
+    // Format offsets nicely (negative = short of level, positive = beyond)
+    const formatOffset = (r: number): string => {
+      if (Math.abs(r) < 0.01) return 'at the level';
+      if (r < 0) return `${Math.abs(r).toFixed(2)}R short`;
+      return `${r.toFixed(2)}R beyond`;
+    };
+
+    insights.push(
+      `Across your levels, price turns between ${formatOffset(minR)} and ${formatOffset(maxR)} ` +
+      `(median: ${formatOffset(medianR)}). Consider placing entries ${formatOffset(medianR)} rather than at the level.`
+    );
+  }
+
   return insights;
 }
 
@@ -4014,6 +4506,176 @@ function getOrdinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
   const v = n % 100;
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+/**
+ * Get comprehensive front-run distance analysis
+ * Includes distribution histogram and per-level stats
+ */
+export function getFrontRunDistanceAnalysis(trades: TradeRecord[]): FrontRunDistanceAnalysis {
+  const relevantTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.levelSequence &&
+    t.levelSequence.length > 0
+  );
+
+  const distances: FrontRunDistanceAnalysis['distances'] = [];
+  let totalFrontRuns = 0;
+
+  for (const trade of relevantTrades) {
+    const metrics = getCachedMetrics(trade);
+    const stopDistance = metrics.stopDistance || 0;
+
+    for (let i = 0; i < trade.levelSequence.length; i++) {
+      const level = trade.levelSequence[i];
+      if (level.reaction !== 'front_run') continue;
+
+      totalFrontRuns++;
+
+      if (level.turnPrice !== null && level.turnPrice !== undefined && stopDistance > 0) {
+        const distanceR = Math.abs(level.price - level.turnPrice) / stopDistance;
+
+        // Calculate % of distance from prior level (if one exists)
+        let distancePercent: number | null = null;
+        if (i > 0) {
+          const priorLevel = trade.levelSequence[i - 1];
+          const distanceFromPrior = Math.abs(level.price - priorLevel.price);
+          if (distanceFromPrior > 0) {
+            distancePercent = (Math.abs(level.price - level.turnPrice) / distanceFromPrior) * 100;
+          }
+        }
+
+        distances.push({
+          distanceR,
+          distancePercent,
+          levelType: getLevelTypeKey(level),
+          timeframe: level.timeframe || '—',
+        });
+      }
+    }
+  }
+
+  if (distances.length === 0) {
+    return {
+      totalFrontRuns,
+      frontRunsWithData: 0,
+      avgDistanceR: 0,
+      medianDistanceR: 0,
+      minDistanceR: 0,
+      maxDistanceR: 0,
+      distribution: [],
+      distances: [],
+    };
+  }
+
+  // Sort distances for median calculation
+  const sortedDistances = distances.map(d => d.distanceR).sort((a, b) => a - b);
+  const medianDistanceR = sortedDistances[Math.floor(sortedDistances.length / 2)];
+  const avgDistanceR = sortedDistances.reduce((a, b) => a + b, 0) / sortedDistances.length;
+  const minDistanceR = sortedDistances[0];
+  const maxDistanceR = sortedDistances[sortedDistances.length - 1];
+
+  // Create distribution buckets (0-0.1R, 0.1-0.2R, 0.2-0.3R, 0.3-0.5R, 0.5R+)
+  const buckets: FrontRunDistanceBucket[] = [
+    { label: '0-0.1R', min: 0, max: 0.1, count: 0, percent: 0 },
+    { label: '0.1-0.2R', min: 0.1, max: 0.2, count: 0, percent: 0 },
+    { label: '0.2-0.3R', min: 0.2, max: 0.3, count: 0, percent: 0 },
+    { label: '0.3-0.5R', min: 0.3, max: 0.5, count: 0, percent: 0 },
+    { label: '0.5R+', min: 0.5, max: Infinity, count: 0, percent: 0 },
+  ];
+
+  for (const d of sortedDistances) {
+    for (const bucket of buckets) {
+      if (d >= bucket.min && d < bucket.max) {
+        bucket.count++;
+        break;
+      }
+    }
+  }
+
+  // Calculate percentages
+  for (const bucket of buckets) {
+    bucket.percent = (bucket.count / sortedDistances.length) * 100;
+  }
+
+  return {
+    totalFrontRuns,
+    frontRunsWithData: distances.length,
+    avgDistanceR,
+    medianDistanceR,
+    minDistanceR,
+    maxDistanceR,
+    distribution: buckets,
+    distances,
+  };
+}
+
+/**
+ * Get turn offset analysis combining front-run and penetration data
+ * Analyzes where price actually turns relative to marked levels
+ */
+export function getTurnOffsetAnalysis(trades: TradeRecord[]): TurnOffsetAnalysis | null {
+  const relevantTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' &&
+    t.tradeTaken !== false &&
+    t.levelSequence &&
+    t.levelSequence.length > 0
+  );
+
+  // Collect all turn offsets in R (negative = front-run, positive = penetration/sweep)
+  const turnOffsetsR: number[] = [];
+
+  for (const trade of relevantTrades) {
+    const metrics = getCachedMetrics(trade);
+    const stopDistance = metrics.stopDistance || 0;
+    if (stopDistance === 0) continue;
+
+    for (const level of trade.levelSequence) {
+      // Front-run: turn was short of level (negative offset)
+      if (level.reaction === 'front_run' && level.turnPrice !== null && level.turnPrice !== undefined) {
+        const offsetR = -Math.abs(level.price - level.turnPrice) / stopDistance;
+        turnOffsetsR.push(offsetR);
+      }
+      // Swept then bounced: turn was beyond level (positive offset)
+      else if (level.reaction === 'swept_then_bounced') {
+        // For zones, use deepestPrice if available
+        const isZone = level.priceFar !== null;
+        if (isZone && level.deepestPrice !== null && level.deepestPrice !== undefined) {
+          const offsetR = Math.abs(level.deepestPrice - level.price) / stopDistance;
+          turnOffsetsR.push(offsetR);
+        } else if (!isZone && level.turnPrice !== null && level.turnPrice !== undefined) {
+          const offsetR = Math.abs(level.turnPrice - level.price) / stopDistance;
+          turnOffsetsR.push(offsetR);
+        }
+      }
+      // Bounced: turn was at level (zero offset)
+      else if (level.reaction === 'bounced') {
+        turnOffsetsR.push(0);
+      }
+    }
+  }
+
+  if (turnOffsetsR.length < 5) {
+    return null;
+  }
+
+  // Sort for stats
+  const sorted = turnOffsetsR.sort((a, b) => a - b);
+  const minTurnOffsetR = sorted[0];
+  const maxTurnOffsetR = sorted[sorted.length - 1];
+  const medianTurnOffsetR = sorted[Math.floor(sorted.length / 2)];
+
+  // Suggested entry = median offset (where price typically turns)
+  const suggestedEntryOffsetR = medianTurnOffsetR;
+
+  return {
+    minTurnOffsetR,
+    maxTurnOffsetR,
+    medianTurnOffsetR,
+    suggestedEntryOffsetR,
+    tradesAnalyzed: turnOffsetsR.length,
+  };
 }
 
 // ============================================================================

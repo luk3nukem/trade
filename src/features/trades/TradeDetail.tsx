@@ -256,17 +256,90 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
   );
 }
 
+// Unified timeline item type
+type TimelineItem =
+  | { type: 'entry'; time: Date }
+  | { type: 'event'; event: TradeEvent }
+  | { type: 'exit'; exit: TradeRecord['exits'][0]; index: number }
+  | { type: 'exit_divider' };
+
 // Component for unified timeline display
 function TimelineDisplay({ trade }: { trade: TradeRecord }) {
   const preExitEvents = useMemo(() => getPreExitEvents(trade), [trade]);
   const postExitEvents = useMemo(() => getPostExitEvents(trade), [trade]);
   const hasExits = trade.exits.length > 0;
 
+  // Build unified timeline
+  const timelineItems = useMemo(() => {
+    const items: TimelineItem[] = [];
+
+    // Entry marker
+    items.push({ type: 'entry', time: new Date(trade.entryTime) });
+
+    // Pre-exit events (including stop_moved)
+    for (const event of preExitEvents) {
+      items.push({ type: 'event', event });
+    }
+
+    // Exits (interleaved by time)
+    for (let i = 0; i < trade.exits.length; i++) {
+      items.push({ type: 'exit', exit: trade.exits[i], index: i });
+    }
+
+    // Sort pre-exit items by time (after entry)
+    // Entry is always first, then sort events and exits by time
+    const entryItem = items[0];
+    const preExitItems = items.slice(1);
+
+    // Sort by time where available, then by order
+    preExitItems.sort((a, b) => {
+      const getTime = (item: TimelineItem): number | null => {
+        if (item.type === 'event') {
+          return item.event.time ? new Date(item.event.time).getTime() : null;
+        }
+        if (item.type === 'exit') {
+          return new Date(item.exit.time).getTime();
+        }
+        return null;
+      };
+
+      const getOrder = (item: TimelineItem): number => {
+        if (item.type === 'event') return item.event.order;
+        if (item.type === 'exit') return 1000 + item.index; // Exits after events with same time
+        return 0;
+      };
+
+      const aTime = getTime(a);
+      const bTime = getTime(b);
+
+      if (aTime !== null && bTime !== null) {
+        return aTime - bTime;
+      }
+      if (aTime !== null) return -1;
+      if (bTime !== null) return 1;
+      return getOrder(a) - getOrder(b);
+    });
+
+    // Add exit divider after last exit
+    const sortedItems: TimelineItem[] = [entryItem, ...preExitItems];
+
+    if (hasExits && postExitEvents.length > 0) {
+      sortedItems.push({ type: 'exit_divider' });
+    }
+
+    // Post-exit events
+    for (const event of postExitEvents) {
+      sortedItems.push({ type: 'event', event });
+    }
+
+    return sortedItems;
+  }, [trade, preExitEvents, postExitEvents, hasExits]);
+
   // Color-code by event type category
   const getEventColor = (type: string) => {
     if (type === 'best_price' || type === 'favourable_extreme') return 'bg-green-500';
     if (type === 'worst_price' || type === 'adverse_extreme') return 'bg-red-500';
-    if (type === 'stop_moved') return 'bg-yellow-500';
+    if (type === 'stop_moved') return 'bg-amber-500';
     if (type.includes('spike') || type === 'pump') return 'bg-green-500';
     if (type === 'dump') return 'bg-red-500';
     if (type === 'liquidity_sweep' || type === 'retest') return 'bg-yellow-500';
@@ -277,37 +350,131 @@ function TimelineDisplay({ trade }: { trade: TradeRecord }) {
     return 'bg-blue-500';
   };
 
-  const renderEvent = (event: TradeEvent) => (
-    <div key={event.id} className="relative flex items-start gap-4 pl-6">
-      {/* Timeline dot */}
-      <div className={`absolute left-0 w-4 h-4 rounded-full ${getEventColor(event.eventType)} ring-4 ring-gray-800`} />
+  const getExitColor = (type: string) => {
+    if (type === 'tp_hit') return 'bg-green-500';
+    if (type === 'sl_hit') return 'bg-red-500';
+    if (type === 'be_stop_hit') return 'bg-amber-500';
+    if (type === 'trail_stop_hit') return 'bg-blue-500';
+    return 'bg-gray-500';
+  };
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          {event.time && (
-            <span className="text-xs text-gray-400">
-              {new Date(event.time).toLocaleString()}
-            </span>
-          )}
-          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-            getEventColor(event.eventType).replace('bg-', 'bg-').replace('500', '500/20')
-          } ${getEventColor(event.eventType).replace('bg-', 'text-').replace('500', '400')}`}>
-            {event.eventType.replace(/_/g, ' ')}
-          </span>
-          {event.price !== null && (
-            <span className="text-xs text-gray-400 font-mono">
-              @ {event.price.toFixed(5)}
-            </span>
-          )}
+  const renderItem = (item: TimelineItem) => {
+    if (item.type === 'entry') {
+      return (
+        <div key="entry" className="relative flex items-start gap-4 pl-6">
+          <div className="absolute left-0 w-4 h-4 rounded-full bg-blue-500 ring-4 ring-gray-800" />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400">
+                {new Date(item.time).toLocaleString()}
+              </span>
+              <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
+                ENTRY
+              </span>
+              <span className="text-xs text-gray-400 font-mono">
+                @ {trade.entryPrice.toFixed(5)}
+              </span>
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                trade.direction === 'long' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
+              }`}>
+                {trade.direction.toUpperCase()}
+              </span>
+            </div>
+            <p className="text-sm text-gray-300 mt-1">
+              Stop: {trade.stopLoss.toFixed(5)}
+              {trade.targetPrice && ` · Target: ${trade.targetPrice.toFixed(5)}`}
+            </p>
+          </div>
         </div>
-        {event.description && (
-          <p className="text-sm text-gray-300 mt-1">{event.description}</p>
-        )}
-      </div>
-    </div>
-  );
+      );
+    }
 
-  if (preExitEvents.length === 0 && postExitEvents.length === 0) {
+    if (item.type === 'event') {
+      const event = item.event;
+      const isStopMoved = event.eventType === 'stop_moved';
+
+      return (
+        <div key={event.id} className="relative flex items-start gap-4 pl-6">
+          <div className={`absolute left-0 w-4 h-4 rounded-full ${getEventColor(event.eventType)} ring-4 ring-gray-800`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              {event.time && (
+                <span className="text-xs text-gray-400">
+                  {new Date(event.time).toLocaleString()}
+                </span>
+              )}
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                isStopMoved ? 'bg-amber-500/20 text-amber-400' :
+                getEventColor(event.eventType).replace('bg-', 'bg-').replace('500', '500/20')
+              } ${isStopMoved ? '' : getEventColor(event.eventType).replace('bg-', 'text-').replace('500', '400')}`}>
+                {isStopMoved ? 'SL MOVED' : event.eventType.replace(/_/g, ' ')}
+              </span>
+              {event.price !== null && (
+                <span className="text-xs text-gray-400 font-mono">
+                  {isStopMoved ? '→' : '@'} {event.price.toFixed(5)}
+                </span>
+              )}
+            </div>
+            {event.description && (
+              <p className={`text-sm mt-1 ${isStopMoved ? 'text-amber-300' : 'text-gray-300'}`}>
+                {event.description}
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (item.type === 'exit') {
+      const exit = item.exit;
+      return (
+        <div key={exit.id} className="relative flex items-start gap-4 pl-6">
+          <div className={`absolute left-0 w-4 h-4 rounded-full ${getExitColor(exit.type)} ring-4 ring-gray-800`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-400">
+                {new Date(exit.time).toLocaleString()}
+              </span>
+              <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                exit.type === 'tp_hit' ? 'bg-green-500/20 text-green-400' :
+                exit.type === 'sl_hit' ? 'bg-red-500/20 text-red-400' :
+                exit.type === 'be_stop_hit' ? 'bg-amber-500/20 text-amber-400' :
+                exit.type === 'trail_stop_hit' ? 'bg-blue-500/20 text-blue-400' :
+                'bg-gray-500/20 text-gray-400'
+              }`}>
+                {exit.type.replace(/_/g, ' ').toUpperCase()}
+              </span>
+              <span className="text-xs text-gray-400 font-mono">
+                @ {exit.price.toFixed(5)}
+              </span>
+              <span className="text-xs text-gray-500">
+                ({exit.size} units)
+              </span>
+            </div>
+            {exit.reason && (
+              <p className="text-sm text-gray-300 mt-1">{exit.reason}</p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    if (item.type === 'exit_divider') {
+      return (
+        <div key="exit-divider" className="relative flex items-center gap-4 pl-6 py-2">
+          <div className="absolute left-0 w-4 h-4 rounded-full bg-purple-500 ring-4 ring-gray-800" />
+          <div className="flex-1 border-t border-purple-500/50" />
+          <span className="text-sm font-medium text-purple-400 px-2">POST-EXIT</span>
+          <div className="flex-1 border-t border-purple-500/50" />
+        </div>
+      );
+    }
+
+    return null;
+  };
+
+  if (timelineItems.length <= 1) {
+    // Only entry marker, no other events
     return null;
   }
 
@@ -319,21 +486,7 @@ function TimelineDisplay({ trade }: { trade: TradeRecord }) {
         <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gray-700" />
 
         <div className="space-y-4">
-          {/* Pre-exit events */}
-          {preExitEvents.map(renderEvent)}
-
-          {/* Exit divider */}
-          {hasExits && (preExitEvents.length > 0 || postExitEvents.length > 0) && (
-            <div className="relative flex items-center gap-4 pl-6 py-2">
-              <div className="absolute left-0 w-4 h-4 rounded-full bg-purple-500 ring-4 ring-gray-800" />
-              <div className="flex-1 border-t border-purple-500/50" />
-              <span className="text-sm font-medium text-purple-400 px-2">EXIT</span>
-              <div className="flex-1 border-t border-purple-500/50" />
-            </div>
-          )}
-
-          {/* Post-exit events */}
-          {postExitEvents.map(renderEvent)}
+          {timelineItems.map(item => renderItem(item))}
         </div>
       </div>
     </div>

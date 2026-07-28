@@ -16,6 +16,7 @@ import {
   getNotTakenReasonBreakdown,
   getMissedTradesByTag,
   getSelectivityInsights,
+  getFrontRunMissAnalysis,
   CHART_TOOLTIP_STYLES,
 } from '../../utils';
 
@@ -41,6 +42,9 @@ export function SelectivityAnalysis({ trades }: Props) {
 
   // Insights
   const insights = useMemo(() => getSelectivityInsights(trades), [trades]);
+
+  // Front-run miss analysis
+  const frontRunAnalysis = useMemo(() => getFrontRunMissAnalysis(missedTrades), [missedTrades]);
 
   // Chart data for reason breakdown
   const reasonChartData = useMemo(() => {
@@ -384,6 +388,124 @@ export function SelectivityAnalysis({ trades }: Props) {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Front-Run Misses Analysis */}
+      {frontRunAnalysis && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h3 className="text-lg font-medium text-white mb-4">Front-Run Misses</h3>
+          <p className="text-sm text-gray-400 mb-4">
+            Trades where price turned before hitting your entry — showing how close you were.
+          </p>
+
+          {/* Stat Cards */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-6">
+            <div className="text-center">
+              <p className="text-sm text-gray-400 mb-1">Front-Run Count</p>
+              <p className="text-2xl font-bold text-orange-400">{frontRunAnalysis.count}</p>
+            </div>
+            <div className="text-center">
+              <p className="text-sm text-gray-400 mb-1">Avg Distance</p>
+              <p className="text-2xl font-bold text-blue-400">
+                {frontRunAnalysis.avgDistanceR.toFixed(3)}R
+              </p>
+              <p className="text-xs text-gray-500">from entry</p>
+            </div>
+            <div className="text-center">
+              <p className="text-sm text-gray-400 mb-1">Median Distance</p>
+              <p className="text-2xl font-bold text-blue-400">
+                {frontRunAnalysis.medianDistanceR.toFixed(3)}R
+              </p>
+              <p className="text-xs text-gray-500">from entry</p>
+            </div>
+            <div className="text-center">
+              <p className="text-sm text-gray-400 mb-1">Hypothetical Avg R</p>
+              <p className={`text-2xl font-bold ${frontRunAnalysis.avgOutcomeIfTaken >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {frontRunAnalysis.avgOutcomeIfTaken >= 0 ? '+' : ''}
+                {frontRunAnalysis.avgOutcomeIfTaken.toFixed(2)}R
+              </p>
+              <p className="text-xs text-gray-500">
+                based on {frontRunAnalysis.winsIfTaken + frontRunAnalysis.lossesIfTaken} known outcomes
+              </p>
+            </div>
+          </div>
+
+          {/* Grid: Histogram and Outcome Cross-Reference */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Histogram */}
+            <div className="h-64">
+              <p className="text-sm text-gray-400 mb-2">Distance Distribution</p>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={frontRunAnalysis.histogram}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis dataKey="bucket" stroke="#9CA3AF" fontSize={12} />
+                  <YAxis stroke="#9CA3AF" fontSize={12} allowDecimals={false} />
+                  <Tooltip
+                    {...CHART_TOOLTIP_STYLES}
+                    formatter={(value: number) => [value, 'Trades']}
+                  />
+                  <Bar dataKey="count" fill="#F97316">
+                    {frontRunAnalysis.histogram.map((_, index) => (
+                      <Cell key={`cell-${index}`} fill="#F97316" />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Outcome Cross-Reference */}
+            <div className="bg-gray-750 rounded-lg p-4">
+              <p className="text-sm text-gray-400 mb-3">Outcome Cross-Reference</p>
+              {(frontRunAnalysis.winsIfTaken + frontRunAnalysis.lossesIfTaken) > 0 ? (
+                <>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-gray-300">Would-be Wins</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-green-400 font-medium">{frontRunAnalysis.winsIfTaken}</span>
+                      <span className="text-gray-500 text-sm">
+                        ({((frontRunAnalysis.winsIfTaken / (frontRunAnalysis.winsIfTaken + frontRunAnalysis.lossesIfTaken)) * 100).toFixed(0)}%)
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-gray-300">Would-be Losses</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-red-400 font-medium">{frontRunAnalysis.lossesIfTaken}</span>
+                      <span className="text-gray-500 text-sm">
+                        ({((frontRunAnalysis.lossesIfTaken / (frontRunAnalysis.winsIfTaken + frontRunAnalysis.lossesIfTaken)) * 100).toFixed(0)}%)
+                      </span>
+                    </div>
+                  </div>
+                  {frontRunAnalysis.unknownOutcome > 0 && (
+                    <div className="flex items-center justify-between text-gray-500">
+                      <span>Unknown Outcome</span>
+                      <span>{frontRunAnalysis.unknownOutcome}</span>
+                    </div>
+                  )}
+                  <div className="mt-4 pt-3 border-t border-gray-700">
+                    <p className="text-sm text-gray-300">
+                      {frontRunAnalysis.winsIfTaken > frontRunAnalysis.lossesIfTaken ? (
+                        <span className="text-yellow-400">
+                          ⚠ {((frontRunAnalysis.winsIfTaken / (frontRunAnalysis.winsIfTaken + frontRunAnalysis.lossesIfTaken)) * 100).toFixed(0)}% of front-run misses would have been wins.
+                          Consider looser entries.
+                        </span>
+                      ) : (
+                        <span className="text-green-400">
+                          ✓ Most front-run misses would have been losses.
+                          Your entries are well-positioned.
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <p className="text-gray-500 text-sm">
+                  Set "Reached Target Post-Exit" on missed trades to see outcome analysis.
+                </p>
+              )}
+            </div>
           </div>
         </div>
       )}

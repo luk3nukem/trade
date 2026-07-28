@@ -55,6 +55,7 @@ export interface LevelEntry {
   priceFar: number | null; // for zones: the far edge. null = single-line level
   deepestPrice?: number | null; // zones only: extreme price reached inside zone before turn
   penetrationPercent?: number | null; // derived, zones only: |deepestPrice - nearEdge| / |farEdge - nearEdge| × 100
+  turnPrice?: number | null; // where reaction actually began (front_run: short of level; swept_then_bounced on lines: beyond level)
   reaction: LevelReaction; // "bounced" | "front_run" | "swept_then_bounced" | "broken" | null (unresolved)
 }
 
@@ -99,7 +100,9 @@ export const EVENT_TYPE_PRESETS = [
 export type EventTypePreset = typeof EVENT_TYPE_PRESETS[number];
 
 // Not taken reason presets
+// NOTE: 'front_run' is a protected reason that cannot be renamed/deleted
 export const NOT_TAKEN_REASON_PRESETS = [
+  'front_run',         // Protected: price turned before entry
   'doubted_setup',
   'broker_cancelled',
   'weekend_approaching',
@@ -111,6 +114,22 @@ export const NOT_TAKEN_REASON_PRESETS = [
 ] as const;
 
 export type NotTakenReasonPreset = typeof NOT_TAKEN_REASON_PRESETS[number];
+
+// Protected reasons that cannot be renamed/deleted in the management UI
+export const PROTECTED_NOT_TAKEN_REASONS = ['front_run'] as const;
+
+// User-friendly labels for not-taken reasons
+export const NOT_TAKEN_REASON_LABELS: Record<string, string> = {
+  front_run: 'Front run — price turned before my entry',
+  doubted_setup: 'Doubted setup',
+  broker_cancelled: 'Broker cancelled',
+  weekend_approaching: 'Weekend approaching',
+  missed_entry_window: 'Missed entry window',
+  away_from_desk: 'Away from desk',
+  already_in_trade: 'Already in trade',
+  risk_too_high: 'Risk too high',
+  news_pending: 'News pending',
+};
 
 // Account entity
 export interface Account {
@@ -191,6 +210,7 @@ export interface TradeRecord {
   // === Trade Taken / Missed ===
   tradeTaken: boolean;         // false = missed/paper trade, excluded from live stats
   notTakenReason: string;      // REQUIRED when tradeTaken === false
+  frontRunTurnPrice?: number | null; // where price turned short of entry (when notTakenReason === 'front_run')
 
   // === Notes ===
   entryNotes?: string;         // Thesis and plan as you execute
@@ -328,6 +348,7 @@ export interface TradeFormData {
   // Trade Taken / Missed
   tradeTaken: boolean;
   notTakenReason: string;
+  frontRunTurnPrice: string;
 
   // Notes
   entryNotes: string;
