@@ -4,7 +4,7 @@ import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import type { TradeRecord, DailyJournal, Account } from '../../types';
 import { DailyJournalForm } from './DailyJournalForm';
-import { isReviewDue } from '../../utils/tradeCalculations';
+import { isReviewDue, getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 
 type JournalTab = 'timeline' | 'daily' | 'weekly' | 'screenshots';
 
@@ -15,13 +15,16 @@ const TABS: { id: JournalTab; label: string }[] = [
   { id: 'screenshots', label: 'Screenshots' },
 ];
 
-const GRADE_COLORS: Record<string, string> = {
-  A: 'bg-green-500',
-  B: 'bg-blue-500',
-  C: 'bg-yellow-500',
-  D: 'bg-orange-500',
-  F: 'bg-red-500',
-};
+// Cache for trade metrics
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 export function JournalPage() {
   const navigate = useNavigate();
@@ -85,17 +88,18 @@ export function JournalPage() {
     loadData();
   }, [loadData]);
 
-  // Timeline data grouped by date
+  // Timeline data grouped by date (using derived metrics)
   const timelineData = useMemo(() => {
-    const closedTrades = trades
-      .filter(t => t.status === 'closed')
-      .sort((a, b) => new Date(b.exitTime!).getTime() - new Date(a.exitTime!).getTime());
+    const tradesWithMetrics = trades.map(t => ({ trade: t, metrics: getCachedMetrics(t) }));
+    const closedTrades = tradesWithMetrics
+      .filter(({ metrics }) => metrics.status === 'closed' && metrics.exitTime)
+      .sort((a, b) => b.metrics.exitTime!.getTime() - a.metrics.exitTime!.getTime());
 
     const dayMap = new Map<string, { trades: TradeRecord[]; journal?: DailyJournal }>();
 
     // Group trades by date
-    for (const trade of closedTrades) {
-      const dateStr = new Date(trade.exitTime!).toISOString().split('T')[0];
+    for (const { trade, metrics } of closedTrades) {
+      const dateStr = metrics.exitTime!.toISOString().split('T')[0];
       if (!dayMap.has(dateStr)) {
         dayMap.set(dateStr, { trades: [] });
       }
@@ -178,26 +182,29 @@ export function JournalPage() {
     return days;
   }, [calendarMonth, journals, trades]);
 
-  // Weekly review data
+  // Weekly review data (using derived metrics)
   const weeklyData = useMemo(() => {
     const weekEnd = new Date(selectedWeekStart);
     weekEnd.setDate(weekEnd.getDate() + 6);
 
-    const weekTrades = trades.filter(t => {
-      if (t.status !== 'closed' || !t.exitTime) return false;
-      const exitDate = new Date(t.exitTime);
-      return exitDate >= selectedWeekStart && exitDate <= weekEnd;
-    });
+    const weekTradesWithMetrics = trades
+      .map(t => ({ trade: t, metrics: getCachedMetrics(t) }))
+      .filter(({ metrics }) => {
+        if (metrics.status !== 'closed' || !metrics.exitTime) return false;
+        const exitDate = metrics.exitTime;
+        return exitDate >= selectedWeekStart && exitDate <= weekEnd;
+      });
 
-    const wins = weekTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const totalPnl = weekTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const avgR = weekTrades.length > 0
-      ? weekTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / weekTrades.length
+    const weekTrades = weekTradesWithMetrics.map(({ trade }) => trade);
+    const wins = weekTradesWithMetrics.filter(({ metrics }) => (metrics.rMultiple ?? 0) > 0);
+    const totalPnl = weekTradesWithMetrics.reduce((sum, { metrics }) => sum + (metrics.pnl ?? 0), 0);
+    const avgR = weekTradesWithMetrics.length > 0
+      ? weekTradesWithMetrics.reduce((sum, { metrics }) => sum + (metrics.rMultiple ?? 0), 0) / weekTradesWithMetrics.length
       : 0;
 
-    const sorted = [...weekTrades].sort((a, b) => (b.rMultiple ?? 0) - (a.rMultiple ?? 0));
-    const bestTrade = sorted[0];
-    const worstTrade = sorted[sorted.length - 1];
+    const sorted = [...weekTradesWithMetrics].sort((a, b) => (b.metrics.rMultiple ?? 0) - (a.metrics.rMultiple ?? 0));
+    const bestTrade = sorted[0]?.trade;
+    const worstTrade = sorted[sorted.length - 1]?.trade;
 
     // Find Friday journal entry with weekly review
     const friday = new Date(selectedWeekStart);
@@ -252,6 +259,7 @@ export function JournalPage() {
         if (tradeDate > screenshotFilter.dateTo) continue;
       }
 
+      const metrics = getCachedMetrics(trade);
       for (const ss of trade.screenshots) {
         if (ss.url) {
           screenshots.push({
@@ -259,7 +267,7 @@ export function JournalPage() {
             url: ss.url,
             caption: ss.caption,
             pair: trade.pair,
-            rMultiple: trade.rMultiple ?? 0,
+            rMultiple: metrics.rMultiple ?? 0,
             tradeId: trade.id,
             date: new Date(trade.entryTime).toISOString().split('T')[0],
           });
@@ -359,19 +367,8 @@ export function JournalPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <span className="text-white font-medium">{formatDate(dateStr)}</span>
-                {journal && (
-                  <div className="flex items-center gap-2">
-                    {journal.grade && (
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium text-white ${GRADE_COLORS[journal.grade]}`}>
-                        {journal.grade}
-                      </span>
-                    )}
-                    {journal.emotionalScore && (
-                      <span className="text-xs text-gray-400">
-                        Mood: {journal.emotionalScore}/5
-                      </span>
-                    )}
-                  </div>
+                {journal && journal.lessonsLearned && (
+                  <span className="text-xs text-gray-400">Has lesson</span>
                 )}
               </div>
               <div className="flex items-center gap-2">
@@ -453,18 +450,23 @@ export function JournalPage() {
                     </span>
                     <span className="text-white">{trade.pair}</span>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <span className={`font-medium ${
-                      (trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {(trade.rMultiple ?? 0) >= 0 ? '+' : ''}{(trade.rMultiple ?? 0).toFixed(2)}R
-                    </span>
-                    <span className={`text-sm ${
-                      (trade.netPnl ?? trade.pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      ${(trade.netPnl ?? trade.pnl ?? 0).toFixed(2)}
-                    </span>
-                  </div>
+                  {(() => {
+                    const metrics = getCachedMetrics(trade);
+                    return (
+                      <div className="flex items-center gap-4">
+                        <span className={`font-medium ${
+                          (metrics.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {(metrics.rMultiple ?? 0) >= 0 ? '+' : ''}{(metrics.rMultiple ?? 0).toFixed(2)}R
+                        </span>
+                        <span className={`text-sm ${
+                          (metrics.pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          ${(metrics.pnl ?? 0).toFixed(2)}
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </button>
               ))}
             </div>
@@ -604,18 +606,6 @@ export function JournalPage() {
                 Edit
               </button>
             </div>
-            {selectedDayJournal.grade && (
-              <div className="flex items-center gap-2">
-                <span className={`px-3 py-1 rounded text-sm font-medium text-white ${GRADE_COLORS[selectedDayJournal.grade]}`}>
-                  Grade: {selectedDayJournal.grade}
-                </span>
-                {selectedDayJournal.emotionalScore && (
-                  <span className="text-gray-400">
-                    Mood: {selectedDayJournal.emotionalScore}/5
-                  </span>
-                )}
-              </div>
-            )}
             {selectedDayJournal.preMarketNotes && (
               <div>
                 <h4 className="text-sm text-gray-500 mb-1">Pre-Market Notes</h4>
@@ -712,11 +702,11 @@ export function JournalPage() {
               <p className="text-xs text-gray-400">Best/Worst</p>
               <div className="flex justify-center gap-2 text-sm">
                 {stats.bestTrade && (
-                  <span className="text-green-400">+{(stats.bestTrade.rMultiple ?? 0).toFixed(1)}R</span>
+                  <span className="text-green-400">+{(getCachedMetrics(stats.bestTrade).rMultiple ?? 0).toFixed(1)}R</span>
                 )}
                 {stats.bestTrade && stats.worstTrade && <span className="text-gray-500">/</span>}
                 {stats.worstTrade && (
-                  <span className="text-red-400">{(stats.worstTrade.rMultiple ?? 0).toFixed(1)}R</span>
+                  <span className="text-red-400">{(getCachedMetrics(stats.worstTrade).rMultiple ?? 0).toFixed(1)}R</span>
                 )}
               </div>
             </div>
@@ -1038,59 +1028,34 @@ function WeeklyPostExitSection({
 }) {
   const navigate = useNavigate();
 
-  // Get unreviewed closed trades from this week that are due for review
+  // Get unreviewed closed trades from this week that are due for review (using derived metrics)
   const unreviewedTrades = useMemo(() => {
     return weekTrades.filter(t => {
-      if (t.status !== 'closed') return false;
+      const metrics = getCachedMetrics(t);
+      if (metrics.status !== 'closed') return false;
       if (t.tradeTaken === false) return false;
       if (t.reviewedAt) return false;
-      if (!t.exitTime) return false;
+      if (!metrics.exitTime) return false;
       // Use market-hours-aware calculation (skips weekends for non-crypto)
-      return isReviewDue(new Date(t.exitTime), t.assetClass);
+      return isReviewDue(t);
     });
   }, [weekTrades]);
 
   // Calculate post-exit stats for reviewed trades
   const reviewedStats = useMemo(() => {
-    const reviewedTrades = weekTrades.filter(t =>
-      t.status === 'closed' &&
-      t.tradeTaken !== false &&
-      t.reviewedAt &&
-      t.postExitBestPrice !== null
-    );
+    const reviewedTrades = weekTrades.filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' &&
+        t.tradeTaken !== false &&
+        t.reviewedAt;
+    });
 
     if (reviewedTrades.length === 0) {
       return null;
     }
 
-    let totalMissedR = 0;
-    let totalEfficiency = 0;
-    let efficiencyCount = 0;
-
-    for (const trade of reviewedTrades) {
-      if (!trade.stopDistance || trade.stopDistance === 0 || trade.exitPrice === undefined) continue;
-
-      // Calculate missed R
-      const priceDiff = trade.postExitBestPrice! - trade.exitPrice;
-      const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
-      const missedR = signedMove > 0 ? signedMove / trade.stopDistance : 0;
-      totalMissedR += missedR;
-
-      // Calculate exit efficiency
-      if (trade.rMultiple !== undefined && trade.rMultiple > 0) {
-        const wouldHaveR = Math.abs(trade.postExitBestPrice! - trade.entryPrice) / trade.stopDistance;
-        if (wouldHaveR > 0) {
-          const efficiency = (trade.rMultiple / wouldHaveR) * 100;
-          totalEfficiency += efficiency;
-          efficiencyCount++;
-        }
-      }
-    }
-
     return {
       tradesReviewed: reviewedTrades.length,
-      avgMissedR: totalMissedR / reviewedTrades.length,
-      avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : null,
     };
   }, [weekTrades]);
 
@@ -1117,38 +1082,41 @@ function WeeklyPostExitSection({
             {unreviewedTrades.length} {unreviewedTrades.length === 1 ? 'trade needs' : 'trades need'} post-exit review
           </h4>
           <div className="space-y-2">
-            {unreviewedTrades.slice(0, 5).map((trade) => (
-              <button
-                key={trade.id}
-                onClick={() => navigate(`/trades/${trade.id}`)}
-                className="w-full flex items-center justify-between bg-gray-800/50 hover:bg-gray-700 rounded-lg p-2 transition-colors text-left"
-              >
-                <div className="flex items-center gap-3">
-                  <span className="font-medium text-white">{trade.pair}</span>
+            {unreviewedTrades.slice(0, 5).map((trade) => {
+              const metrics = getCachedMetrics(trade);
+              return (
+                <button
+                  key={trade.id}
+                  onClick={() => navigate(`/trades/${trade.id}`)}
+                  className="w-full flex items-center justify-between bg-gray-800/50 hover:bg-gray-700 rounded-lg p-2 transition-colors text-left"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="font-medium text-white">{trade.pair}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs font-medium ${
+                        trade.direction === 'long'
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-red-500/20 text-red-400'
+                      }`}
+                    >
+                      {trade.direction.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="text-sm text-gray-400">
+                      {metrics.exitTime ? formatDate(metrics.exitTime) : ''}
+                    </span>
+                  </div>
                   <span
-                    className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      trade.direction === 'long'
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-red-500/20 text-red-400'
+                    className={`font-mono font-medium ${
+                      (metrics.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
                     }`}
                   >
-                    {trade.direction.charAt(0).toUpperCase()}
+                    {metrics.rMultiple !== null
+                      ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple.toFixed(2)}R`
+                      : '-'}
                   </span>
-                  <span className="text-sm text-gray-400">
-                    {trade.exitTime ? formatDate(trade.exitTime) : ''}
-                  </span>
-                </div>
-                <span
-                  className={`font-mono font-medium ${
-                    (trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                  }`}
-                >
-                  {trade.rMultiple !== undefined
-                    ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
-                    : '-'}
-                </span>
-              </button>
-            ))}
+                </button>
+              );
+            })}
             {unreviewedTrades.length > 5 && (
               <p className="text-sm text-gray-500 text-center">
                 +{unreviewedTrades.length - 5} more
@@ -1160,31 +1128,9 @@ function WeeklyPostExitSection({
 
       {/* Reviewed Stats */}
       {reviewedStats && (
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          <div className="bg-gray-750 rounded-lg p-3 text-center">
-            <p className="text-xs text-gray-400">Trades Reviewed</p>
-            <p className="text-xl font-bold text-white">{reviewedStats.tradesReviewed}</p>
-          </div>
-          {reviewedStats.avgExitEfficiency !== null && (
-            <div className="bg-gray-750 rounded-lg p-3 text-center">
-              <p className="text-xs text-gray-400">Avg Exit Efficiency</p>
-              <p className={`text-xl font-bold ${
-                reviewedStats.avgExitEfficiency >= 70
-                  ? 'text-green-400'
-                  : reviewedStats.avgExitEfficiency >= 50
-                    ? 'text-yellow-400'
-                    : 'text-red-400'
-              }`}>
-                {reviewedStats.avgExitEfficiency.toFixed(0)}%
-              </p>
-            </div>
-          )}
-          <div className="bg-gray-750 rounded-lg p-3 text-center">
-            <p className="text-xs text-gray-400">Avg Missed R</p>
-            <p className="text-xl font-bold text-yellow-400">
-              +{reviewedStats.avgMissedR.toFixed(2)}R
-            </p>
-          </div>
+        <div className="bg-gray-750 rounded-lg p-3 text-center inline-block">
+          <p className="text-xs text-gray-400">Trades Reviewed</p>
+          <p className="text-xl font-bold text-white">{reviewedStats.tradesReviewed}</p>
         </div>
       )}
     </div>

@@ -9,28 +9,17 @@ import type {
   TradeRecord,
   AssetClass,
   Timeframe,
-  HTFBias,
-  MarketCondition,
-  ConfidenceLevel,
   ExitType,
-  EmotionalState,
   TradeExit,
   TradeEvent,
-  StopAdjustment,
   Screenshot,
   Account,
   Strategy,
   LevelEntry,
   LevelReaction,
   LevelTypePref,
-  PostExitMilestoneKind,
 } from '../../types';
-import { ZONE_LEVEL_TYPES } from '../../types';
-
-// Preset level types - zones have two edges, lines are single price
-const PRESET_ZONE_TYPES = ZONE_LEVEL_TYPES as readonly string[];
-const PRESET_LINE_TYPES = ['LCPB', 'fib', 'S/R', 'EQ'] as const;
-const ALL_PRESET_TYPES = [...PRESET_ZONE_TYPES, ...PRESET_LINE_TYPES] as string[];
+import { ZONE_LEVEL_TYPES, DETAIL_LEVEL_TYPES, EVENT_TYPE_PRESETS, NOT_TAKEN_REASON_PRESETS } from '../../types';
 import {
   deriveSession,
   calculateStopDistance,
@@ -38,7 +27,6 @@ import {
   calculateActualRR,
   calculateRMultiple,
   calculateTotalExitsPnl,
-  calculateNetPnl,
   calculateHoldDuration,
   formatDuration,
   validateStopLoss,
@@ -47,68 +35,86 @@ import {
   toLocalDateTimeString,
 } from '../../utils';
 
-// Initial form state
+// Preset level types - zones have two edges, lines are single price
+const PRESET_ZONE_TYPES = ZONE_LEVEL_TYPES as readonly string[];
+const PRESET_LINE_TYPES = ['LCPB', 'fib', 'S/R', 'EQ'] as const;
+const ALL_PRESET_TYPES = [...PRESET_ZONE_TYPES, ...PRESET_LINE_TYPES] as string[];
+
+// Level types that show a detail field
+const DETAIL_TYPES = DETAIL_LEVEL_TYPES as readonly string[];
+
+// Preset fib level detail options
+const PRESET_FIB_DETAILS = ['0.25', '0.5', '0.705', '0.75', '0.786', 'GP'] as const;
+
+// Helper to check if a level type should show detail input
+const isDetailLevelType = (levelType: string): boolean => {
+  return DETAIL_TYPES.includes(levelType.toLowerCase());
+};
+
+// Normalize level detail (trim, normalize case, fix decimal inconsistencies)
+const normalizeLevelDetail = (detail: string): string => {
+  const trimmed = detail.trim();
+  if (trimmed.toLowerCase() === 'gp') return 'GP';
+  if (/^\.?\d/.test(trimmed)) {
+    const numMatch = trimmed.match(/^\.?(\d+\.?\d*)/);
+    if (numMatch) {
+      const num = parseFloat(trimmed.startsWith('.') ? `0${trimmed}` : trimmed);
+      if (!isNaN(num)) {
+        return num.toString();
+      }
+    }
+  }
+  return trimmed;
+};
+
+// Normalize a timeframe string (trim whitespace, uppercase unit letter)
+const normalizeLevelTimeframe = (tf: string): string => {
+  const trimmed = tf.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/^(\d+)([mhdwMHDW])$/i);
+  if (match) {
+    const num = match[1];
+    const unit = match[2].toUpperCase();
+    return `${unit}${num}`;
+  }
+  const match2 = trimmed.match(/^([mhdwMHDW])(\d+)$/i);
+  if (match2) {
+    const unit = match2[1].toUpperCase();
+    const num = match2[2];
+    return `${unit}${num}`;
+  }
+  return trimmed.toUpperCase();
+};
+
+// Initial form state for v2 schema
 const getInitialFormData = (): TradeFormData => ({
   pair: '',
   assetClass: 'forex',
   direction: 'long',
   entryTime: getCurrentDateTimeString(),
-  exitTime: '',
   entryPrice: '',
   stopLoss: '',
   targetPrice: '',
-  maePrice: '',
-  mfePrice: '',
-  firstTouchWorstPrice: '',
   positionSize: '',
   riskAmount: '',
   riskPercent: '',
   exits: [],
-  stopAdjustments: [],
-  setupTags: [],
-  analysisTFs: [],
+  timeline: [],
+  levelSequence: [],
+  contextTags: [],
   entryTF: '',
   entryConfirmation: '',
   confirmationTF: '',
-  htfBias: '',
-  marketCondition: '',
-  levelSequence: [],
   tradeTaken: true,
   notTakenReason: '',
-  emotionalState: null,
-  confidenceLevel: '',
-  followedPlan: true,
-  planDeviation: '',
-  isRevengeTrade: false,
-  isOverTrade: false,
   entryNotes: '',
   closeNotes: '',
-  screenshots: [],
-  tags: [],
-  events: [],
-  commissions: '',
-  swap: '',
-  accountId: '', // Will be set to default account's ID on load
-  strategyId: '', // Will be set to default strategy's ID on load
-  postExitSequence: [],
-  postExitBestPrice: '',
-  postExitWorstPrice: '',
-  reachedTargetPostExit: null,
   postExitNotes: '',
+  screenshots: [],
+  accountId: '',
+  strategyId: '',
+  reachedTargetPostExit: null,
 });
-
-// Pre-seeded reasons for not taking a trade (autocomplete suggestions)
-const NOT_TAKEN_REASONS = [
-  'hesitation',
-  'missed entry window',
-  'away from desk',
-  "didn't trust setup",
-  'risk too high',
-  'already in a trade',
-  'end of session',
-  'low confidence',
-  'news event pending',
-];
 
 // Options for selects
 const ASSET_CLASSES: { value: AssetClass; label: string }[] = [
@@ -122,7 +128,6 @@ const ASSET_CLASSES: { value: AssetClass; label: string }[] = [
   { value: 'other', label: 'Other' },
 ];
 
-// Timeframes use letter-first notation: M=minutes, H=hours, D=days, W=weeks, MN=monthly
 const TIMEFRAMES: { value: Timeframe; label: string }[] = [
   { value: 'M1', label: 'M1' },
   { value: 'M5', label: 'M5' },
@@ -136,61 +141,11 @@ const TIMEFRAMES: { value: Timeframe; label: string }[] = [
 ];
 
 const ENTRY_CONFIRMATION_OPTIONS: { value: string; label: string }[] = [
-  { value: '', label: '—' },
-  { value: 'blind_limit', label: 'Blind — limit order at level' },
-  { value: 'blind_market', label: 'Blind — market order at touch' },
+  { value: '', label: '---' },
+  { value: 'blind_limit', label: 'Blind - limit order at level' },
+  { value: 'blind_market', label: 'Blind - market order at touch' },
   { value: 'structural', label: 'Waited for structural confirmation' },
   { value: 'partial_confirmation', label: 'Partial confirmation' },
-];
-
-// Preset level timeframes for the combo input (MN = monthly, MTF = multi-timeframe)
-const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN', 'MTF'];
-
-// Preset confirmation timeframes (when structural or partial confirmation is used)
-const PRESET_CONFIRMATION_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
-
-// Preset event types for in-trade events
-const PRESET_EVENT_TYPES = [
-  'liquidity_sweep', 'spike_up', 'spike_down', 'dump', 'pump',
-  'stall_consolidation', 'reversal', 'news_reaction', 'session_open_move', 'retest'
-];
-
-// Normalize a timeframe string (trim whitespace, uppercase unit letter)
-const normalizeLevelTimeframe = (tf: string): string => {
-  const trimmed = tf.trim();
-  if (!trimmed) return '';
-  // Match patterns like "1m", "15M", "4h", "1d", "2W", etc.
-  const match = trimmed.match(/^(\d+)([mhdwMHDW])$/i);
-  if (match) {
-    const num = match[1];
-    const unit = match[2].toUpperCase();
-    return `${unit}${num}`;
-  }
-  // Already in correct format like "H4", "D1", etc.
-  const match2 = trimmed.match(/^([mhdwMHDW])(\d+)$/i);
-  if (match2) {
-    const unit = match2[1].toUpperCase();
-    const num = match2[2];
-    return `${unit}${num}`;
-  }
-  // Return as-is for custom values like "MTF"
-  return trimmed.toUpperCase();
-};
-
-const HTF_BIASES: { value: HTFBias; label: string }[] = [
-  { value: 'bullish', label: 'Bullish' },
-  { value: 'bearish', label: 'Bearish' },
-  { value: 'neutral', label: 'Neutral' },
-  { value: 'ranging', label: 'Ranging' },
-];
-
-const MARKET_CONDITIONS: { value: MarketCondition; label: string }[] = [
-  { value: 'trending', label: 'Trending' },
-  { value: 'ranging', label: 'Ranging' },
-  { value: 'volatile', label: 'Volatile' },
-  { value: 'choppy', label: 'Choppy' },
-  { value: 'breakout', label: 'Breakout' },
-  { value: 'reversal', label: 'Reversal' },
 ];
 
 const EXIT_TYPES: { value: ExitType; label: string }[] = [
@@ -202,23 +157,11 @@ const EXIT_TYPES: { value: ExitType; label: string }[] = [
   { value: 'time_exit', label: 'Time Exit' },
 ];
 
-const EMOTIONAL_STATES: { value: EmotionalState; emoji: string; label: string }[] = [
-  { value: 1, emoji: '😰', label: 'Very Anxious' },
-  { value: 2, emoji: '😟', label: 'Anxious' },
-  { value: 3, emoji: '😐', label: 'Neutral' },
-  { value: 4, emoji: '😊', label: 'Confident' },
-  { value: 5, emoji: '🤩', label: 'Very Confident' },
-];
+// Preset level timeframes for the combo input
+const PRESET_LEVEL_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN', 'MTF'];
 
-const CONFIDENCE_LEVELS: { value: ConfidenceLevel; label: string }[] = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-];
-
-// Default setup tag suggestions (shown if no prior tags exist)
-// Tags will be learned from previous trades - no hardcoded defaults
-const DEFAULT_SETUP_TAGS: string[] = [];
+// Preset confirmation timeframes
+const PRESET_CONFIRMATION_TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 
 // Helper to check if a level type is a zone (has two edges) - for preset types only
 const isPresetZoneType = (levelType: string): boolean => {
@@ -254,17 +197,14 @@ interface ValidationErrors {
   entryPrice?: string;
   stopLoss?: string;
   entryTime?: string;
+  notTakenReason?: string;
 }
 
 interface ValidationWarnings {
   riskPercent?: string;
   stopLoss?: string;
   targetPrice?: string;
-  maePrice?: string;
-  mfePrice?: string;
-  firstTouchWorstPrice?: string;
-  exitWarnings?: Record<string, string>; // keyed by exit id
-  stopAdjustmentWarnings?: Record<string, string>; // keyed by adjustment id
+  exitWarnings?: Record<string, string>;
 }
 
 export function TradeForm() {
@@ -277,18 +217,16 @@ export function TradeForm() {
   const [originalStopLoss, setOriginalStopLoss] = useState<number | undefined>();
   const [createdAt, setCreatedAt] = useState<Date | undefined>();
   const [existingReviewedAt, setExistingReviewedAt] = useState<string | null>(null);
-  const [quickLogMode, setQuickLogMode] = useState(false);
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [warnings, setWarnings] = useState<ValidationWarnings>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoading, setIsLoading] = useState(isEditMode);
   const [previousPairs, setPreviousPairs] = useState<string[]>([]);
-  const [previousSetupTags, setPreviousSetupTags] = useState<string[]>([]);
+  const [previousContextTags, setPreviousContextTags] = useState<string[]>([]);
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
-  const [tagInput, setTagInput] = useState('');
-  const [setupTagInput, setSetupTagInput] = useState('');
+  const [contextTagInput, setContextTagInput] = useState('');
   const [showPairSuggestions, setShowPairSuggestions] = useState(false);
-  const [showSetupTagSuggestions, setShowSetupTagSuggestions] = useState(false);
+  const [showContextTagSuggestions, setShowContextTagSuggestions] = useState(false);
 
   // Accounts and strategies
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -306,25 +244,30 @@ export function TradeForm() {
   // Level type autocomplete state
   const [previousLevelTypes, setPreviousLevelTypes] = useState<string[]>([]);
   const [levelTypePrefs, setLevelTypePrefs] = useState<LevelTypePref[]>([]);
-  const [levelTypeInputs, setLevelTypeInputs] = useState<Record<number, string>>({}); // Input value per row index
+  const [levelTypeInputs, setLevelTypeInputs] = useState<Record<number, string>>({});
   const [showLevelTypeSuggestions, setShowLevelTypeSuggestions] = useState<Record<number, boolean>>({});
 
   // Level timeframe autocomplete state
   const [previousLevelTimeframes, setPreviousLevelTimeframes] = useState<string[]>([]);
-  const [levelTfInputs, setLevelTfInputs] = useState<Record<number, string>>({}); // Input value per row index
+  const [levelTfInputs, setLevelTfInputs] = useState<Record<number, string>>({});
   const [showLevelTfSuggestions, setShowLevelTfSuggestions] = useState<Record<number, boolean>>({});
+
+  // Level detail autocomplete state
+  const [previousLevelDetails, setPreviousLevelDetails] = useState<string[]>([]);
+  const [levelDetailInputs, setLevelDetailInputs] = useState<Record<number, string>>({});
+  const [showLevelDetailSuggestions, setShowLevelDetailSuggestions] = useState<Record<number, boolean>>({});
 
   // Confirmation TF combo input state
   const [confirmationTfInput, setConfirmationTfInput] = useState('');
   const [showConfirmationTfSuggestions, setShowConfirmationTfSuggestions] = useState(false);
 
-  // In-trade events state
+  // Timeline state
   const [previousEventTypes, setPreviousEventTypes] = useState<string[]>([]);
-  const [eventsExpanded, setEventsExpanded] = useState(false);
   const [eventTypeInput, setEventTypeInput] = useState('');
   const [showEventTypeSuggestions, setShowEventTypeSuggestions] = useState(false);
   const [newEventTime, setNewEventTime] = useState('');
   const [newEventType, setNewEventType] = useState('');
+  const [newEventPrice, setNewEventPrice] = useState('');
   const [newEventDescription, setNewEventDescription] = useState('');
 
   // Load existing trade data for edit mode
@@ -340,50 +283,33 @@ export function TradeForm() {
             assetClass: trade.assetClass,
             direction: trade.direction,
             entryTime: toLocalDateTimeString(new Date(trade.entryTime)),
-            exitTime: trade.exitTime ? toLocalDateTimeString(new Date(trade.exitTime)) : '',
             entryPrice: String(trade.entryPrice),
             stopLoss: String(trade.stopLoss),
             targetPrice: trade.targetPrice ? String(trade.targetPrice) : '',
-            maePrice: trade.maePrice != null ? String(trade.maePrice) : '',
-            mfePrice: trade.mfePrice != null ? String(trade.mfePrice) : '',
-            firstTouchWorstPrice: trade.firstTouchWorstPrice != null ? String(trade.firstTouchWorstPrice) : '',
             positionSize: String(trade.positionSize),
             riskAmount: trade.riskAmount ? String(trade.riskAmount) : '',
             riskPercent: trade.riskPercent ? String(trade.riskPercent) : '',
             exits: trade.exits || [],
-            stopAdjustments: trade.stopAdjustments || [],
-            setupTags: trade.setupTags || [],
-            analysisTFs: trade.analysisTFs || [],
+            timeline: trade.timeline || [],
+            levelSequence: (trade.levelSequence || []).map(l => ({
+              ...l,
+              levelDetail: l.levelDetail ?? '',
+            })),
+            contextTags: trade.contextTags || [],
             entryTF: trade.entryTF || '',
             entryConfirmation: trade.entryConfirmation || '',
             confirmationTF: trade.confirmationTF || '',
-            htfBias: trade.htfBias || '',
-            marketCondition: trade.marketCondition || '',
-            levelSequence: trade.levelSequence || [],
             tradeTaken: trade.tradeTaken ?? true,
             notTakenReason: trade.notTakenReason || '',
-            emotionalState: trade.emotionalState ?? null,
-            confidenceLevel: trade.confidenceLevel || '',
-            followedPlan: trade.followedPlan ?? true,
-            planDeviation: trade.planDeviation || '',
-            isRevengeTrade: trade.isRevengeTrade ?? false,
-            isOverTrade: trade.isOverTrade ?? false,
             entryNotes: trade.entryNotes || '',
             closeNotes: trade.closeNotes || '',
+            postExitNotes: trade.postExitNotes || '',
             screenshots: trade.screenshots || [],
-            tags: trade.tags || [],
-            events: trade.events || [],
-            commissions: trade.commissions ? String(trade.commissions) : '',
-            swap: trade.swap ? String(trade.swap) : '',
             accountId: trade.accountId,
             strategyId: trade.strategyId,
-            postExitSequence: trade.postExitSequence || [],
-            postExitBestPrice: trade.postExitBestPrice != null ? String(trade.postExitBestPrice) : '',
-            postExitWorstPrice: trade.postExitWorstPrice != null ? String(trade.postExitWorstPrice) : '',
             reachedTargetPostExit: trade.reachedTargetPostExit ?? null,
-            postExitNotes: trade.postExitNotes || '',
           });
-          setOriginalStopLoss(trade.originalStopLoss);
+          setOriginalStopLoss(trade.stopLoss);
           setCreatedAt(trade.createdAt);
           setExistingReviewedAt(trade.reviewedAt || null);
         }
@@ -396,16 +322,15 @@ export function TradeForm() {
     loadTrade();
   }, [id]);
 
-  // Load previously used pairs, setups, accounts and strategies
+  // Load previously used pairs, context tags, accounts and strategies
   useEffect(() => {
     const loadSuggestions = async () => {
       const trades = await db.trades.toArray();
       const pairs = [...new Set(trades.map((t) => t.pair))].filter(Boolean);
-      // Collect all unique setup tags from all trades
-      const allTags = trades.flatMap((t) => t.setupTags || []);
+      const allTags = trades.flatMap((t) => t.contextTags || []);
       const uniqueTags = [...new Set(allTags)].filter(Boolean);
       setPreviousPairs(pairs);
-      setPreviousSetupTags(uniqueTags);
+      setPreviousContextTags(uniqueTags);
 
       // Collect all unique level types from all trades
       const allLevelTypes = trades.flatMap((t) =>
@@ -414,7 +339,7 @@ export function TradeForm() {
       const uniqueLevelTypes = [...new Set(allLevelTypes)].filter(Boolean);
       setPreviousLevelTypes(uniqueLevelTypes);
 
-      // Collect all unique level timeframes (excluding presets to only get custom ones)
+      // Collect all unique level timeframes
       const allLevelTimeframes = trades.flatMap((t) =>
         (t.levelSequence || []).map((l) => l.timeframe).filter(Boolean)
       );
@@ -422,16 +347,24 @@ export function TradeForm() {
         .filter(tf => tf && !PRESET_LEVEL_TIMEFRAMES.includes(tf));
       setPreviousLevelTimeframes(uniqueLevelTimeframes);
 
+      // Collect all unique level details
+      const allLevelDetails = trades.flatMap((t) =>
+        (t.levelSequence || []).map((l) => (l as { levelDetail?: string }).levelDetail).filter((d): d is string => Boolean(d))
+      );
+      const uniqueLevelDetails = [...new Set(allLevelDetails)]
+        .filter(d => !PRESET_FIB_DETAILS.includes(d as typeof PRESET_FIB_DETAILS[number]));
+      setPreviousLevelDetails(uniqueLevelDetails);
+
       // Load level type zone preferences
       const prefs = await db.levelTypePrefs.toArray();
       setLevelTypePrefs(prefs);
 
-      // Collect all unique event types from all trades (excluding presets to only get custom ones)
+      // Collect all unique event types from timeline
       const allEventTypes = trades.flatMap((t) =>
-        (t.events || []).map((e) => e.eventType).filter(Boolean)
+        (t.timeline || []).map((e) => e.eventType).filter(Boolean)
       );
       const uniqueEventTypes = [...new Set(allEventTypes)]
-        .filter(et => et && !PRESET_EVENT_TYPES.includes(et));
+        .filter(et => et && !EVENT_TYPE_PRESETS.includes(et as typeof EVENT_TYPE_PRESETS[number]));
       setPreviousEventTypes(uniqueEventTypes);
 
       // Load glossary for tag descriptions
@@ -478,13 +411,9 @@ export function TradeForm() {
   const calculated = useMemo(() => {
     const entryPrice = parseFloat(formData.entryPrice) || 0;
     const currentStopLoss = parseFloat(formData.stopLoss) || 0;
-    // CRITICAL: Use original stop loss for R calculations to avoid explosion when stops are adjusted
-    // The originalStopLoss is set on first save and never changes. For new trades, use current stop.
     const stopForRCalc = originalStopLoss ?? currentStopLoss;
     const targetPrice = formData.targetPrice ? parseFloat(formData.targetPrice) : undefined;
     const positionSize = parseFloat(formData.positionSize) || 0;
-    const commissions = parseFloat(formData.commissions) || 0;
-    const swap = parseFloat(formData.swap) || 0;
     const entryTime = parseLocalDateTime(formData.entryTime);
 
     // Derive exit values from exits array
@@ -519,23 +448,13 @@ export function TradeForm() {
       }
     }
 
-    // Derive exitType
-    let exitType: string | undefined;
-    if (exits.length === 1) {
-      exitType = exits[0].type;
-    } else if (exits.length > 1) {
-      exitType = 'partial';
-    }
-
     const session = entryTime ? deriveSession(entryTime) : 'other';
-    // Use original stop for all R calculations - "1R" is defined by the ORIGINAL risk, not adjusted stops
     const stopDistance = entryPrice && stopForRCalc ? calculateStopDistance(entryPrice, stopForRCalc) : undefined;
     const plannedRR = entryPrice && stopForRCalc ? calculatePlannedRR(entryPrice, stopForRCalc, targetPrice) : undefined;
     const actualRR = entryPrice && stopForRCalc ? calculateActualRR(entryPrice, stopForRCalc, exitPrice) : undefined;
     const rMultiple = entryPrice && stopForRCalc ? calculateRMultiple(entryPrice, stopForRCalc, exitPrice, formData.direction) : undefined;
 
-    // Calculate P&L using R-based method (instrument-agnostic)
-    // Also uses original stop since R is based on original risk unit
+    // Calculate P&L using R-based method
     const riskAmount = parseFloat(formData.riskAmount) || 0;
     let pnl: number | undefined;
     if (entryPrice && stopForRCalc && riskAmount && positionSize && exits.length > 0) {
@@ -548,13 +467,11 @@ export function TradeForm() {
         exits.map(e => ({ price: e.price, size: e.size }))
       );
     }
-    const netPnl = calculateNetPnl(pnl, commissions, swap);
     const holdDuration = entryTime ? calculateHoldDuration(entryTime, exitTime) : undefined;
 
     return {
       session,
       status,
-      exitType,
       exitPrice,
       exitTime,
       totalExitSize,
@@ -563,7 +480,6 @@ export function TradeForm() {
       actualRR,
       rMultiple,
       pnl,
-      netPnl,
       holdDuration,
     };
   }, [formData, originalStopLoss]);
@@ -587,7 +503,12 @@ export function TradeForm() {
       newErrors.entryTime = 'Entry time is required';
     }
 
-    // Stop loss validation (direction consistency - existing)
+    // notTakenReason is REQUIRED when tradeTaken === false
+    if (!formData.tradeTaken && !formData.notTakenReason.trim()) {
+      newErrors.notTakenReason = 'Reason is required for missed trades';
+    }
+
+    // Stop loss validation (direction consistency)
     if (formData.entryPrice && formData.stopLoss) {
       const entryPrice = parseFloat(formData.entryPrice);
       const stopLoss = parseFloat(formData.stopLoss);
@@ -605,97 +526,39 @@ export function TradeForm() {
       }
     }
 
-    // === Price Sanity Checks (non-blocking warnings) ===
+    // Price sanity checks
     const entryPrice = parseFloat(formData.entryPrice) || 0;
     const stopLoss = parseFloat(formData.stopLoss) || 0;
 
     if (entryPrice > 0 && stopLoss > 0) {
-      // A) Stop distance plausibility
       const stopDistance = Math.abs(stopLoss - entryPrice);
       const stopDistancePercent = stopDistance / entryPrice;
       const threshold = formData.assetClass === 'crypto' ? 0.25 : 0.10;
       if (stopDistancePercent > threshold) {
         const pctFormatted = (stopDistancePercent * 100).toFixed(1);
-        newWarnings.stopLoss = `Stop is ${pctFormatted}% away from entry — check for a typo`;
-      }
-
-      // B) Magnitude mismatch helper
-      const checkMagnitudeMismatch = (price: number): string | undefined => {
-        if (price > 0 && Math.abs(price - entryPrice) / entryPrice > 0.5) {
-          return `This price looks very different from your entry (${entryPrice}) — check for a typo`;
-        }
-        return undefined;
-      };
-
-      // Check stop loss magnitude (only if not already warned)
-      if (!newWarnings.stopLoss) {
-        const slMagnitudeWarning = checkMagnitudeMismatch(stopLoss);
-        if (slMagnitudeWarning) newWarnings.stopLoss = slMagnitudeWarning;
+        newWarnings.stopLoss = `Stop is ${pctFormatted}% away from entry - check for a typo`;
       }
 
       // Check target price
       const targetPrice = parseFloat(formData.targetPrice) || 0;
-      if (targetPrice > 0) {
-        const tpWarning = checkMagnitudeMismatch(targetPrice);
-        if (tpWarning) newWarnings.targetPrice = tpWarning;
+      if (targetPrice > 0 && Math.abs(targetPrice - entryPrice) / entryPrice > 0.5) {
+        newWarnings.targetPrice = `Target looks very different from entry - check for a typo`;
       }
 
-      // Check worst price (MAE)
-      const maePrice = parseFloat(formData.maePrice) || 0;
-      if (maePrice > 0) {
-        const maeWarning = checkMagnitudeMismatch(maePrice);
-        if (maeWarning) {
-          newWarnings.maePrice = maeWarning;
-        } else {
-          // C) Direction consistency - worst price
-          if (formData.direction === 'long' && maePrice > entryPrice) {
-            newWarnings.maePrice = 'Worst price is above your entry on a long — did you swap the fields?';
-          } else if (formData.direction === 'short' && maePrice < entryPrice) {
-            newWarnings.maePrice = 'Worst price is below your entry on a short — did you swap the fields?';
-          }
-        }
-      }
-
-      // Check best price (MFE)
-      const mfePrice = parseFloat(formData.mfePrice) || 0;
-      if (mfePrice > 0) {
-        const mfeWarning = checkMagnitudeMismatch(mfePrice);
-        if (mfeWarning) {
-          newWarnings.mfePrice = mfeWarning;
-        } else {
-          // C) Direction consistency - best price
-          if (formData.direction === 'long' && mfePrice < entryPrice) {
-            newWarnings.mfePrice = 'Best price is below your entry on a long — did you swap the fields?';
-          } else if (formData.direction === 'short' && mfePrice > entryPrice) {
-            newWarnings.mfePrice = 'Best price is above your entry on a short — did you swap the fields?';
-          }
-        }
-      }
-
-      // Check first-touch worst price
-      const firstTouchWorstPrice = parseFloat(formData.firstTouchWorstPrice) || 0;
-      if (firstTouchWorstPrice > 0) {
-        const ftWarning = checkMagnitudeMismatch(firstTouchWorstPrice);
-        if (ftWarning) newWarnings.firstTouchWorstPrice = ftWarning;
-      }
-
-      // D) Exit price sanity (R-multiple beyond ±20R)
+      // Exit price sanity
       if (formData.exits && formData.exits.length > 0) {
         const exitWarnings: Record<string, string> = {};
         for (const exit of formData.exits) {
           if (exit.price > 0) {
-            // Check magnitude mismatch
-            const exitMagnitudeWarning = checkMagnitudeMismatch(exit.price);
-            if (exitMagnitudeWarning) {
-              exitWarnings[exit.id] = exitMagnitudeWarning;
+            if (Math.abs(exit.price - entryPrice) / entryPrice > 0.5) {
+              exitWarnings[exit.id] = 'This exit price looks very different from entry';
             } else {
-              // Check R-multiple
               const exitPnlDirection = formData.direction === 'long'
                 ? exit.price - entryPrice
                 : entryPrice - exit.price;
-              const rMultiple = exitPnlDirection / stopDistance;
-              if (Math.abs(rMultiple) > 20) {
-                exitWarnings[exit.id] = `This exit implies ${rMultiple.toFixed(1)}R — check the price`;
+              const rMult = exitPnlDirection / stopDistance;
+              if (Math.abs(rMult) > 20) {
+                exitWarnings[exit.id] = `This exit implies ${rMult.toFixed(1)}R - check the price`;
               }
             }
           }
@@ -706,27 +569,10 @@ export function TradeForm() {
       }
     }
 
-    // E) Stop adjustment timestamp validation - warn if adjustment logged after exit time
-    if (formData.stopAdjustments && formData.stopAdjustments.length > 0 && calculated.exitTime) {
-      const exitTimestamp = calculated.exitTime.getTime();
-      const stopAdjustmentWarnings: Record<string, string> = {};
-      for (const adj of formData.stopAdjustments) {
-        if (adj.time) {
-          const adjTime = adj.time instanceof Date ? adj.time : new Date(adj.time);
-          if (adjTime.getTime() > exitTimestamp) {
-            stopAdjustmentWarnings[adj.id] = 'This adjustment was logged after the trade exited';
-          }
-        }
-      }
-      if (Object.keys(stopAdjustmentWarnings).length > 0) {
-        newWarnings.stopAdjustmentWarnings = stopAdjustmentWarnings;
-      }
-    }
-
     setErrors(newErrors);
     setWarnings(newWarnings);
     return Object.keys(newErrors).length === 0;
-  }, [formData, calculated.exitTime]);
+  }, [formData]);
 
   // Handle form field changes
   const handleChange = (field: keyof TradeFormData, value: unknown) => {
@@ -763,78 +609,60 @@ export function TradeForm() {
     }));
   };
 
-  // Handle stop adjustments
-  const addStopAdjustment = () => {
-    const newAdjustment: StopAdjustment = {
+  // Handle timeline events
+  const addTimelineEvent = () => {
+    if (!newEventType.trim()) return;
+    const maxOrder = formData.timeline.reduce((max, e) => Math.max(max, e.order), 0);
+    const newEvent: TradeEvent = {
       id: uuidv4(),
-      time: new Date(),
-      newStop: 0,
-      reason: '',
-      trigger: '',
+      order: maxOrder + 1,
+      time: newEventTime || null,
+      eventType: newEventType.trim(),
+      price: newEventPrice ? parseFloat(newEventPrice) : null,
+      description: newEventDescription.trim(),
     };
     setFormData((prev) => ({
       ...prev,
-      stopAdjustments: [...prev.stopAdjustments, newAdjustment],
+      timeline: [...prev.timeline, newEvent].sort((a, b) => a.order - b.order),
     }));
+    setNewEventTime('');
+    setNewEventType('');
+    setNewEventPrice('');
+    setNewEventDescription('');
+    setEventTypeInput('');
   };
 
-  const updateStopAdjustment = (id: string, field: keyof StopAdjustment, value: unknown) => {
+  const updateTimelineEvent = (id: string, field: keyof TradeEvent, value: unknown) => {
     setFormData((prev) => ({
       ...prev,
-      stopAdjustments: prev.stopAdjustments.map((s) => (s.id === id ? { ...s, [field]: value } : s)),
+      timeline: prev.timeline.map((e) => (e.id === id ? { ...e, [field]: value } : e)),
     }));
   };
 
-  const removeStopAdjustment = (id: string) => {
+  const removeTimelineEvent = (id: string) => {
     setFormData((prev) => ({
       ...prev,
-      stopAdjustments: prev.stopAdjustments.filter((s) => s.id !== id),
+      timeline: prev.timeline.filter((e) => e.id !== id),
     }));
   };
 
-  // Pre-seeded autocomplete options for stop adjustments
-  const STOP_ADJUSTMENT_REASONS = [
-    'moved to BE',
-    'below last support',
-    'above last resistance',
-    'trail behind structure',
-    'trail behind EMA',
-    'trail behind last swing',
-  ];
-
-  const STOP_ADJUSTMENT_TRIGGERS = [
-    'TP1 hit',
-    'new HH formed',
-    'new HL formed',
-    'time-based',
-    'momentum shift',
-  ];
-
-  // Handle tags
-  const addTag = () => {
-    const tag = tagInput.trim();
-    if (tag && !formData.tags.includes(tag)) {
-      setFormData((prev) => ({ ...prev, tags: [...prev.tags, tag] }));
-      setTagInput('');
-    }
-  };
-
-  const removeTag = (tag: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      tags: prev.tags.filter((t) => t !== tag),
-    }));
+  const reorderTimelineEvent = (index: number, direction: 'up' | 'down') => {
+    setFormData((prev) => {
+      const newTimeline = [...prev.timeline];
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= newTimeline.length) return prev;
+      [newTimeline[index], newTimeline[targetIndex]] = [newTimeline[targetIndex], newTimeline[index]];
+      // Renumber orders
+      newTimeline.forEach((e, i) => { e.order = i + 1; });
+      return { ...prev, timeline: newTimeline };
+    });
   };
 
   // Add screenshot URL
   const addScreenshotUrl = () => {
     const url = screenshotUrlInput.trim();
     if (!url) return;
-
-    // Validate URL format
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      return;
-    }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) return;
 
     const newScreenshot: Screenshot = {
       id: uuidv4(),
@@ -848,7 +676,6 @@ export function TradeForm() {
       screenshots: [...prev.screenshots, newScreenshot],
     }));
 
-    // Clear inputs
     setScreenshotUrlInput('');
     setScreenshotCaptionInput('');
   };
@@ -881,11 +708,10 @@ export function TradeForm() {
         updatedAt: new Date(),
       };
 
-      const id = await db.strategies.add(newStrategy as Strategy);
-      // Reload strategies and select the new one
+      const newId = await db.strategies.add(newStrategy as Strategy);
       const allStrategies = await db.strategies.toArray();
       setStrategies(allStrategies);
-      handleChange('strategyId', id as string);
+      handleChange('strategyId', newId as string);
       setNewStrategyName('');
       setShowAddStrategy(false);
     } catch (error) {
@@ -907,26 +733,7 @@ export function TradeForm() {
       const entryPrice = parseFloat(formData.entryPrice);
       const stopLoss = parseFloat(formData.stopLoss);
 
-      // Parse MAE/MFE price levels
-      const maePrice = formData.maePrice ? parseFloat(formData.maePrice) : null;
-      const mfePrice = formData.mfePrice ? parseFloat(formData.mfePrice) : null;
-      const firstTouchWorstPrice = formData.firstTouchWorstPrice ? parseFloat(formData.firstTouchWorstPrice) : null;
-
-      // Calculate MAE/MFE distances and R-multiples from price levels
-      const stopDistance = calculated.stopDistance;
-      let maeR: number | undefined;
-      let mfeR: number | undefined;
-
-      if (maePrice !== null && stopDistance) {
-        const maeDistance = Math.abs(entryPrice - maePrice);
-        maeR = maeDistance / stopDistance;
-      }
-      if (mfePrice !== null && stopDistance) {
-        const mfeDistance = Math.abs(entryPrice - mfePrice);
-        mfeR = mfeDistance / stopDistance;
-      }
-
-      // Build trade data without id for new trades (Dexie Cloud generates @id)
+      // Build trade data for v2 schema
       const tradeData = {
         accountId: formData.accountId,
         strategyId: formData.strategyId,
@@ -934,93 +741,37 @@ export function TradeForm() {
         assetClass: formData.assetClass,
         direction: formData.direction,
         entryTime,
-        exitTime: calculated.exitTime,
-        status: calculated.status,
         entryPrice,
         stopLoss,
         targetPrice: formData.targetPrice ? parseFloat(formData.targetPrice) : undefined,
-        exitPrice: calculated.exitPrice,
         positionSize: parseFloat(formData.positionSize) || 0,
         riskAmount: formData.riskAmount ? parseFloat(formData.riskAmount) : undefined,
         riskPercent: formData.riskPercent ? parseFloat(formData.riskPercent) : undefined,
         exits: formData.exits,
-        exitType: calculated.exitType,
-        stopAdjustments: formData.stopAdjustments,
-        setupTags: formData.setupTags,
-        analysisTFs: formData.analysisTFs,
-        entryTF: formData.entryTF || undefined,
-        entryConfirmation: formData.entryConfirmation || undefined,
-        // Only save confirmationTF if structural or partial_confirmation
-        confirmationTF: (formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation')
-          ? (formData.confirmationTF || undefined)
-          : undefined,
-        htfBias: formData.htfBias || undefined,
-        marketCondition: formData.marketCondition || undefined,
+        timeline: formData.timeline,
         levelSequence: formData.levelSequence.map(level => ({
           ...level,
           timeframe: normalizeLevelTimeframe(level.timeframe),
+          levelDetail: normalizeLevelDetail(level.levelDetail),
         })),
+        contextTags: formData.contextTags,
+        entryTF: formData.entryTF || undefined,
+        entryConfirmation: formData.entryConfirmation || undefined,
+        confirmationTF: (formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation')
+          ? (formData.confirmationTF || undefined)
+          : undefined,
         tradeTaken: formData.tradeTaken,
         notTakenReason: !formData.tradeTaken ? formData.notTakenReason.trim() : '',
-        emotionalState: formData.emotionalState ?? undefined,
-        confidenceLevel: formData.confidenceLevel || undefined,
-        followedPlan: formData.followedPlan,
-        planDeviation: !formData.followedPlan ? formData.planDeviation.trim() : undefined,
-        isRevengeTrade: formData.isRevengeTrade,
-        isOverTrade: formData.isOverTrade,
         entryNotes: formData.entryNotes.trim() || undefined,
         closeNotes: formData.closeNotes.trim() || undefined,
+        postExitNotes: formData.postExitNotes.trim() || undefined,
         screenshots: formData.screenshots,
-        tags: formData.tags,
-        events: formData.events,
-        maePrice,
-        mfePrice,
-        firstTouchWorstPrice,
-        maeR,
-        mfeR,
-        session: calculated.session,
-        plannedRR: calculated.plannedRR,
-        actualRR: calculated.actualRR,
-        rMultiple: calculated.rMultiple,
-        stopDistance: calculated.stopDistance,
-        pnl: calculated.pnl,
-        commissions: formData.commissions ? parseFloat(formData.commissions) : undefined,
-        swap: formData.swap ? parseFloat(formData.swap) : undefined,
-        netPnl: calculated.netPnl,
-        holdDuration: calculated.holdDuration,
-        // Preserve original stop loss on edit, set on first save for new trades
-        originalStopLoss: isEditMode ? originalStopLoss : stopLoss,
-        // Post-exit tracking fields
-        postExitSequence: formData.postExitSequence,
-        // Derive best/worst prices from sequence for backward compatibility
-        // Find favourable_extreme and adverse_extreme from the sequence
-        postExitBestPrice: (() => {
-          const favourable = formData.postExitSequence.find(m => m.kind === 'favourable_extreme');
-          if (favourable) return favourable.price;
-          // Fallback to manual input if no sequence
-          return formData.postExitBestPrice ? parseFloat(formData.postExitBestPrice) : null;
-        })(),
-        postExitWorstPrice: (() => {
-          const adverse = formData.postExitSequence.find(m => m.kind === 'adverse_extreme');
-          if (adverse) return adverse.price;
-          // Fallback to manual input if no sequence
-          return formData.postExitWorstPrice ? parseFloat(formData.postExitWorstPrice) : null;
-        })(),
         reachedTargetPostExit: formData.reachedTargetPostExit,
-        postExitNotes: formData.postExitNotes.trim(),
-        // Review is complete when:
-        // - At least 2 milestones (favourable and adverse extremes) OR legacy best/worst prices
-        // - reachedTargetPostExit is set
-        // - postExitNotes is filled
+        // Review is complete when reachedTargetPostExit is set and postExitNotes is filled
         reviewedAt: (() => {
-          const hasFavourable = formData.postExitSequence.some(m => m.kind === 'favourable_extreme');
-          const hasAdverse = formData.postExitSequence.some(m => m.kind === 'adverse_extreme');
-          const hasSequence = hasFavourable && hasAdverse;
-          const hasLegacyPrices = !!(formData.postExitBestPrice && formData.postExitWorstPrice);
-          const hasPriceData = hasSequence || hasLegacyPrices;
           const hasReachedTarget = formData.reachedTargetPostExit !== null;
           const hasNotes = formData.postExitNotes.trim() !== '';
-          const isComplete = hasPriceData && hasReachedTarget && hasNotes;
+          const isComplete = hasReachedTarget && hasNotes;
           return isComplete ? (existingReviewedAt || now.toISOString()) : null;
         })(),
         createdAt: isEditMode ? createdAt! : now,
@@ -1028,11 +779,9 @@ export function TradeForm() {
       };
 
       if (isEditMode) {
-        // For edits, include the existing id
         await db.trades.put({ ...tradeData, id: id! } as TradeRecord);
         navigate(`/trades/${id}`);
       } else {
-        // For new trades, let Dexie Cloud generate the id
         await db.trades.add(tradeData as TradeRecord);
         navigate('/trades');
       }
@@ -1048,56 +797,47 @@ export function TradeForm() {
     p.toLowerCase().includes(formData.pair.toLowerCase())
   );
 
-  // Setup tag suggestions: use previous tags if available, otherwise defaults
-  const availableSetupTags = previousSetupTags.length > 0 ? previousSetupTags : DEFAULT_SETUP_TAGS;
-  const filteredSetupTags = availableSetupTags
-    .filter((tag) => !formData.setupTags.includes(tag)) // Exclude already selected
-    .filter((tag) => tag.toLowerCase().includes(setupTagInput.toLowerCase()))
+  // Context tag suggestions
+  const filteredContextTags = previousContextTags
+    .filter((tag) => !formData.contextTags.includes(tag))
+    .filter((tag) => tag.toLowerCase().includes(contextTagInput.toLowerCase()))
     .map((tag) => ({ name: tag, description: tagDescriptions[tag] || '' }));
 
-  // Add/remove setup tags
-  const addSetupTag = (tag: string) => {
+  // Add/remove context tags
+  const addContextTag = (tag: string) => {
     const trimmedTag = tag.trim();
-    if (trimmedTag && !formData.setupTags.includes(trimmedTag)) {
-      setFormData((prev) => ({ ...prev, setupTags: [...prev.setupTags, trimmedTag] }));
+    if (trimmedTag && !formData.contextTags.includes(trimmedTag)) {
+      setFormData((prev) => ({ ...prev, contextTags: [...prev.contextTags, trimmedTag] }));
     }
-    setSetupTagInput('');
-    setShowSetupTagSuggestions(false);
+    setContextTagInput('');
+    setShowContextTagSuggestions(false);
   };
 
-  const removeSetupTag = (tag: string) => {
+  const removeContextTag = (tag: string) => {
     setFormData((prev) => ({
       ...prev,
-      setupTags: prev.setupTags.filter((t) => t !== tag),
+      contextTags: prev.contextTags.filter((t) => t !== tag),
     }));
   };
 
   // === Level Type Helpers ===
-
-  // Check if a level type should be treated as a zone (considering custom preferences)
   const isLevelTypeZone = useCallback((levelType: string): boolean => {
-    // Preset zone types are always zones
     if (isPresetZoneType(levelType)) return true;
-    // Preset line types are never zones
     if (isPresetLineType(levelType)) return false;
-    // For custom types, check the stored preference
     const pref = levelTypePrefs.find(p => p.levelType === levelType);
-    return pref?.isZone ?? false; // Default to line if no preference stored
+    return pref?.isZone ?? false;
   }, [levelTypePrefs]);
 
-  // Check if zone toggle should be shown for a level type
   const shouldShowZoneToggle = (levelType: string): boolean => {
     return levelType !== '' && !isKnownLevelType(levelType);
   };
 
-  // All available level types for autocomplete (presets + previously used custom types)
   const allLevelTypes = useMemo(() => {
     const combined = new Set(ALL_PRESET_TYPES);
     previousLevelTypes.forEach(lt => combined.add(lt));
     return Array.from(combined);
   }, [previousLevelTypes]);
 
-  // Get filtered level type suggestions for a row
   const getFilteredLevelTypes = (index: number, currentValue: string): string[] => {
     const inputValue = levelTypeInputs[index] ?? currentValue;
     return allLevelTypes
@@ -1105,10 +845,8 @@ export function TradeForm() {
       .slice(0, 10);
   };
 
-  // All level timeframes = presets + custom previously used ones
   const allLevelTimeframes = [...PRESET_LEVEL_TIMEFRAMES, ...previousLevelTimeframes.filter(tf => !PRESET_LEVEL_TIMEFRAMES.includes(tf))];
 
-  // Get filtered level timeframe suggestions for a row
   const getFilteredLevelTimeframes = (index: number, currentValue: string): string[] => {
     const inputValue = levelTfInputs[index] ?? currentValue;
     if (!inputValue) return allLevelTimeframes;
@@ -1117,7 +855,6 @@ export function TradeForm() {
       .slice(0, 10);
   };
 
-  // Select a level timeframe from suggestions
   const selectLevelTimeframe = (index: number, timeframe: string) => {
     setFormData((prev) => ({
       ...prev,
@@ -1125,11 +862,31 @@ export function TradeForm() {
         i === index ? { ...l, timeframe } : l
       ),
     }));
-    setLevelTfInputs(prev => ({ ...prev, [index]: '' }));
+    setLevelTfInputs(prev => ({ ...prev, [index]: timeframe }));
     setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false }));
   };
 
-  // Get filtered confirmation timeframe suggestions
+  const allLevelDetails = [...PRESET_FIB_DETAILS, ...previousLevelDetails.filter(d => !PRESET_FIB_DETAILS.includes(d as typeof PRESET_FIB_DETAILS[number]))];
+
+  const getFilteredLevelDetails = (index: number, currentValue: string): string[] => {
+    const inputValue = levelDetailInputs[index] ?? currentValue;
+    if (!inputValue) return allLevelDetails;
+    return allLevelDetails
+      .filter(d => d.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  const selectLevelDetail = (index: number, detail: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      levelSequence: prev.levelSequence.map((l, i) =>
+        i === index ? { ...l, levelDetail: detail } : l
+      ),
+    }));
+    setLevelDetailInputs(prev => ({ ...prev, [index]: detail }));
+    setShowLevelDetailSuggestions(prev => ({ ...prev, [index]: false }));
+  };
+
   const getFilteredConfirmationTFs = (): string[] => {
     const inputValue = confirmationTfInput || formData.confirmationTF;
     if (!inputValue) return PRESET_CONFIRMATION_TIMEFRAMES;
@@ -1138,7 +895,6 @@ export function TradeForm() {
       .slice(0, 10);
   };
 
-  // Select a confirmation timeframe from suggestions
   const selectConfirmationTF = (tf: string) => {
     handleChange('confirmationTF', tf);
     setConfirmationTfInput('');
@@ -1146,9 +902,8 @@ export function TradeForm() {
   };
 
   // All event types = presets + custom previously used ones
-  const allEventTypes = [...PRESET_EVENT_TYPES, ...previousEventTypes.filter(et => !PRESET_EVENT_TYPES.includes(et))];
+  const allEventTypes = [...EVENT_TYPE_PRESETS, ...previousEventTypes.filter(et => !EVENT_TYPE_PRESETS.includes(et as typeof EVENT_TYPE_PRESETS[number]))];
 
-  // Get filtered event type suggestions
   const getFilteredEventTypes = (): string[] => {
     const inputValue = eventTypeInput || newEventType;
     if (!inputValue) return allEventTypes;
@@ -1157,56 +912,22 @@ export function TradeForm() {
       .slice(0, 10);
   };
 
-  // Add a new in-trade event
-  const addEvent = () => {
-    if (!newEventType.trim()) return;
-    const newEvent: TradeEvent = {
-      id: uuidv4(),
-      time: newEventTime ? new Date(newEventTime) : new Date(),
-      eventType: newEventType.trim(),
-      description: newEventDescription.trim() || undefined,
-    };
-    setFormData((prev) => ({
-      ...prev,
-      events: [...prev.events, newEvent].sort((a, b) =>
-        new Date(a.time).getTime() - new Date(b.time).getTime()
-      ),
-    }));
-    setNewEventTime('');
-    setNewEventType('');
-    setNewEventDescription('');
-    setEventTypeInput('');
-  };
-
-  // Remove an in-trade event
-  const removeEvent = (eventId: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      events: prev.events.filter((e) => e.id !== eventId),
-    }));
-  };
-
-  // Save zone preference for a custom level type
   const saveLevelTypeZonePref = async (levelType: string, isZone: boolean) => {
-    // Only save for custom types
     if (isKnownLevelType(levelType)) return;
 
     const existingPref = levelTypePrefs.find(p => p.levelType === levelType);
     if (existingPref) {
-      // Update existing preference
       await db.levelTypePrefs.update(existingPref.id!, { isZone });
       setLevelTypePrefs(prev => prev.map(p =>
         p.id === existingPref.id ? { ...p, isZone } : p
       ));
     } else {
-      // Create new preference
       const newPref: LevelTypePref = { levelType, isZone };
       const newId = await db.levelTypePrefs.add(newPref);
       setLevelTypePrefs(prev => [...prev, { ...newPref, id: newId as string }]);
     }
   };
 
-  // Handle level type selection from autocomplete
   const selectLevelType = (index: number, levelType: string) => {
     const isZone = isLevelTypeZone(levelType);
     setFormData((prev) => ({
@@ -1215,7 +936,6 @@ export function TradeForm() {
         i === index ? {
           ...l,
           levelType,
-          // Clear zone fields if switching from zone to line
           priceFar: isZone ? l.priceFar : null,
           deepestPrice: isZone ? l.deepestPrice : null,
           penetrationPercent: isZone ? l.penetrationPercent : null,
@@ -1226,24 +946,31 @@ export function TradeForm() {
     setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false }));
   };
 
-  // Handle zone toggle change for custom types
   const handleZoneToggle = (index: number, levelType: string, isZone: boolean) => {
-    // Save preference for future use
     saveLevelTypeZonePref(levelType, isZone);
-
-    // Update current level entry
     setFormData((prev) => ({
       ...prev,
       levelSequence: prev.levelSequence.map((l, i) =>
         i === index ? {
           ...l,
-          // Clear zone fields if switching to line
           priceFar: isZone ? l.priceFar : null,
           deepestPrice: isZone ? l.deepestPrice : null,
           penetrationPercent: isZone ? l.penetrationPercent : null,
         } : l
       ),
     }));
+  };
+
+  // Direction-aware labels for timeline events
+  const getDirectionAwareLabel = (eventType: string): string => {
+    const dir = formData.direction;
+    if (eventType === 'worst_price') {
+      return dir === 'long' ? 'Worst Price (lowest)' : 'Worst Price (highest)';
+    }
+    if (eventType === 'best_price') {
+      return dir === 'long' ? 'Best Price (highest)' : 'Best Price (lowest)';
+    }
+    return eventType.replace(/_/g, ' ');
   };
 
   if (isLoading) {
@@ -1256,45 +983,25 @@ export function TradeForm() {
 
   return (
     <form onSubmit={handleSubmit} className="max-w-4xl mx-auto space-y-4">
-      {/* Header with toggles */}
+      {/* Header with Trade Taken toggle */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-white">{isEditMode ? 'Edit Trade' : 'New Trade'}</h1>
-        <div className="flex items-center gap-6">
-          {/* Trade Taken toggle */}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <span className="text-sm text-gray-400">Trade Taken</span>
-            <button
-              type="button"
-              onClick={() => handleChange('tradeTaken', !formData.tradeTaken)}
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                formData.tradeTaken ? 'bg-green-600' : 'bg-orange-600'
+        <label className="flex items-center gap-2 cursor-pointer">
+          <span className="text-sm text-gray-400">Trade Taken</span>
+          <button
+            type="button"
+            onClick={() => handleChange('tradeTaken', !formData.tradeTaken)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${
+              formData.tradeTaken ? 'bg-green-600' : 'bg-orange-600'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
+                formData.tradeTaken ? 'translate-x-5' : ''
               }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                  formData.tradeTaken ? 'translate-x-5' : ''
-                }`}
-              />
-            </button>
-          </label>
-          {/* Quick Log toggle */}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <span className="text-sm text-gray-400">Quick Log</span>
-            <button
-              type="button"
-              onClick={() => setQuickLogMode(!quickLogMode)}
-              className={`relative w-11 h-6 rounded-full transition-colors ${
-                quickLogMode ? 'bg-blue-600' : 'bg-gray-600'
-              }`}
-            >
-              <span
-                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${
-                  quickLogMode ? 'translate-x-5' : ''
-                }`}
-              />
-            </button>
-          </label>
-        </div>
+            />
+          </button>
+        </label>
       </div>
 
       {/* Missed trade banner */}
@@ -1312,321 +1019,760 @@ export function TradeForm() {
         </div>
       )}
 
-      {quickLogMode ? (
-        /* Quick Log Mode - Minimal fields */
-        <div className="space-y-4 bg-gray-800 rounded-lg p-4 md:p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Pair */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Pair <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="text"
-                value={formData.pair}
-                onChange={(e) => handleChange('pair', e.target.value.toUpperCase())}
-                className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  errors.pair ? 'border-red-500' : 'border-gray-600'
-                }`}
-                placeholder="EUR/USD"
-              />
-              {errors.pair && <p className="text-red-400 text-xs mt-1">{errors.pair}</p>}
-            </div>
-
-            {/* Direction */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Direction</label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleChange('direction', 'long')}
-                  className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                    formData.direction === 'long'
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                  }`}
-                >
-                  Long
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleChange('direction', 'short')}
-                  className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                    formData.direction === 'short'
-                      ? 'bg-red-600 text-white'
-                      : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                  }`}
-                >
-                  Short
-                </button>
+      {/* Section 1: Instrument & Direction */}
+      <FormSection title="Instrument & Direction">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Pair with autocomplete */}
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              Pair <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="text"
+              value={formData.pair}
+              onChange={(e) => {
+                handleChange('pair', e.target.value.toUpperCase());
+                setShowPairSuggestions(true);
+              }}
+              onFocus={() => setShowPairSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowPairSuggestions(false), 200)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                errors.pair ? 'border-red-500' : 'border-gray-600'
+              }`}
+              placeholder="EUR/USD"
+            />
+            {showPairSuggestions && filteredPairs.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                {filteredPairs.map((pair) => (
+                  <button
+                    key={pair}
+                    type="button"
+                    onClick={() => {
+                      handleChange('pair', pair);
+                      setShowPairSuggestions(false);
+                    }}
+                    className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600"
+                  >
+                    {pair}
+                  </button>
+                ))}
               </div>
-            </div>
+            )}
+            {errors.pair && <p className="text-red-400 text-xs mt-1">{errors.pair}</p>}
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Entry Price */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Entry Price <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="number"
-                step="any"
-                value={formData.entryPrice}
-                onChange={(e) => handleChange('entryPrice', e.target.value)}
-                className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  errors.entryPrice ? 'border-red-500' : 'border-gray-600'
-                }`}
-              />
-              {errors.entryPrice && <p className="text-red-400 text-xs mt-1">{errors.entryPrice}</p>}
-            </div>
-
-            {/* Stop Loss */}
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">
-                Stop Loss <span className="text-red-400">*</span>
-              </label>
-              <input
-                type="number"
-                step="any"
-                value={formData.stopLoss}
-                onChange={(e) => handleChange('stopLoss', e.target.value)}
-                className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  errors.stopLoss ? 'border-red-500' : 'border-gray-600'
-                }`}
-              />
-              {errors.stopLoss && <p className="text-red-400 text-xs mt-1">{errors.stopLoss}</p>}
-            </div>
+          {/* Asset Class */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Asset Class</label>
+            <select
+              value={formData.assetClass}
+              onChange={(e) => handleChange('assetClass', e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {ASSET_CLASSES.map((ac) => (
+                <option key={ac.value} value={ac.value}>
+                  {ac.label}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Target Price and MAE/MFE */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Target</label>
-              <input
-                type="number"
-                step="any"
-                value={formData.targetPrice}
-                onChange={(e) => handleChange('targetPrice', e.target.value)}
-                placeholder="Target price"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1" title="Lowest price reached (longs) / highest price reached (shorts)">Worst Price</label>
-              <input
-                type="number"
-                step="any"
-                value={formData.maePrice}
-                onChange={(e) => handleChange('maePrice', e.target.value)}
-                placeholder="Worst price"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1" title="Best price reached in your favour">Best Price</label>
-              <input
-                type="number"
-                step="any"
-                value={formData.mfePrice}
-                onChange={(e) => handleChange('mfePrice', e.target.value)}
-                placeholder="Best price"
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">P&L</label>
-              <div
-                className={`px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg ${
-                  calculated.pnl !== undefined
-                    ? calculated.pnl >= 0
-                      ? 'text-green-400'
-                      : 'text-red-400'
-                    : 'text-gray-500'
-                }`}
-              >
-                {calculated.pnl !== undefined ? calculated.pnl.toFixed(2) : '-'}
-              </div>
-            </div>
-          </div>
-
-          {/* Exits (collapsed by default) */}
-          <details className="bg-gray-750 rounded-lg">
-            <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white">
-              Exits ({formData.exits.length}) {calculated.status !== 'open' && `- ${calculated.status}`}
-            </summary>
-            <div className="px-3 pb-3 space-y-2">
-              {formData.exits.map((exit, index) => {
-                const isLastExit = index === formData.exits.length - 1;
-                const showDrawdownAfter = formData.exits.length > 1 && !isLastExit;
-
-                return (
-                  <div key={exit.id} className="space-y-1">
-                    <div className="flex gap-2 items-center flex-wrap">
-                      <input
-                        type="number"
-                        step="any"
-                        value={exit.price || ''}
-                        onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
-                        placeholder="Price"
-                        className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                      />
-                      <input
-                        type="number"
-                        step="any"
-                        value={exit.size || ''}
-                        onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
-                        placeholder="Size"
-                        className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                      />
-                      <input
-                        type="datetime-local"
-                        value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
-                        onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
-                        className="w-36 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                      />
-                      <select
-                        value={exit.type}
-                        onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
-                        className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                      >
-                        {EXIT_TYPES.map((et) => (
-                          <option key={et.value} value={et.value}>{et.label}</option>
-                        ))}
-                      </select>
-                      {showDrawdownAfter && (
-                        <input
-                          type="number"
-                          step="any"
-                          value={exit.drawdownAfter ?? ''}
-                          onChange={(e) => updateExit(exit.id, 'drawdownAfter', e.target.value ? parseFloat(e.target.value) : null)}
-                          placeholder="DD After"
-                          title="Worst price after this exit"
-                          className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                        />
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => removeExit(exit.id)}
-                        className="p-1 text-red-400 hover:text-red-300"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+          {/* Direction Toggle */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Direction</label>
+            <div className="flex gap-2">
               <button
                 type="button"
-                onClick={addExit}
-                className="text-xs text-blue-400 hover:text-blue-300"
+                onClick={() => handleChange('direction', 'long')}
+                className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
+                  formData.direction === 'long'
+                    ? 'bg-green-600 text-white'
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
               >
-                + Add Exit
+                Long
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChange('direction', 'short')}
+                className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
+                  formData.direction === 'short'
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
+                }`}
+              >
+                Short
               </button>
             </div>
-          </details>
+          </div>
+        </div>
 
-          {/* Setup Tags */}
+        {/* Account & Strategy Row */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-gray-700">
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">Setup Tags</label>
-            <div className="relative">
-              <div className="flex flex-wrap gap-1 p-2 bg-gray-700 border border-gray-600 rounded-lg min-h-[42px]">
-                {formData.setupTags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm"
-                  >
-                    {tag}
-                    <button
-                      type="button"
-                      onClick={() => removeSetupTag(tag)}
-                      className="hover:text-blue-200"
-                    >
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  </span>
-                ))}
-                <input
-                  type="text"
-                  value={setupTagInput}
-                  onChange={(e) => {
-                    setSetupTagInput(e.target.value);
-                    setShowSetupTagSuggestions(true);
-                  }}
-                  onFocus={() => setShowSetupTagSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowSetupTagSuggestions(false), 200)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      addSetupTag(setupTagInput);
-                    }
-                  }}
-                  className="flex-1 min-w-[120px] bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm"
-                  placeholder={formData.setupTags.length === 0 ? 'Add tags...' : ''}
-                />
-              </div>
-              {showSetupTagSuggestions && filteredSetupTags.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-                  {filteredSetupTags.slice(0, 10).map((tag) => (
-                    <button
-                      key={tag.name}
-                      type="button"
-                      onClick={() => addSetupTag(tag.name)}
-                      className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
-                    >
-                      <span>{tag.name}</span>
-                      {tag.description && (
-                        <span className="text-gray-400 text-xs truncate">— {tag.description}</span>
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Tag every technical factor present at entry</p>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Account</label>
+            <select
+              value={formData.accountId}
+              onChange={(e) => handleChange('accountId', e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.name}
+                  {account.broker ? ` (${account.broker})` : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Timeframes */}
-          <div className="space-y-3">
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Strategy</label>
+            <div className="flex gap-2">
+              <select
+                value={formData.strategyId}
+                onChange={(e) => handleChange('strategyId', e.target.value)}
+                className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {strategies.map((strategy) => (
+                  <option key={strategy.id} value={strategy.id}>
+                    {strategy.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowAddStrategy(true)}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-gray-300 hover:text-white transition-colors"
+                title="Add new strategy"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Reason Not Taken (only shown when tradeTaken is false) */}
+        {!formData.tradeTaken && (
+          <div className="mt-4 pt-4 border-t border-gray-700">
+            <label className="block text-sm font-medium text-orange-400 mb-1">
+              Reason Not Taken <span className="text-red-400">*</span>
+            </label>
+            <select
+              value={formData.notTakenReason}
+              onChange={(e) => handleChange('notTakenReason', e.target.value)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-orange-500 ${
+                errors.notTakenReason ? 'border-red-500' : 'border-orange-500/50'
+              }`}
+            >
+              <option value="">Select a reason...</option>
+              {NOT_TAKEN_REASON_PRESETS.map((reason) => (
+                <option key={reason} value={reason}>
+                  {reason.replace(/_/g, ' ')}
+                </option>
+              ))}
+            </select>
+            {errors.notTakenReason && <p className="text-red-400 text-xs mt-1">{errors.notTakenReason}</p>}
+          </div>
+        )}
+      </FormSection>
+
+      {/* Section 2: Entry */}
+      <FormSection title="Entry">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div className="col-span-2 md:col-span-1">
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              Entry Time <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="datetime-local"
+              value={formData.entryTime}
+              onChange={(e) => handleChange('entryTime', e.target.value)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                errors.entryTime ? 'border-red-500' : 'border-gray-600'
+              }`}
+            />
+            {errors.entryTime && <p className="text-red-400 text-xs mt-1">{errors.entryTime}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              Entry Price <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={formData.entryPrice}
+              onChange={(e) => handleChange('entryPrice', e.target.value)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                errors.entryPrice ? 'border-red-500' : 'border-gray-600'
+              }`}
+            />
+            {errors.entryPrice && <p className="text-red-400 text-xs mt-1">{errors.entryPrice}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              Stop Loss <span className="text-red-400">*</span>
+            </label>
+            <input
+              type="number"
+              step="any"
+              value={formData.stopLoss}
+              onChange={(e) => handleChange('stopLoss', e.target.value)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                errors.stopLoss ? 'border-red-500' : warnings.stopLoss ? 'border-yellow-500' : 'border-gray-600'
+              }`}
+            />
+            {errors.stopLoss && <p className="text-red-400 text-xs mt-1">{errors.stopLoss}</p>}
+            {!errors.stopLoss && warnings.stopLoss && <p className="text-yellow-400 text-xs mt-1">{warnings.stopLoss}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Target Price</label>
+            <input
+              type="number"
+              step="any"
+              value={formData.targetPrice}
+              onChange={(e) => handleChange('targetPrice', e.target.value)}
+              placeholder="Primary profit target"
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                warnings.targetPrice ? 'border-yellow-500' : 'border-gray-600'
+              }`}
+            />
+            {warnings.targetPrice && <p className="text-yellow-400 text-xs mt-1">{warnings.targetPrice}</p>}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Position Size</label>
+            <input
+              type="number"
+              step="any"
+              value={formData.positionSize}
+              onChange={(e) => handleChange('positionSize', e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="e.g., 0.1"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Risk Amount ($)</label>
+            <input
+              type="number"
+              step="any"
+              value={formData.riskAmount}
+              onChange={(e) => handleChange('riskAmount', e.target.value)}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Risk %</label>
+            <input
+              type="number"
+              step="any"
+              value={formData.riskPercent}
+              onChange={(e) => handleChange('riskPercent', e.target.value)}
+              className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                warnings.riskPercent ? 'border-yellow-500' : 'border-gray-600'
+              }`}
+            />
+            {warnings.riskPercent && <p className="text-yellow-400 text-xs mt-1">{warnings.riskPercent}</p>}
+          </div>
+        </div>
+
+        {/* Auto-calculated: Session, Stop Distance, Planned R:R */}
+        <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4 p-3 bg-gray-750 rounded-lg">
+          <div>
+            <span className="text-xs text-gray-400">Session</span>
+            <div className="text-sm text-gray-200">
+              {calculated.session.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+            </div>
+          </div>
+          <div>
+            <span className="text-xs text-gray-400">Stop Distance</span>
+            <div className="text-sm text-gray-200">
+              {calculated.stopDistance?.toFixed(5) ?? '-'}
+            </div>
+          </div>
+          <div>
+            <span className="text-xs text-gray-400">Planned R:R</span>
+            <div className="text-sm text-gray-200">{calculated.plannedRR ?? '-'}</div>
+          </div>
+          {calculated.holdDuration !== undefined && (
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TFs</label>
-              <div className="flex flex-wrap gap-2">
-                {TIMEFRAMES.map((tf) => {
-                  const isSelected = formData.analysisTFs.includes(tf.value);
+              <span className="text-xs text-gray-400">Duration</span>
+              <div className="text-sm text-gray-200">{formatDuration(calculated.holdDuration)}</div>
+            </div>
+          )}
+        </div>
+      </FormSection>
+
+      {/* Section 3: Setup */}
+      <FormSection title="Setup" defaultOpen={false}>
+        <div className="space-y-4">
+          {/* Level Sequence */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-gray-300">Level Sequence</label>
+              <button
+                type="button"
+                onClick={() => {
+                  const newLevel: LevelEntry = {
+                    id: uuidv4(),
+                    levelType: '',
+                    levelDetail: '',
+                    timeframe: '',
+                    price: 0,
+                    priceFar: null,
+                    deepestPrice: null,
+                    penetrationPercent: null,
+                    reaction: null,
+                  };
+                  setFormData((prev) => ({
+                    ...prev,
+                    levelSequence: [...prev.levelSequence, newLevel],
+                  }));
+                }}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg"
+              >
+                + Add Level
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              Levels in your zone, ordered shallowest to deepest
+            </p>
+
+            {formData.levelSequence.length > 0 && (
+              <div className="space-y-2">
+                {formData.levelSequence.map((level, index) => {
+                  const isZone = isLevelTypeZone(level.levelType);
+                  const showZoneToggle = shouldShowZoneToggle(level.levelType);
+                  const penetration = isZone && level.priceFar
+                    ? calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice)
+                    : null;
+                  const filteredTypes = getFilteredLevelTypes(index, level.levelType);
+                  const inputValue = levelTypeInputs[index] ?? '';
+
                   return (
-                    <button
-                      key={tf.value}
-                      type="button"
-                      onClick={() => {
-                        if (isSelected) {
-                          setFormData((prev) => ({
-                            ...prev,
-                            analysisTFs: prev.analysisTFs.filter((t) => t !== tf.value),
-                          }));
-                        } else {
-                          setFormData((prev) => ({
-                            ...prev,
-                            analysisTFs: [...prev.analysisTFs, tf.value],
-                          }));
-                        }
-                      }}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        isSelected
-                          ? 'bg-blue-500 text-white'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      {tf.label}
-                    </button>
+                    <div key={level.id} className="p-2 bg-gray-750 rounded-lg">
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500 w-5 text-center shrink-0">{index + 1}</span>
+
+                          {/* Level Type */}
+                          <div className="relative flex-1 md:flex-none">
+                            <input
+                              type="text"
+                              value={showLevelTypeSuggestions[index] ? inputValue : level.levelType}
+                              onChange={(e) => {
+                                const newValue = e.target.value;
+                                setLevelTypeInputs(prev => ({ ...prev, [index]: newValue }));
+                                const nowZone = isLevelTypeZone(newValue);
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? {
+                                      ...l,
+                                      levelType: newValue,
+                                      priceFar: nowZone ? l.priceFar : null,
+                                      deepestPrice: nowZone ? l.deepestPrice : null,
+                                      penetrationPercent: nowZone ? l.penetrationPercent : null,
+                                    } : l
+                                  ),
+                                }));
+                                setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                              }}
+                              onFocus={() => {
+                                setLevelTypeInputs(prev => ({ ...prev, [index]: level.levelType }));
+                                setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
+                              }}
+                              onBlur={() => setTimeout(() => setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false })), 200)}
+                              placeholder="Type"
+                              className="w-full md:w-20 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            {showLevelTypeSuggestions[index] && filteredTypes.length > 0 && (
+                              <div className="absolute z-20 w-full md:w-40 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                {filteredTypes.map((lt) => (
+                                  <button
+                                    key={lt}
+                                    type="button"
+                                    onClick={() => selectLevelType(index, lt)}
+                                    className="w-full px-3 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
+                                  >
+                                    <span>{lt}</span>
+                                    {isPresetZoneType(lt) && <span className="text-xs text-gray-500">zone</span>}
+                                    {isPresetLineType(lt) && <span className="text-xs text-gray-500">line</span>}
+                                    {!isKnownLevelType(lt) && <span className="text-xs text-blue-400">custom</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Timeframe */}
+                          <div className="relative shrink-0">
+                            <input
+                              type="text"
+                              value={showLevelTfSuggestions[index] ? (levelTfInputs[index] ?? level.timeframe) : level.timeframe}
+                              onChange={(e) => {
+                                const newValue = e.target.value;
+                                setLevelTfInputs(prev => ({ ...prev, [index]: newValue }));
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? { ...l, timeframe: newValue } : l
+                                  ),
+                                }));
+                                setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
+                              }}
+                              onFocus={() => {
+                                setLevelTfInputs(prev => ({ ...prev, [index]: level.timeframe }));
+                                setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
+                              }}
+                              onBlur={() => {
+                                const normalized = normalizeLevelTimeframe(level.timeframe);
+                                if (normalized !== level.timeframe) {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? { ...l, timeframe: normalized } : l
+                                    ),
+                                  }));
+                                }
+                                setTimeout(() => setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false })), 200);
+                              }}
+                              placeholder="TF"
+                              className="w-16 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                            />
+                            {showLevelTfSuggestions[index] && getFilteredLevelTimeframes(index, level.timeframe).length > 0 && (
+                              <div className="absolute z-20 w-20 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                {getFilteredLevelTimeframes(index, level.timeframe).map((tf) => (
+                                  <button
+                                    key={tf}
+                                    type="button"
+                                    onClick={() => selectLevelTimeframe(index, tf)}
+                                    className="w-full px-2 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                                  >
+                                    {tf}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Level detail for fib types */}
+                          {isDetailLevelType(level.levelType) && (
+                            <div className="relative shrink-0">
+                              <input
+                                type="text"
+                                value={showLevelDetailSuggestions[index] ? (levelDetailInputs[index] ?? level.levelDetail) : level.levelDetail}
+                                onChange={(e) => {
+                                  const newValue = e.target.value;
+                                  setLevelDetailInputs(prev => ({ ...prev, [index]: newValue }));
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? { ...l, levelDetail: newValue } : l
+                                    ),
+                                  }));
+                                  setShowLevelDetailSuggestions(prev => ({ ...prev, [index]: true }));
+                                }}
+                                onFocus={() => {
+                                  setLevelDetailInputs(prev => ({ ...prev, [index]: level.levelDetail }));
+                                  setShowLevelDetailSuggestions(prev => ({ ...prev, [index]: true }));
+                                }}
+                                onBlur={() => {
+                                  const normalized = normalizeLevelDetail(level.levelDetail);
+                                  if (normalized !== level.levelDetail) {
+                                    setFormData((prev) => ({
+                                      ...prev,
+                                      levelSequence: prev.levelSequence.map((l, i) =>
+                                        i === index ? { ...l, levelDetail: normalized } : l
+                                      ),
+                                    }));
+                                  }
+                                  setTimeout(() => setShowLevelDetailSuggestions(prev => ({ ...prev, [index]: false })), 200);
+                                }}
+                                placeholder="Level"
+                                className="w-16 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                              {showLevelDetailSuggestions[index] && getFilteredLevelDetails(index, level.levelDetail).length > 0 && (
+                                <div className="absolute z-20 w-20 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                  {getFilteredLevelDetails(index, level.levelDetail).map((detail) => (
+                                    <button
+                                      key={detail}
+                                      type="button"
+                                      onClick={() => selectLevelDetail(index, detail)}
+                                      className="w-full px-2 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                                    >
+                                      {detail}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Zone toggle for custom types */}
+                          {showZoneToggle && (
+                            <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer shrink-0">
+                              <input
+                                type="checkbox"
+                                checked={isZone}
+                                onChange={(e) => handleZoneToggle(index, level.levelType, e.target.checked)}
+                                className="w-4 h-4 md:w-3 md:h-3 rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
+                              />
+                              <span className="hidden md:inline">Zone</span>
+                            </label>
+                          )}
+
+                          {/* Reorder & Remove */}
+                          <div className="flex items-center gap-1 ml-auto md:ml-0">
+                            <div className="flex flex-col">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (index === 0) return;
+                                  setFormData((prev) => {
+                                    const newSeq = [...prev.levelSequence];
+                                    [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
+                                    return { ...prev, levelSequence: newSeq };
+                                  });
+                                }}
+                                disabled={index === 0}
+                                className={`p-1 md:p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                              >
+                                <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (index === formData.levelSequence.length - 1) return;
+                                  setFormData((prev) => {
+                                    const newSeq = [...prev.levelSequence];
+                                    [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
+                                    return { ...prev, levelSequence: newSeq };
+                                  });
+                                }}
+                                disabled={index === formData.levelSequence.length - 1}
+                                className={`p-1 md:p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                              >
+                                <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.filter((_, i) => i !== index),
+                                }));
+                              }}
+                              className="p-1.5 md:p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
+                            >
+                              <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Price inputs */}
+                        <div className="flex items-center gap-2 ml-7 md:ml-0">
+                          {isZone ? (
+                            <>
+                              <input
+                                type="number"
+                                step="any"
+                                value={level.price || ''}
+                                onChange={(e) => {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                    ),
+                                  }));
+                                }}
+                                placeholder="Near"
+                                title="Near edge"
+                                className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                              />
+                              <span className="text-gray-500 text-xs shrink-0">-</span>
+                              <input
+                                type="number"
+                                step="any"
+                                value={level.priceFar || ''}
+                                onChange={(e) => {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    levelSequence: prev.levelSequence.map((l, i) =>
+                                      i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
+                                    ),
+                                  }));
+                                }}
+                                placeholder="Far"
+                                title="Far edge"
+                                className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                              />
+                            </>
+                          ) : (
+                            <input
+                              type="number"
+                              step="any"
+                              value={level.price || ''}
+                              onChange={(e) => {
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  levelSequence: prev.levelSequence.map((l, i) =>
+                                    i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                  ),
+                                }));
+                              }}
+                              placeholder="Price"
+                              className="flex-1 md:flex-none md:w-28 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                            />
+                          )}
+
+                          {/* Reaction select */}
+                          <select
+                            value={level.reaction || ''}
+                            onChange={(e) => {
+                              setFormData((prev) => ({
+                                ...prev,
+                                levelSequence: prev.levelSequence.map((l, i) =>
+                                  i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
+                                ),
+                              }));
+                            }}
+                            className="flex-1 md:flex-none md:min-w-[90px] px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                          >
+                            <option value="">Reaction</option>
+                            <option value="bounced">Bounced</option>
+                            <option value="front_run">Front-run</option>
+                            <option value="swept_then_bounced">Swept+bounced</option>
+                            <option value="broken">Broken</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Zone-only: Deepest price row */}
+                      {isZone && level.priceFar && (
+                        <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-gray-600">
+                          <span className="text-xs text-gray-400 w-20">Deepest price:</span>
+                          <input
+                            type="number"
+                            step="any"
+                            value={level.deepestPrice || ''}
+                            onChange={(e) => {
+                              const deepest = parseFloat(e.target.value) || null;
+                              const newPenetration = calculatePenetrationPercent(level.price, level.priceFar!, deepest);
+                              setFormData((prev) => ({
+                                ...prev,
+                                levelSequence: prev.levelSequence.map((l, i) =>
+                                  i === index ? {
+                                    ...l,
+                                    deepestPrice: deepest,
+                                    penetrationPercent: newPenetration,
+                                  } : l
+                                ),
+                              }));
+                            }}
+                            placeholder="Deepest in zone"
+                            className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                          />
+                          {penetration !== null && (
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              penetration >= 75 ? 'bg-red-500/20 text-red-400' :
+                              penetration >= 50 ? 'bg-orange-500/20 text-orange-400' :
+                              penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
+                              'bg-green-500/20 text-green-400'
+                            }`}>
+                              {penetration}% penetrated
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
-              <p className="text-xs text-gray-500 mt-1">Timeframes the setup was identified on</p>
+            )}
+
+            {formData.levelSequence.length === 0 && (
+              <div className="text-center py-4 text-gray-500 text-sm border border-dashed border-gray-700 rounded-lg">
+                No levels added. Click "Add Level" to track price interaction at key levels.
+              </div>
+            )}
+          </div>
+
+          {/* Context Tags */}
+          <div className="relative border-t border-gray-700 pt-4">
+            <label className="block text-sm font-medium text-gray-300 mb-1">Context Tags</label>
+            <div className="flex flex-wrap gap-1.5 p-2 bg-gray-700 border border-gray-600 rounded-lg min-h-[42px]">
+              {formData.contextTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm"
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    onClick={() => removeContextTag(tag)}
+                    className="hover:text-blue-200"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </span>
+              ))}
+              <input
+                type="text"
+                value={contextTagInput}
+                onChange={(e) => {
+                  setContextTagInput(e.target.value);
+                  setShowContextTagSuggestions(true);
+                }}
+                onFocus={() => setShowContextTagSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowContextTagSuggestions(false), 200)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addContextTag(contextTagInput);
+                  }
+                }}
+                className="flex-1 min-w-[150px] bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm"
+                placeholder={formData.contextTags.length === 0 ? 'Type to search or add tags...' : ''}
+              />
             </div>
+            {showContextTagSuggestions && filteredContextTags.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                {filteredContextTags.slice(0, 15).map((tag) => (
+                  <button
+                    key={tag.name}
+                    type="button"
+                    onClick={() => addContextTag(tag.name)}
+                    className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
+                  >
+                    <span>{tag.name}</span>
+                    {tag.description && (
+                      <span className="text-gray-400 text-xs truncate">- {tag.description}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-gray-500 mt-1">Tag every technical factor present at entry</p>
+          </div>
+
+          {/* Entry TF & Confirmation */}
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 border-t border-gray-700 pt-4">
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">Entry TF</label>
               <select
@@ -1642,6 +1788,7 @@ export function TradeForm() {
                 ))}
               </select>
             </div>
+
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">Entry Confirmation</label>
               <select
@@ -1656,7 +1803,7 @@ export function TradeForm() {
                 ))}
               </select>
             </div>
-            {/* Confirmation TF - only shown for structural/partial_confirmation */}
+
             {(formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation') && (
               <div className="relative">
                 <label className="block text-sm font-medium text-gray-300 mb-1">Confirmation TF</label>
@@ -1674,7 +1821,6 @@ export function TradeForm() {
                     setShowConfirmationTfSuggestions(true);
                   }}
                   onBlur={() => {
-                    // Normalize on blur
                     const normalized = normalizeLevelTimeframe(formData.confirmationTF);
                     if (normalized !== formData.confirmationTF) {
                       handleChange('confirmationTF', normalized);
@@ -1698,134 +1844,139 @@ export function TradeForm() {
                     ))}
                   </div>
                 )}
-                <p className="text-xs text-gray-500 mt-1">TF the confirmation was observed on</p>
               </div>
             )}
           </div>
 
-          {/* Account & Strategy */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Account</label>
-              <select
-                value={formData.accountId}
-                onChange={(e) => handleChange('accountId', e.target.value)}
-                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {accounts.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1">Strategy</label>
-              <div className="flex gap-2">
-                <select
-                  value={formData.strategyId}
-                  onChange={(e) => handleChange('strategyId', e.target.value)}
-                  className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {strategies.map((strategy) => (
-                    <option key={strategy.id} value={strategy.id}>
-                      {strategy.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => setShowAddStrategy(true)}
-                  className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-gray-300 hover:text-white transition-colors"
-                  title="Add new strategy"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
-              </div>
-            </div>
+          {/* Entry Notes */}
+          <div className="border-t border-gray-700 pt-4">
+            <label className="block text-sm font-medium text-gray-300 mb-1">Entry Notes</label>
+            <textarea
+              value={formData.entryNotes}
+              onChange={(e) => handleChange('entryNotes', e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              placeholder="Thesis and plan as you execute - why this trade, what's the plan?"
+            />
+          </div>
+        </div>
+      </FormSection>
+
+      {/* Section 4: Timeline */}
+      <FormSection title="Timeline" defaultOpen={formData.timeline.length > 0}>
+        <div className="space-y-4">
+          <p className="text-xs text-gray-500">
+            Unified timeline for price events during the trade: worst/best price, stop moves, liquidity sweeps, etc.
+          </p>
+
+          {/* Quick-add buttons for worst/best price */}
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs text-gray-500 self-center">Quick add:</span>
+            <button
+              type="button"
+              onClick={() => {
+                setNewEventType('worst_price');
+                setEventTypeInput('');
+              }}
+              className="px-2 py-1 text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded"
+            >
+              Worst Price
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNewEventType('best_price');
+                setEventTypeInput('');
+              }}
+              className="px-2 py-1 text-xs bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded"
+            >
+              Best Price
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNewEventType('stop_moved');
+                setEventTypeInput('');
+              }}
+              className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 rounded"
+            >
+              Stop Moved
+            </button>
           </div>
 
-          {/* Stop Adjustments (collapsed by default) */}
-          <details className="bg-gray-750 rounded-lg">
-            <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white">
-              Stop Adjustments ({formData.stopAdjustments.length})
-            </summary>
-            <div className="px-3 pb-3 space-y-2">
-              {formData.stopAdjustments.map((adj) => (
-                <div key={adj.id} className="flex gap-2 items-start flex-wrap">
-                  <input
-                    type="datetime-local"
-                    value={adj.time instanceof Date ? toLocalDateTimeString(adj.time) : ''}
-                    onChange={(e) => updateStopAdjustment(adj.id, 'time', new Date(e.target.value))}
-                    className="w-36 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                  />
+          {/* Timeline events list */}
+          {formData.timeline.length > 0 && (
+            <div className="space-y-2">
+              {formData.timeline.map((event, index) => (
+                <div key={event.id} className="flex items-center gap-2 p-2 bg-gray-750 rounded-lg">
+                  {/* Reorder buttons */}
+                  <div className="flex flex-col gap-0.5">
+                    <button
+                      type="button"
+                      disabled={index === 0}
+                      onClick={() => reorderTimelineEvent(index, 'up')}
+                      className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={index === formData.timeline.length - 1}
+                      onClick={() => reorderTimelineEvent(index, 'down')}
+                      className={`p-0.5 rounded ${index === formData.timeline.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <span className="text-xs text-gray-500 w-4">{event.order}</span>
+
+                  {/* Event type badge */}
+                  <span className={`px-2 py-0.5 text-xs rounded ${
+                    event.eventType === 'worst_price' ? 'bg-red-500/20 text-red-400' :
+                    event.eventType === 'best_price' ? 'bg-green-500/20 text-green-400' :
+                    event.eventType === 'stop_moved' ? 'bg-blue-500/20 text-blue-400' :
+                    'bg-gray-600 text-gray-300'
+                  }`}>
+                    {getDirectionAwareLabel(event.eventType)}
+                  </span>
+
+                  {/* Price */}
                   <input
                     type="number"
                     step="any"
-                    value={adj.newStop || ''}
-                    onChange={(e) => updateStopAdjustment(adj.id, 'newStop', parseFloat(e.target.value) || 0)}
-                    placeholder="New Stop"
-                    className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                    value={event.price ?? ''}
+                    onChange={(e) => updateTimelineEvent(event.id, 'price', e.target.value ? parseFloat(e.target.value) : null)}
+                    placeholder="Price"
+                    className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                   />
+
+                  {/* Time (optional) */}
+                  <input
+                    type="datetime-local"
+                    value={event.time || ''}
+                    onChange={(e) => updateTimelineEvent(event.id, 'time', e.target.value || null)}
+                    className="w-40 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                  />
+
+                  {/* Description */}
                   <input
                     type="text"
-                    value={adj.reason}
-                    onChange={(e) => updateStopAdjustment(adj.id, 'reason', e.target.value)}
-                    placeholder="Reason"
-                    list={`quick-reason-${adj.id}`}
-                    className="flex-1 min-w-[100px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
+                    value={event.description}
+                    onChange={(e) => updateTimelineEvent(event.id, 'description', e.target.value)}
+                    placeholder="Note"
+                    className="flex-1 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                   />
-                  <datalist id={`quick-reason-${adj.id}`}>
-                    {STOP_ADJUSTMENT_REASONS.map((r) => <option key={r} value={r} />)}
-                  </datalist>
-                  <button
-                    type="button"
-                    onClick={() => removeStopAdjustment(adj.id)}
-                    className="p-1 text-red-400 hover:text-red-300"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                  {warnings.stopAdjustmentWarnings?.[adj.id] && (
-                    <span className="text-xs text-amber-400">⚠️ After exit</span>
-                  )}
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={addStopAdjustment}
-                className="text-xs text-blue-400 hover:text-blue-300"
-              >
-                + Add Stop Adjustment
-              </button>
-            </div>
-          </details>
 
-          {/* In-Trade Events (collapsed by default) */}
-          <details open={eventsExpanded} onToggle={(e) => setEventsExpanded((e.target as HTMLDetailsElement).open)} className="bg-gray-750 rounded-lg">
-            <summary className="px-3 py-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white">
-              In-Trade Events ({formData.events.length})
-            </summary>
-            <div className="px-3 pb-3 space-y-2">
-              {/* Existing events sorted by time */}
-              {formData.events.map((event) => (
-                <div key={event.id} className="flex gap-2 items-center flex-wrap bg-gray-800/50 p-2 rounded">
-                  <span className="text-xs text-gray-400">
-                    {event.time instanceof Date ? event.time.toLocaleString() : new Date(event.time).toLocaleString()}
-                  </span>
-                  <span className="px-2 py-0.5 bg-blue-500/20 text-blue-400 text-xs rounded">
-                    {event.eventType}
-                  </span>
-                  {event.description && (
-                    <span className="text-xs text-gray-300 flex-1">{event.description}</span>
-                  )}
+                  {/* Delete */}
                   <button
                     type="button"
-                    onClick={() => removeEvent(event.id)}
-                    className="p-1 text-red-400 hover:text-red-300"
+                    onClick={() => removeTimelineEvent(event.id)}
+                    className="p-1 text-gray-400 hover:text-red-400"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -1833,2224 +1984,402 @@ export function TradeForm() {
                   </button>
                 </div>
               ))}
-              {/* Add new event row */}
-              <div className="flex gap-2 items-start flex-wrap pt-2 border-t border-gray-700">
-                <input
-                  type="datetime-local"
-                  value={newEventTime}
-                  onChange={(e) => setNewEventTime(e.target.value)}
-                  className="w-36 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                />
-                <div className="relative flex-1 min-w-[120px]">
-                  <input
-                    type="text"
-                    value={showEventTypeSuggestions ? eventTypeInput : newEventType}
-                    onChange={(e) => {
-                      setEventTypeInput(e.target.value);
-                      setNewEventType(e.target.value);
-                      setShowEventTypeSuggestions(true);
-                    }}
-                    onFocus={() => {
-                      setEventTypeInput(newEventType);
-                      setShowEventTypeSuggestions(true);
-                    }}
-                    onBlur={() => setTimeout(() => setShowEventTypeSuggestions(false), 200)}
-                    placeholder="Event type"
-                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                  />
-                  {showEventTypeSuggestions && getFilteredEventTypes().length > 0 && (
-                    <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {getFilteredEventTypes().map((et) => (
-                        <button
-                          key={et}
-                          type="button"
-                          onClick={() => {
-                            setNewEventType(et);
-                            setEventTypeInput('');
-                            setShowEventTypeSuggestions(false);
-                          }}
-                          className="w-full px-2 py-1.5 text-left text-gray-200 hover:bg-gray-600 text-xs flex items-center gap-1"
-                        >
-                          <span>{et}</span>
-                          {!PRESET_EVENT_TYPES.includes(et) && (
-                            <span className="text-blue-400">*</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <input
-                  type="text"
-                  value={newEventDescription}
-                  onChange={(e) => setNewEventDescription(e.target.value)}
-                  placeholder="Description (optional)"
-                  className="flex-1 min-w-[100px] px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-xs"
-                />
-                <button
-                  type="button"
-                  onClick={addEvent}
-                  disabled={!newEventType.trim()}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400 text-white text-xs rounded"
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-          </details>
-
-          {/* Reason Not Taken (only shown when tradeTaken is false) */}
-          {!formData.tradeTaken && (
-            <div>
-              <label className="block text-sm font-medium text-orange-400 mb-1">
-                Reason Not Taken
-              </label>
-              <input
-                type="text"
-                value={formData.notTakenReason}
-                onChange={(e) => handleChange('notTakenReason', e.target.value)}
-                list="not-taken-reasons-quick"
-                className="w-full px-3 py-2 bg-gray-700 border border-orange-500/50 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                placeholder="Why wasn't this trade taken?"
-              />
-              <datalist id="not-taken-reasons-quick">
-                {NOT_TAKEN_REASONS.map((reason) => (
-                  <option key={reason} value={reason} />
-                ))}
-              </datalist>
             </div>
           )}
 
-          {/* Notes */}
-          <div>
+          {/* Add new event row */}
+          <div className="border-t border-gray-700 pt-4">
+            <p className="text-sm font-medium text-gray-300 mb-2">Add Event</p>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              {/* Event type */}
+              <div className="relative md:col-span-1">
+                <input
+                  type="text"
+                  value={showEventTypeSuggestions ? eventTypeInput : newEventType}
+                  onChange={(e) => {
+                    setEventTypeInput(e.target.value);
+                    setNewEventType(e.target.value);
+                    setShowEventTypeSuggestions(true);
+                  }}
+                  onFocus={() => {
+                    setEventTypeInput(newEventType);
+                    setShowEventTypeSuggestions(true);
+                  }}
+                  onBlur={() => setTimeout(() => setShowEventTypeSuggestions(false), 200)}
+                  placeholder="Event type"
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                />
+                {showEventTypeSuggestions && getFilteredEventTypes().length > 0 && (
+                  <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {getFilteredEventTypes().map((et) => (
+                      <button
+                        key={et}
+                        type="button"
+                        onClick={() => {
+                          setNewEventType(et);
+                          setEventTypeInput('');
+                          setShowEventTypeSuggestions(false);
+                        }}
+                        className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                      >
+                        {et.replace(/_/g, ' ')}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Price */}
+              <input
+                type="number"
+                step="any"
+                value={newEventPrice}
+                onChange={(e) => setNewEventPrice(e.target.value)}
+                placeholder="Price"
+                className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+              />
+
+              {/* Time (optional) */}
+              <input
+                type="datetime-local"
+                value={newEventTime}
+                onChange={(e) => setNewEventTime(e.target.value)}
+                className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+              />
+
+              {/* Description */}
+              <input
+                type="text"
+                value={newEventDescription}
+                onChange={(e) => setNewEventDescription(e.target.value)}
+                placeholder="Description (optional)"
+                className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+              />
+
+              {/* Add button */}
+              <button
+                type="button"
+                onClick={addTimelineEvent}
+                disabled={!newEventType.trim()}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400 text-white text-sm rounded-lg"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+      </FormSection>
+
+      {/* Section 5: Exits */}
+      <FormSection title="Exits" defaultOpen={formData.exits.length > 0}>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium text-gray-300">Exit Records</label>
+            <button
+              type="button"
+              onClick={addExit}
+              className="text-sm text-blue-400 hover:text-blue-300"
+            >
+              + Add Exit
+            </button>
+          </div>
+
+          {formData.exits.length > 0 ? (
+            <div className="space-y-3">
+              {formData.exits.map((exit) => (
+                <div key={exit.id} className="p-3 bg-gray-750 rounded-lg">
+                  <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
+                    <div className="col-span-1 md:w-28">
+                      <label className="block text-xs text-gray-400 mb-1">Price</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={exit.price || ''}
+                        onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
+                        placeholder="Exit price"
+                        className={`w-full px-2 py-2 md:py-1.5 bg-gray-700 border rounded text-white text-sm ${
+                          warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
+                        }`}
+                      />
+                      {warnings.exitWarnings?.[exit.id] && (
+                        <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
+                      )}
+                    </div>
+                    <div className="col-span-1 md:w-24">
+                      <label className="block text-xs text-gray-400 mb-1">Size</label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={exit.size || ''}
+                        onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
+                        placeholder="Lots"
+                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                      />
+                    </div>
+                    <div className="col-span-2 md:w-44">
+                      <label className="block text-xs text-gray-400 mb-1">Time</label>
+                      <input
+                        type="datetime-local"
+                        value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
+                        onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
+                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                      />
+                    </div>
+                    <div className="col-span-1 md:w-36">
+                      <label className="block text-xs text-gray-400 mb-1">Type</label>
+                      <select
+                        value={exit.type}
+                        onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
+                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                      >
+                        {EXIT_TYPES.map((et) => (
+                          <option key={et.value} value={et.value}>
+                            {et.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-1 md:flex-1 md:min-w-[120px] flex items-end gap-2">
+                      <div className="flex-1">
+                        <label className="block text-xs text-gray-400 mb-1">Reason</label>
+                        <input
+                          type="text"
+                          value={exit.reason || ''}
+                          onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
+                          placeholder="Optional"
+                          className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeExit(exit.id)}
+                        className="p-2 md:p-1.5 text-red-400 hover:text-red-300 shrink-0"
+                      >
+                        <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">No exits recorded - trade is open</p>
+          )}
+
+          {/* Exit Summary */}
+          {formData.exits.length > 0 && (
+            <div className="p-3 bg-gray-750 rounded-lg">
+              <h4 className="text-sm font-medium text-gray-300 mb-2">Exit Summary</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-400">Avg Exit Price:</span>
+                  <div className="text-white">{calculated.exitPrice?.toFixed(5) ?? '-'}</div>
+                </div>
+                <div>
+                  <span className="text-gray-400">Total Size Exited:</span>
+                  <div className={`${
+                    calculated.totalExitSize !== parseFloat(formData.positionSize)
+                      ? 'text-amber-400'
+                      : 'text-white'
+                  }`}>
+                    {calculated.totalExitSize}
+                    {calculated.totalExitSize !== parseFloat(formData.positionSize) && (
+                      <span className="text-xs ml-1">(position: {formData.positionSize})</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-gray-400">Gross P&L:</span>
+                  <div className={calculated.pnl !== undefined ? (calculated.pnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-white'}>
+                    {calculated.pnl !== undefined ? `$${calculated.pnl.toFixed(2)}` : '-'}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-gray-400">R-Multiple:</span>
+                  <div className={calculated.rMultiple !== undefined ? (calculated.rMultiple >= 0 ? 'text-green-400' : 'text-red-400') : 'text-white'}>
+                    {calculated.rMultiple !== undefined ? `${calculated.rMultiple >= 0 ? '+' : ''}${calculated.rMultiple}R` : '-'}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-gray-500">
+                Status: <span className={`font-medium ${
+                  calculated.status === 'closed' ? 'text-green-400' :
+                  calculated.status === 'partial' ? 'text-amber-400' : 'text-gray-400'
+                }`}>{calculated.status}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Close Notes */}
+          <div className="border-t border-gray-700 pt-4">
             <label className="block text-sm font-medium text-gray-300 mb-1">Close Notes</label>
             <textarea
               value={formData.closeNotes}
               onChange={(e) => handleChange('closeNotes', e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              placeholder="Immediate review as the trade closes — how did it play out, how did you manage it?"
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              placeholder="Immediate review as the trade closes - how did it play out, how did you manage it?"
             />
           </div>
         </div>
-      ) : (
-        /* Full Form Mode */
+      </FormSection>
+
+      {/* Section 6: Screenshots */}
+      <FormSection title="Screenshots" defaultOpen={formData.screenshots.length > 0}>
         <div className="space-y-4">
-          {/* Section 1: Instrument & Direction */}
-          <FormSection title="Instrument & Direction">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Pair with autocomplete */}
-              <div className="relative">
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Pair <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={formData.pair}
-                  onChange={(e) => {
-                    handleChange('pair', e.target.value.toUpperCase());
-                    setShowPairSuggestions(true);
-                  }}
-                  onFocus={() => setShowPairSuggestions(true)}
-                  onBlur={() => setTimeout(() => setShowPairSuggestions(false), 200)}
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    errors.pair ? 'border-red-500' : 'border-gray-600'
-                  }`}
-                  placeholder="EUR/USD"
-                />
-                {showPairSuggestions && filteredPairs.length > 0 && (
-                  <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-40 overflow-y-auto">
-                    {filteredPairs.map((pair) => (
-                      <button
-                        key={pair}
-                        type="button"
-                        onClick={() => {
-                          handleChange('pair', pair);
-                          setShowPairSuggestions(false);
-                        }}
-                        className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600"
-                      >
-                        {pair}
-                      </button>
-                    ))}
+          {/* URL Input */}
+          <div className="flex gap-2">
+            <input
+              type="url"
+              value={screenshotUrlInput}
+              onChange={(e) => setScreenshotUrlInput(e.target.value)}
+              placeholder="https://www.tradingview.com/x/..."
+              className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={addScreenshotUrl}
+              disabled={!screenshotUrlInput.trim() || (!screenshotUrlInput.startsWith('http://') && !screenshotUrlInput.startsWith('https://'))}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white transition-colors"
+            >
+              Add
+            </button>
+          </div>
+          <input
+            type="text"
+            value={screenshotCaptionInput}
+            onChange={(e) => setScreenshotCaptionInput(e.target.value)}
+            placeholder="Optional caption..."
+            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-xs text-gray-500">
+            Paste TradingView snapshot URLs or any image URL
+          </p>
+
+          {/* Screenshot previews */}
+          {formData.screenshots.length > 0 && (
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-4">
+              {formData.screenshots.filter(s => s.url).map((screenshot) => (
+                <div key={screenshot.id} className="relative group">
+                  <img
+                    src={screenshot.url}
+                    alt={screenshot.caption || 'Screenshot'}
+                    className="w-full h-32 object-cover rounded-lg bg-gray-700"
+                    onError={(e) => {
+                      const target = e.target as HTMLImageElement;
+                      target.style.display = 'none';
+                      const fallback = target.nextElementSibling as HTMLElement;
+                      if (fallback) fallback.style.display = 'flex';
+                    }}
+                  />
+                  <div className="hidden w-full h-32 bg-gray-700 rounded-lg items-center justify-center text-gray-400 text-xs p-2 text-center">
+                    <a href={screenshot.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400 underline break-all">
+                      {screenshot.url.length > 50 ? screenshot.url.substring(0, 50) + '...' : screenshot.url}
+                    </a>
                   </div>
-                )}
-                {errors.pair && <p className="text-red-400 text-xs mt-1">{errors.pair}</p>}
-              </div>
-
-              {/* Asset Class */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Asset Class</label>
-                <select
-                  value={formData.assetClass}
-                  onChange={(e) => handleChange('assetClass', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {ASSET_CLASSES.map((ac) => (
-                    <option key={ac.value} value={ac.value}>
-                      {ac.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Direction Toggle */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Direction</label>
-                <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => handleChange('direction', 'long')}
-                    className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                      formData.direction === 'long'
-                        ? 'bg-green-600 text-white'
-                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                    }`}
+                    onClick={() => removeScreenshot(screenshot.id)}
+                    className="absolute top-2 right-2 p-1 bg-red-600 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
                   >
-                    Long
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleChange('direction', 'short')}
-                    className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                      formData.direction === 'short'
-                        ? 'bg-red-600 text-white'
-                        : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                    }`}
-                  >
-                    Short
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Account & Strategy Row */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-gray-700">
-              {/* Account */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Account</label>
-                <select
-                  value={formData.accountId}
-                  onChange={(e) => handleChange('accountId', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                      {account.broker ? ` (${account.broker})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Strategy */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Strategy</label>
-                <div className="flex gap-2">
-                  <select
-                    value={formData.strategyId}
-                    onChange={(e) => handleChange('strategyId', e.target.value)}
-                    className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    {strategies.map((strategy) => (
-                      <option key={strategy.id} value={strategy.id}>
-                        {strategy.name}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => setShowAddStrategy(true)}
-                    className="px-3 py-2 bg-gray-700 hover:bg-gray-600 border border-gray-600 rounded-lg text-gray-300 hover:text-white transition-colors"
-                    title="Add new strategy"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
-                </div>
-              </div>
-            </div>
-          </FormSection>
-
-          {/* Section 2: Entry & Exit */}
-          <FormSection title="Entry & Exit">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Entry Time <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="datetime-local"
-                  value={formData.entryTime}
-                  onChange={(e) => handleChange('entryTime', e.target.value)}
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    errors.entryTime ? 'border-red-500' : 'border-gray-600'
-                  }`}
-                />
-                {errors.entryTime && <p className="text-red-400 text-xs mt-1">{errors.entryTime}</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Exit Time</label>
-                <input
-                  type="datetime-local"
-                  value={formData.exitTime}
-                  onChange={(e) => handleChange('exitTime', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Status</label>
-                <div
-                  className={`px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg ${
-                    calculated.status === 'open' ? 'text-yellow-400' : 'text-green-400'
-                  }`}
-                >
-                  {calculated.status.charAt(0).toUpperCase() + calculated.status.slice(1)}
-                </div>
-              </div>
-            </div>
-
-            {/* Auto-calculated: Session */}
-            <div className="mt-4 flex items-center gap-4">
-              <span className="text-sm text-gray-400">Session:</span>
-              <span className="px-2 py-1 bg-gray-700 rounded text-sm text-gray-200">
-                {calculated.session.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
-              </span>
-              {calculated.holdDuration !== undefined && (
-                <>
-                  <span className="text-sm text-gray-400">Duration:</span>
-                  <span className="px-2 py-1 bg-gray-700 rounded text-sm text-gray-200">
-                    {formatDuration(calculated.holdDuration)}
-                  </span>
-                </>
-              )}
-            </div>
-          </FormSection>
-
-          {/* Section 3: Price Levels */}
-          <FormSection title="Price Levels">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Entry Price <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.entryPrice}
-                  onChange={(e) => handleChange('entryPrice', e.target.value)}
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    errors.entryPrice ? 'border-red-500' : 'border-gray-600'
-                  }`}
-                />
-                {errors.entryPrice && <p className="text-red-400 text-xs mt-1">{errors.entryPrice}</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Stop Loss <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.stopLoss}
-                  onChange={(e) => handleChange('stopLoss', e.target.value)}
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    errors.stopLoss ? 'border-red-500' : warnings.stopLoss ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {errors.stopLoss && <p className="text-red-400 text-xs mt-1">{errors.stopLoss}</p>}
-                {!errors.stopLoss && warnings.stopLoss && <p className="text-yellow-400 text-xs mt-1">{warnings.stopLoss}</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Target Price</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.targetPrice}
-                  onChange={(e) => handleChange('targetPrice', e.target.value)}
-                  placeholder="Primary profit target"
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    warnings.targetPrice ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {warnings.targetPrice && <p className="text-yellow-400 text-xs mt-1">{warnings.targetPrice}</p>}
-                {!warnings.targetPrice && <p className="text-xs text-gray-500 mt-1">Primary profit target for planned R:R</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Worst Price</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.maePrice}
-                  onChange={(e) => handleChange('maePrice', e.target.value)}
-                  placeholder="Worst price reached"
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    warnings.maePrice ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {warnings.maePrice && <p className="text-yellow-400 text-xs mt-1">{warnings.maePrice}</p>}
-                {!warnings.maePrice && <p className="text-xs text-gray-500 mt-1">Lowest price reached (longs) / highest price reached (shorts)</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Best Price</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.mfePrice}
-                  onChange={(e) => handleChange('mfePrice', e.target.value)}
-                  placeholder="Best price reached"
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    warnings.mfePrice ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {warnings.mfePrice && <p className="text-yellow-400 text-xs mt-1">{warnings.mfePrice}</p>}
-                {!warnings.mfePrice && <p className="text-xs text-gray-500 mt-1">Best price reached in your favour</p>}
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">First-Touch Worst</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.firstTouchWorstPrice}
-                  onChange={(e) => handleChange('firstTouchWorstPrice', e.target.value)}
-                  placeholder="Worst before reaction"
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    warnings.firstTouchWorstPrice ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {warnings.firstTouchWorstPrice && <p className="text-yellow-400 text-xs mt-1">{warnings.firstTouchWorstPrice}</p>}
-                {!warnings.firstTouchWorstPrice && <p className="text-xs text-gray-500 mt-1">Worst price before the initial move in your favour (leave empty if price never moved in your favour)</p>}
-              </div>
-
-              {/* Auto-derived exit price (read-only) */}
-              {calculated.exitPrice !== undefined && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Avg Exit Price</label>
-                  <div className="px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300">
-                    {calculated.exitPrice.toFixed(5)}
-                  </div>
-                  <p className="text-xs text-gray-500 mt-1">Derived from exits</p>
-                </div>
-              )}
-            </div>
-
-            {/* Auto-calculated fields */}
-            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <span className="text-xs text-gray-400">Stop Distance</span>
-                <div className="text-sm text-gray-200">
-                  {calculated.stopDistance?.toFixed(5) ?? '-'}
-                </div>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">Planned R:R</span>
-                <div className="text-sm text-gray-200">{calculated.plannedRR ?? '-'}</div>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">Actual R:R</span>
-                <div className="text-sm text-gray-200">{calculated.actualRR ?? '-'}</div>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">R-Multiple</span>
-                <div
-                  className={`text-sm ${
-                    calculated.rMultiple !== undefined
-                      ? calculated.rMultiple >= 0
-                        ? 'text-green-400'
-                        : 'text-red-400'
-                      : 'text-gray-200'
-                  }`}
-                >
-                  {calculated.rMultiple !== undefined ? `${calculated.rMultiple >= 0 ? '+' : ''}${calculated.rMultiple}R` : '-'}
-                </div>
-              </div>
-            </div>
-          </FormSection>
-
-          {/* Section 4: Position Sizing */}
-          <FormSection title="Position Sizing">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Position Size</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.positionSize}
-                  onChange={(e) => handleChange('positionSize', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., 0.1"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Risk Amount ($)</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.riskAmount}
-                  onChange={(e) => handleChange('riskAmount', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Risk %</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.riskPercent}
-                  onChange={(e) => handleChange('riskPercent', e.target.value)}
-                  className={`w-full px-3 py-2 bg-gray-700 border rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    warnings.riskPercent ? 'border-yellow-500' : 'border-gray-600'
-                  }`}
-                />
-                {warnings.riskPercent && (
-                  <p className="text-yellow-400 text-xs mt-1">{warnings.riskPercent}</p>
-                )}
-              </div>
-            </div>
-
-            {/* P&L calculations */}
-            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Commissions</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.commissions}
-                  onChange={(e) => handleChange('commissions', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Swap</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={formData.swap}
-                  onChange={(e) => handleChange('swap', e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <span className="block text-sm font-medium text-gray-300 mb-1">Gross P&L</span>
-                <div
-                  className={`px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg ${
-                    calculated.pnl !== undefined
-                      ? calculated.pnl >= 0
-                        ? 'text-green-400'
-                        : 'text-red-400'
-                      : 'text-gray-500'
-                  }`}
-                >
-                  {calculated.pnl !== undefined ? `$${calculated.pnl.toFixed(2)}` : '-'}
-                </div>
-              </div>
-
-              <div>
-                <span className="block text-sm font-medium text-gray-300 mb-1">Net P&L</span>
-                <div
-                  className={`px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg ${
-                    calculated.netPnl !== undefined
-                      ? calculated.netPnl >= 0
-                        ? 'text-green-400'
-                        : 'text-red-400'
-                      : 'text-gray-500'
-                  }`}
-                >
-                  {calculated.netPnl !== undefined ? `$${calculated.netPnl.toFixed(2)}` : '-'}
-                </div>
-              </div>
-            </div>
-          </FormSection>
-
-          {/* Section 5: Exits */}
-          <FormSection title="Exits" defaultOpen={formData.exits.length > 0}>
-            <div className="space-y-4">
-              {/* Exits List */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-sm font-medium text-gray-300">Exit Records</label>
-                  <button
-                    type="button"
-                    onClick={addExit}
-                    className="text-sm text-blue-400 hover:text-blue-300"
-                  >
-                    + Add Exit
-                  </button>
-                </div>
-
-                {formData.exits.length > 0 ? (
-                  <div className="space-y-3">
-                    {formData.exits.map((exit, index) => {
-                      const isLastExit = index === formData.exits.length - 1;
-                      const showDrawdownAfter = formData.exits.length > 1 && !isLastExit;
-
-                      return (
-                        <div key={exit.id} className="p-3 bg-gray-750 rounded-lg space-y-2">
-                          {/* Mobile: grid layout / Desktop: flex wrap */}
-                          <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
-                            <div className="col-span-1 md:w-28">
-                              <label className="block text-xs text-gray-400 mb-1">Price</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={exit.price || ''}
-                                onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
-                                placeholder="Exit price"
-                                className={`w-full px-2 py-2 md:py-1.5 bg-gray-700 border rounded text-white text-sm ${
-                                  warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
-                                }`}
-                              />
-                              {warnings.exitWarnings?.[exit.id] && (
-                                <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
-                              )}
-                            </div>
-                            <div className="col-span-1 md:w-24">
-                              <label className="block text-xs text-gray-400 mb-1">Size</label>
-                              <input
-                                type="number"
-                                step="any"
-                                value={exit.size || ''}
-                                onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
-                                placeholder="Lots"
-                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              />
-                            </div>
-                            <div className="col-span-2 md:w-44">
-                              <label className="block text-xs text-gray-400 mb-1">Time</label>
-                              <input
-                                type="datetime-local"
-                                value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
-                                onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
-                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              />
-                            </div>
-                            <div className="col-span-1 md:w-36">
-                              <label className="block text-xs text-gray-400 mb-1">Type</label>
-                              <select
-                                value={exit.type}
-                                onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
-                                className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              >
-                                {EXIT_TYPES.map((et) => (
-                                  <option key={et.value} value={et.value}>
-                                    {et.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="col-span-1 md:flex-1 md:min-w-[120px] flex items-end gap-2">
-                              <div className="flex-1">
-                                <label className="block text-xs text-gray-400 mb-1">Reason</label>
-                                <input
-                                  type="text"
-                                  value={exit.reason || ''}
-                                  onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
-                                  placeholder="Optional"
-                                  className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                                />
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => removeExit(exit.id)}
-                                className="p-2 md:p-1.5 text-red-400 hover:text-red-300 shrink-0"
-                              >
-                                <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                          {/* Drawdown After - only for non-final exits */}
-                          {showDrawdownAfter && (
-                            <div className="flex gap-2 items-end flex-wrap pt-1 border-t border-gray-700">
-                              <div className="w-28">
-                                <label className="block text-xs text-gray-400 mb-1">Drawdown After</label>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={exit.drawdownAfter ?? ''}
-                                  onChange={(e) => updateExit(exit.id, 'drawdownAfter', e.target.value ? parseFloat(e.target.value) : null)}
-                                  placeholder="Worst price"
-                                  className="w-full px-2 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                                />
-                              </div>
-                              <p className="text-xs text-gray-500 pb-1.5">Worst price after this exit before next</p>
-                              {/* Auto-calculated drawdown metrics */}
-                              {exit.drawdownAfter != null && exit.price && (
-                                <div className="flex gap-4 text-xs text-gray-400 pb-1.5 ml-auto">
-                                  <span>
-                                    Drawdown: {Math.abs(exit.price - exit.drawdownAfter).toFixed(5)}
-                                  </span>
-                                  {parseFloat(formData.entryPrice) > 0 && (
-                                    <>
-                                      <span className={
-                                        (formData.direction === 'long' && exit.drawdownAfter <= parseFloat(formData.entryPrice)) ||
-                                        (formData.direction === 'short' && exit.drawdownAfter >= parseFloat(formData.entryPrice))
-                                          ? 'text-amber-400' : ''
-                                      }>
-                                        {(formData.direction === 'long' && exit.drawdownAfter <= parseFloat(formData.entryPrice)) ||
-                                         (formData.direction === 'short' && exit.drawdownAfter >= parseFloat(formData.entryPrice))
-                                          ? '⚠ Reached Entry' : '✓ Above Entry'}
-                                      </span>
-                                      {exit.price !== parseFloat(formData.entryPrice) && (
-                                        <span>
-                                          {(Math.abs(exit.price - exit.drawdownAfter) / Math.abs(exit.price - parseFloat(formData.entryPrice)) * 100).toFixed(0)}% of leg
-                                        </span>
-                                      )}
-                                    </>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-sm text-gray-500">No exits recorded — trade is open</p>
-                )}
-              </div>
-
-              {/* Exit Summary (auto-calculated) */}
-              {formData.exits.length > 0 && (
-                <div className="p-3 bg-gray-750 rounded-lg">
-                  <h4 className="text-sm font-medium text-gray-300 mb-2">Exit Summary</h4>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                    <div>
-                      <span className="text-gray-400">Avg Exit Price:</span>
-                      <div className="text-white">{calculated.exitPrice?.toFixed(5) ?? '-'}</div>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Total Size Exited:</span>
-                      <div className={`${
-                        calculated.totalExitSize !== parseFloat(formData.positionSize)
-                          ? 'text-amber-400'
-                          : 'text-white'
-                      }`}>
-                        {calculated.totalExitSize}
-                        {calculated.totalExitSize !== parseFloat(formData.positionSize) && (
-                          <span className="text-xs ml-1">(position: {formData.positionSize})</span>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Gross P&L:</span>
-                      <div className={calculated.pnl !== undefined ? (calculated.pnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-white'}>
-                        {calculated.pnl !== undefined ? `$${calculated.pnl.toFixed(2)}` : '-'}
-                      </div>
-                    </div>
-                    <div>
-                      <span className="text-gray-400">R-Multiple:</span>
-                      <div className={calculated.rMultiple !== undefined ? (calculated.rMultiple >= 0 ? 'text-green-400' : 'text-red-400') : 'text-white'}>
-                        {calculated.rMultiple !== undefined ? `${calculated.rMultiple >= 0 ? '+' : ''}${calculated.rMultiple}R` : '-'}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="mt-2 text-xs text-gray-500">
-                    Status: <span className={`font-medium ${
-                      calculated.status === 'closed' ? 'text-green-400' :
-                      calculated.status === 'partial' ? 'text-amber-400' : 'text-gray-400'
-                    }`}>{calculated.status}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </FormSection>
-
-          {/* Section 5b: Stop Adjustments */}
-          <FormSection title="Stop Adjustments" defaultOpen={formData.stopAdjustments.length > 0}>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium text-gray-300">Stop Management History</label>
-                <button
-                  type="button"
-                  onClick={addStopAdjustment}
-                  className="text-sm text-blue-400 hover:text-blue-300"
-                >
-                  + Add Stop Adjustment
-                </button>
-              </div>
-
-              {formData.stopAdjustments.length > 0 ? (
-                <div className="space-y-2">
-                  {formData.stopAdjustments.map((adj) => (
-                    <div key={adj.id} className="p-2 bg-gray-800 rounded-lg space-y-2 md:p-0 md:bg-transparent md:space-y-0">
-                      <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
-                        <input
-                          type="datetime-local"
-                          value={adj.time instanceof Date ? toLocalDateTimeString(adj.time) : ''}
-                          onChange={(e) => updateStopAdjustment(adj.id, 'time', new Date(e.target.value))}
-                          className="col-span-2 md:w-40 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                        />
-                        <input
-                          type="number"
-                          step="any"
-                          value={adj.newStop || ''}
-                          onChange={(e) => updateStopAdjustment(adj.id, 'newStop', parseFloat(e.target.value) || 0)}
-                          placeholder="New Stop"
-                          className="col-span-1 md:w-32 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                        />
-                        <div className="relative col-span-1 md:flex-1 md:min-w-[150px] flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={adj.reason}
-                            onChange={(e) => updateStopAdjustment(adj.id, 'reason', e.target.value)}
-                            placeholder="Reason"
-                            list={`reason-suggestions-${adj.id}`}
-                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                          />
-                          <datalist id={`reason-suggestions-${adj.id}`}>
-                            {STOP_ADJUSTMENT_REASONS.map((r) => (
-                              <option key={r} value={r} />
-                            ))}
-                          </datalist>
-                          <button
-                            type="button"
-                            onClick={() => removeStopAdjustment(adj.id)}
-                            className="p-2 text-red-400 hover:text-red-300 shrink-0 md:hidden"
-                          >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                        <div className="relative col-span-2 md:col-span-1 md:flex-1 md:min-w-[120px]">
-                          <input
-                            type="text"
-                            value={adj.trigger || ''}
-                            onChange={(e) => updateStopAdjustment(adj.id, 'trigger', e.target.value)}
-                            placeholder="Trigger"
-                            list={`trigger-suggestions-${adj.id}`}
-                            className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                          />
-                          <datalist id={`trigger-suggestions-${adj.id}`}>
-                            {STOP_ADJUSTMENT_TRIGGERS.map((t) => (
-                              <option key={t} value={t} />
-                            ))}
-                          </datalist>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeStopAdjustment(adj.id)}
-                          className="hidden md:block p-2 text-red-400 hover:text-red-300"
-                        >
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                      {/* Warning if adjustment logged after exit */}
-                      {warnings.stopAdjustmentWarnings?.[adj.id] && (
-                        <p className="text-xs text-amber-400 mt-1 px-1">
-                          ⚠️ {warnings.stopAdjustmentWarnings[adj.id]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">No stop adjustments recorded</p>
-              )}
-            </div>
-          </FormSection>
-
-          {/* Section 5c: In-Trade Events */}
-          <FormSection title="In-Trade Events" defaultOpen={formData.events.length > 0}>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <label className="text-sm font-medium text-gray-300">Events During Trade</label>
-              </div>
-
-              {/* Existing events sorted by time */}
-              {formData.events.length > 0 ? (
-                <div className="space-y-2">
-                  {formData.events.map((event) => (
-                    <div key={event.id} className="flex gap-2 items-center flex-wrap bg-gray-800/50 p-3 rounded-lg">
-                      <span className="text-sm text-gray-400">
-                        {event.time instanceof Date ? event.time.toLocaleString() : new Date(event.time).toLocaleString()}
-                      </span>
-                      <span className="px-2 py-1 bg-blue-500/20 text-blue-400 text-sm rounded">
-                        {event.eventType}
-                      </span>
-                      {event.description && (
-                        <span className="text-sm text-gray-300 flex-1">{event.description}</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => removeEvent(event.id)}
-                        className="p-1 text-red-400 hover:text-red-300 ml-auto"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-gray-500">No events recorded</p>
-              )}
-
-              {/* Add new event row */}
-              <div className="border-t border-gray-700 pt-4">
-                <p className="text-sm font-medium text-gray-300 mb-2">Add Event</p>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                  <input
-                    type="datetime-local"
-                    value={newEventTime}
-                    onChange={(e) => setNewEventTime(e.target.value)}
-                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                  />
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={showEventTypeSuggestions ? eventTypeInput : newEventType}
-                      onChange={(e) => {
-                        setEventTypeInput(e.target.value);
-                        setNewEventType(e.target.value);
-                        setShowEventTypeSuggestions(true);
-                      }}
-                      onFocus={() => {
-                        setEventTypeInput(newEventType);
-                        setShowEventTypeSuggestions(true);
-                      }}
-                      onBlur={() => setTimeout(() => setShowEventTypeSuggestions(false), 200)}
-                      placeholder="Event type"
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
-                    />
-                    {showEventTypeSuggestions && getFilteredEventTypes().length > 0 && (
-                      <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {getFilteredEventTypes().map((et) => (
-                          <button
-                            key={et}
-                            type="button"
-                            onClick={() => {
-                              setNewEventType(et);
-                              setEventTypeInput('');
-                              setShowEventTypeSuggestions(false);
-                            }}
-                            className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-1"
-                          >
-                            <span>{et}</span>
-                            {!PRESET_EVENT_TYPES.includes(et) && (
-                              <span className="text-blue-400">*</span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                   <input
                     type="text"
-                    value={newEventDescription}
-                    onChange={(e) => setNewEventDescription(e.target.value)}
-                    placeholder="Description (optional)"
-                    className="px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm"
+                    value={screenshot.caption}
+                    onChange={(e) => updateScreenshotCaption(screenshot.id, e.target.value)}
+                    placeholder="Add caption..."
+                    className="mt-2 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
                   />
-                  <button
-                    type="button"
-                    onClick={addEvent}
-                    disabled={!newEventType.trim()}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400 text-white text-sm rounded-lg"
-                  >
-                    Add Event
-                  </button>
                 </div>
-              </div>
+              ))}
             </div>
-          </FormSection>
-
-          {/* Section 6: Setup & Market Context */}
-          <FormSection title="Setup & Market Context" defaultOpen={false}>
-            <div className="space-y-4">
-              {/* Setup Tags - full width multi-tag input */}
-              <div className="relative">
-                <label className="block text-sm font-medium text-gray-300 mb-1">Setup Tags</label>
-                <div className="flex flex-wrap gap-1.5 p-2 bg-gray-700 border border-gray-600 rounded-lg min-h-[42px]">
-                  {formData.setupTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm"
-                    >
-                      {tag}
-                      <button
-                        type="button"
-                        onClick={() => removeSetupTag(tag)}
-                        className="hover:text-blue-200"
-                      >
-                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </span>
-                  ))}
-                  <input
-                    type="text"
-                    value={setupTagInput}
-                    onChange={(e) => {
-                      setSetupTagInput(e.target.value);
-                      setShowSetupTagSuggestions(true);
-                    }}
-                    onFocus={() => setShowSetupTagSuggestions(true)}
-                    onBlur={() => setTimeout(() => setShowSetupTagSuggestions(false), 200)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addSetupTag(setupTagInput);
-                      }
-                    }}
-                    className="flex-1 min-w-[150px] bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm"
-                    placeholder={formData.setupTags.length === 0 ? 'Type to search or add tags...' : ''}
-                  />
-                </div>
-                {showSetupTagSuggestions && filteredSetupTags.length > 0 && (
-                  <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                    {filteredSetupTags.slice(0, 15).map((tag) => (
-                      <button
-                        key={tag.name}
-                        type="button"
-                        onClick={() => addSetupTag(tag.name)}
-                        className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
-                      >
-                        <span>{tag.name}</span>
-                        {tag.description && (
-                          <span className="text-gray-400 text-xs truncate">— {tag.description}</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <p className="text-xs text-gray-500 mt-1">Tag every technical factor present at entry</p>
-              </div>
-
-              {/* Analysis TFs - multi-select pills */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Analysis TFs</label>
-                <div className="flex flex-wrap gap-2">
-                  {TIMEFRAMES.map((tf) => {
-                    const isSelected = formData.analysisTFs.includes(tf.value);
-                    return (
-                      <button
-                        key={tf.value}
-                        type="button"
-                        onClick={() => {
-                          if (isSelected) {
-                            setFormData((prev) => ({
-                              ...prev,
-                              analysisTFs: prev.analysisTFs.filter((t) => t !== tf.value),
-                            }));
-                          } else {
-                            setFormData((prev) => ({
-                              ...prev,
-                              analysisTFs: [...prev.analysisTFs, tf.value],
-                            }));
-                          }
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                          isSelected
-                            ? 'bg-blue-500 text-white'
-                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                        }`}
-                      >
-                        {tf.label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Timeframes the setup was identified on</p>
-              </div>
-
-              {/* Entry TF - single select */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Entry TF</label>
-                  <select
-                    value={formData.entryTF}
-                    onChange={(e) => handleChange('entryTF', e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select...</option>
-                    {TIMEFRAMES.map((tf) => (
-                      <option key={tf.value} value={tf.value}>
-                        {tf.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">Entry executed on</p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Entry Confirmation</label>
-                  <select
-                    value={formData.entryConfirmation}
-                    onChange={(e) => handleChange('entryConfirmation', e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    {ENTRY_CONFIRMATION_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">How entry was executed</p>
-                </div>
-
-                {/* Confirmation TF - only shown for structural/partial_confirmation in quick log mode */}
-                {(formData.entryConfirmation === 'structural' || formData.entryConfirmation === 'partial_confirmation') && (
-                  <div className="relative">
-                    <label className="block text-sm font-medium text-gray-300 mb-1">Confirmation TF</label>
-                    <input
-                      type="text"
-                      value={showConfirmationTfSuggestions ? (confirmationTfInput || formData.confirmationTF) : formData.confirmationTF}
-                      onChange={(e) => {
-                        const newValue = e.target.value;
-                        setConfirmationTfInput(newValue);
-                        handleChange('confirmationTF', newValue);
-                        setShowConfirmationTfSuggestions(true);
-                      }}
-                      onFocus={() => {
-                        setConfirmationTfInput(formData.confirmationTF);
-                        setShowConfirmationTfSuggestions(true);
-                      }}
-                      onBlur={() => {
-                        const normalized = normalizeLevelTimeframe(formData.confirmationTF);
-                        if (normalized !== formData.confirmationTF) {
-                          handleChange('confirmationTF', normalized);
-                        }
-                        setTimeout(() => setShowConfirmationTfSuggestions(false), 200);
-                      }}
-                      placeholder="e.g. M5, H1"
-                      className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    {showConfirmationTfSuggestions && getFilteredConfirmationTFs().length > 0 && (
-                      <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {getFilteredConfirmationTFs().map((tf) => (
-                          <button
-                            key={tf}
-                            type="button"
-                            onClick={() => selectConfirmationTF(tf)}
-                            className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
-                          >
-                            {tf}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <p className="text-xs text-gray-500 mt-1">TF confirmation was observed on</p>
-                  </div>
-                )}
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">HTF Bias</label>
-                  <select
-                    value={formData.htfBias}
-                    onChange={(e) => handleChange('htfBias', e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select...</option>
-                    {HTF_BIASES.map((bias) => (
-                      <option key={bias.value} value={bias.value}>
-                        {bias.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">HTF Market Condition</label>
-                  <select
-                    value={formData.marketCondition}
-                    onChange={(e) => handleChange('marketCondition', e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select...</option>
-                    {MARKET_CONDITIONS.map((mc) => (
-                      <option key={mc.value} value={mc.value}>
-                        {mc.label}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">Overall HTF conditions</p>
-                </div>
-              </div>
-
-              {/* Level Sequence */}
-              <div className="border-t border-gray-700 pt-4 mt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-300">Level Sequence</label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newLevel: LevelEntry = {
-                        id: uuidv4(),
-                        levelType: '',
-                        timeframe: '',
-                        price: 0,
-                        priceFar: null,
-                        deepestPrice: null,
-                        penetrationPercent: null,
-                        reaction: null,
-                      };
-                      setFormData((prev) => ({
-                        ...prev,
-                        levelSequence: [...prev.levelSequence, newLevel],
-                      }));
-                    }}
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg"
-                  >
-                    + Add Level
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mb-3">
-                  Optional — the levels in your zone, ordered shallowest to deepest (the order price meets them)
-                </p>
-
-                {formData.levelSequence.length > 0 && (
-                  <div className="space-y-2">
-                    {formData.levelSequence.map((level, index) => {
-                      const isZone = isLevelTypeZone(level.levelType);
-                      const showZoneToggle = shouldShowZoneToggle(level.levelType);
-                      const penetration = isZone && level.priceFar
-                        ? calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice)
-                        : null;
-                      const filteredTypes = getFilteredLevelTypes(index, level.levelType);
-                      const inputValue = levelTypeInputs[index] ?? '';
-
-                      return (
-                        <div
-                          key={level.id}
-                          className="p-2 md:p-2 bg-gray-750 rounded-lg"
-                        >
-                          {/* Mobile: Stacked layout / Desktop: Inline row */}
-                          <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-2">
-                            {/* Row 1 on mobile: Type, TF, Zone toggle, Actions */}
-                            <div className="flex items-center gap-2">
-                              {/* Position indicator */}
-                              <span className="text-xs text-gray-500 w-5 text-center shrink-0">{index + 1}</span>
-
-                              {/* Level Type - autocomplete input */}
-                              <div className="relative flex-1 md:flex-none">
-                                <input
-                                  type="text"
-                                  value={showLevelTypeSuggestions[index] ? inputValue : level.levelType}
-                                  onChange={(e) => {
-                                    const newValue = e.target.value;
-                                    setLevelTypeInputs(prev => ({ ...prev, [index]: newValue }));
-                                    const nowZone = isLevelTypeZone(newValue);
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      levelSequence: prev.levelSequence.map((l, i) =>
-                                        i === index ? {
-                                          ...l,
-                                          levelType: newValue,
-                                          priceFar: nowZone ? l.priceFar : null,
-                                          deepestPrice: nowZone ? l.deepestPrice : null,
-                                          penetrationPercent: nowZone ? l.penetrationPercent : null,
-                                        } : l
-                                      ),
-                                    }));
-                                    setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
-                                  }}
-                                  onFocus={() => {
-                                    setLevelTypeInputs(prev => ({ ...prev, [index]: level.levelType }));
-                                    setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: true }));
-                                  }}
-                                  onBlur={() => setTimeout(() => setShowLevelTypeSuggestions(prev => ({ ...prev, [index]: false })), 200)}
-                                  placeholder="Type"
-                                  className="w-full md:w-20 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                                {showLevelTypeSuggestions[index] && filteredTypes.length > 0 && (
-                                  <div className="absolute z-20 w-full md:w-40 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                                    {filteredTypes.map((lt) => (
-                                      <button
-                                        key={lt}
-                                        type="button"
-                                        onClick={() => selectLevelType(index, lt)}
-                                        className="w-full px-3 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-2"
-                                      >
-                                        <span>{lt}</span>
-                                        {isPresetZoneType(lt) && (
-                                          <span className="text-xs text-gray-500">zone</span>
-                                        )}
-                                        {isPresetLineType(lt) && (
-                                          <span className="text-xs text-gray-500">line</span>
-                                        )}
-                                        {!isKnownLevelType(lt) && (
-                                          <span className="text-xs text-blue-400">custom</span>
-                                        )}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Timeframe combo input */}
-                              <div className="relative shrink-0">
-                                <input
-                                  type="text"
-                                  value={showLevelTfSuggestions[index] ? (levelTfInputs[index] ?? level.timeframe) : level.timeframe}
-                                  onChange={(e) => {
-                                    const newValue = e.target.value;
-                                    setLevelTfInputs(prev => ({ ...prev, [index]: newValue }));
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      levelSequence: prev.levelSequence.map((l, i) =>
-                                        i === index ? { ...l, timeframe: newValue } : l
-                                      ),
-                                    }));
-                                    setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
-                                  }}
-                                  onFocus={() => {
-                                    setLevelTfInputs(prev => ({ ...prev, [index]: level.timeframe }));
-                                    setShowLevelTfSuggestions(prev => ({ ...prev, [index]: true }));
-                                  }}
-                                  onBlur={() => {
-                                    // Normalize on blur
-                                    const normalized = normalizeLevelTimeframe(level.timeframe);
-                                    if (normalized !== level.timeframe) {
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        levelSequence: prev.levelSequence.map((l, i) =>
-                                          i === index ? { ...l, timeframe: normalized } : l
-                                        ),
-                                      }));
-                                    }
-                                    setTimeout(() => setShowLevelTfSuggestions(prev => ({ ...prev, [index]: false })), 200);
-                                  }}
-                                  placeholder="TF"
-                                  className="w-16 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                                {showLevelTfSuggestions[index] && getFilteredLevelTimeframes(index, level.timeframe).length > 0 && (
-                                  <div className="absolute z-20 w-20 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                                    {getFilteredLevelTimeframes(index, level.timeframe).map((tf) => (
-                                      <button
-                                        key={tf}
-                                        type="button"
-                                        onClick={() => selectLevelTimeframe(index, tf)}
-                                        className="w-full px-2 py-2 md:py-1.5 text-left text-gray-200 hover:bg-gray-600 text-sm flex items-center gap-1"
-                                      >
-                                        <span>{tf}</span>
-                                        {!PRESET_LEVEL_TIMEFRAMES.includes(tf) && (
-                                          <span className="text-xs text-blue-400">*</span>
-                                        )}
-                                      </button>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Zone toggle for custom types */}
-                              {showZoneToggle && (
-                                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer shrink-0" title="Zone">
-                                  <input
-                                    type="checkbox"
-                                    checked={isZone}
-                                    onChange={(e) => handleZoneToggle(index, level.levelType, e.target.checked)}
-                                    className="w-4 h-4 md:w-3 md:h-3 rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
-                                  />
-                                  <span className="hidden md:inline">Zone</span>
-                                </label>
-                              )}
-
-                              {/* Reorder & Remove buttons - always visible on mobile */}
-                              <div className="flex items-center gap-1 ml-auto md:ml-0">
-                                <div className="flex flex-col">
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (index === 0) return;
-                                      setFormData((prev) => {
-                                        const newSeq = [...prev.levelSequence];
-                                        [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
-                                        return { ...prev, levelSequence: newSeq };
-                                      });
-                                    }}
-                                    disabled={index === 0}
-                                    className={`p-1 md:p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                                  >
-                                    <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (index === formData.levelSequence.length - 1) return;
-                                      setFormData((prev) => {
-                                        const newSeq = [...prev.levelSequence];
-                                        [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
-                                        return { ...prev, levelSequence: newSeq };
-                                      });
-                                    }}
-                                    disabled={index === formData.levelSequence.length - 1}
-                                    className={`p-1 md:p-0.5 rounded ${index === formData.levelSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                                  >
-                                    <svg className="w-4 h-4 md:w-3 md:h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                                    </svg>
-                                  </button>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      levelSequence: prev.levelSequence.filter((_, i) => i !== index),
-                                    }));
-                                  }}
-                                  className="p-1.5 md:p-1 text-gray-400 hover:text-red-400 hover:bg-gray-600 rounded"
-                                >
-                                  <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Row 2 on mobile: Price inputs and Reaction */}
-                            <div className="flex items-center gap-2 ml-7 md:ml-0">
-                              {/* Price inputs - different for zones vs lines */}
-                              {isZone ? (
-                                <>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    value={level.price || ''}
-                                    onChange={(e) => {
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        levelSequence: prev.levelSequence.map((l, i) =>
-                                          i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
-                                        ),
-                                      }));
-                                    }}
-                                    placeholder="Near"
-                                    title="Near edge"
-                                    className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                  />
-                                  <span className="text-gray-500 text-xs shrink-0">→</span>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    value={level.priceFar || ''}
-                                    onChange={(e) => {
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        levelSequence: prev.levelSequence.map((l, i) =>
-                                          i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
-                                        ),
-                                      }));
-                                    }}
-                                    placeholder="Far"
-                                    title="Far edge"
-                                    className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                  />
-                                </>
-                              ) : (
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={level.price || ''}
-                                  onChange={(e) => {
-                                    setFormData((prev) => ({
-                                      ...prev,
-                                      levelSequence: prev.levelSequence.map((l, i) =>
-                                        i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
-                                      ),
-                                    }));
-                                  }}
-                                  placeholder="Price"
-                                  className="flex-1 md:flex-none md:w-28 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                                />
-                              )}
-
-                              {/* Reaction select */}
-                              <select
-                                value={level.reaction || ''}
-                                onChange={(e) => {
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
-                                    ),
-                                  }));
-                                }}
-                                className="flex-1 md:flex-none md:min-w-[90px] px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              >
-                                <option value="">Reaction</option>
-                                <option value="bounced">Bounced</option>
-                                <option value="front_run">Front-run</option>
-                                <option value="swept_then_bounced">Swept+bounced</option>
-                                <option value="broken">Broken</option>
-                              </select>
-                            </div>
-                          </div>
-
-                          {/* Zone-only: Deepest price row */}
-                          {isZone && level.priceFar && (
-                            <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-gray-600">
-                              <span className="text-xs text-gray-400 w-20">Deepest price:</span>
-                              <input
-                                type="number"
-                                step="any"
-                                value={level.deepestPrice || ''}
-                                onChange={(e) => {
-                                  const deepest = parseFloat(e.target.value) || null;
-                                  const newPenetration = calculatePenetrationPercent(level.price, level.priceFar!, deepest);
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? {
-                                        ...l,
-                                        deepestPrice: deepest,
-                                        penetrationPercent: newPenetration,
-                                      } : l
-                                    ),
-                                  }));
-                                }}
-                                placeholder="Deepest in zone"
-                                title="Extreme price reached inside zone before turn"
-                                className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              />
-                              {penetration !== null && (
-                                <span className={`text-xs px-2 py-0.5 rounded ${
-                                  penetration >= 75 ? 'bg-red-500/20 text-red-400' :
-                                  penetration >= 50 ? 'bg-orange-500/20 text-orange-400' :
-                                  penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
-                                  'bg-green-500/20 text-green-400'
-                                }`}>
-                                  {penetration}% penetrated
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {formData.levelSequence.length === 0 && (
-                  <div className="text-center py-4 text-gray-500 text-sm border border-dashed border-gray-700 rounded-lg">
-                    No levels added. Click "Add Level" to track price interaction at key levels.
-                  </div>
-                )}
-              </div>
-            </div>
-          </FormSection>
-
-          {/* Section 7: Psychology */}
-          <FormSection title="Psychology" defaultOpen={false}>
-            <div className="space-y-4">
-              {/* Reason Not Taken (only shown when tradeTaken is false) */}
-              {!formData.tradeTaken && (
-                <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4">
-                  <label className="block text-sm font-medium text-orange-400 mb-2">
-                    Reason Not Taken
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.notTakenReason}
-                    onChange={(e) => handleChange('notTakenReason', e.target.value)}
-                    list="not-taken-reasons-full"
-                    className="w-full px-3 py-2 bg-gray-700 border border-orange-500/50 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500"
-                    placeholder="Why wasn't this trade taken?"
-                  />
-                  <datalist id="not-taken-reasons-full">
-                    {NOT_TAKEN_REASONS.map((reason) => (
-                      <option key={reason} value={reason} />
-                    ))}
-                  </datalist>
-                  <p className="text-xs text-orange-400/70 mt-2">
-                    Common reasons: hesitation, missed entry window, away from desk, etc.
-                  </p>
-                </div>
-              )}
-
-              {/* Emotional State - Visual selector */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Emotional State</label>
-                <div className="flex gap-2">
-                  {EMOTIONAL_STATES.map((state) => (
-                    <button
-                      key={state.value}
-                      type="button"
-                      onClick={() => handleChange('emotionalState', state.value)}
-                      className={`flex-1 py-3 rounded-lg text-center transition-colors ${
-                        formData.emotionalState === state.value
-                          ? 'bg-blue-600 ring-2 ring-blue-400'
-                          : 'bg-gray-700 hover:bg-gray-600'
-                      }`}
-                    >
-                      <div className="text-2xl">{state.emoji}</div>
-                      <div className="text-xs text-gray-300 mt-1">{state.label}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Confidence Level */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Confidence Level</label>
-                  <div className="flex gap-2">
-                    {CONFIDENCE_LEVELS.map((cl) => (
-                      <button
-                        key={cl.value}
-                        type="button"
-                        onClick={() => handleChange('confidenceLevel', cl.value)}
-                        className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                          formData.confidenceLevel === cl.value
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-700 text-gray-400 hover:bg-gray-600'
-                        }`}
-                      >
-                        {cl.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Followed Plan Toggle */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Followed Plan</label>
-                  <button
-                    type="button"
-                    onClick={() => handleChange('followedPlan', !formData.followedPlan)}
-                    className={`w-full py-2 rounded-lg font-medium transition-colors ${
-                      formData.followedPlan
-                        ? 'bg-green-600 text-white'
-                        : 'bg-red-600 text-white'
-                    }`}
-                  >
-                    {formData.followedPlan ? 'Yes' : 'No'}
-                  </button>
-                </div>
-
-                {/* Warning toggles */}
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.isRevengeTrade}
-                      onChange={(e) => handleChange('isRevengeTrade', e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-red-500 focus:ring-red-500"
-                    />
-                    <span className="text-sm text-gray-300">Revenge Trade</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.isOverTrade}
-                      onChange={(e) => handleChange('isOverTrade', e.target.checked)}
-                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-yellow-500 focus:ring-yellow-500"
-                    />
-                    <span className="text-sm text-gray-300">Over Trade</span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Plan Deviation - shown only if followedPlan is false */}
-              {!formData.followedPlan && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Plan Deviation (What did you do differently?)
-                  </label>
-                  <textarea
-                    value={formData.planDeviation}
-                    onChange={(e) => handleChange('planDeviation', e.target.value)}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                  />
-                </div>
-              )}
-            </div>
-          </FormSection>
-
-          {/* Section 8: Notes & Screenshots */}
-          <FormSection title="Notes & Screenshots" defaultOpen={false}>
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Entry Notes</label>
-                  <textarea
-                    value={formData.entryNotes}
-                    onChange={(e) => handleChange('entryNotes', e.target.value)}
-                    rows={3}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="Thesis and plan as you execute — why this trade, what's the plan?"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">Close Notes</label>
-                  <textarea
-                    value={formData.closeNotes}
-                    onChange={(e) => handleChange('closeNotes', e.target.value)}
-                    rows={3}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="Immediate review as the trade closes — how did it play out, how did you manage it?"
-                  />
-                </div>
-              </div>
-
-              {/* Screenshots */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">Screenshots (URLs)</label>
-                <div className="space-y-3">
-                  {/* URL Input */}
-                  <div className="flex gap-2">
-                    <input
-                      type="url"
-                      value={screenshotUrlInput}
-                      onChange={(e) => setScreenshotUrlInput(e.target.value)}
-                      placeholder="https://www.tradingview.com/x/..."
-                      className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={addScreenshotUrl}
-                      disabled={!screenshotUrlInput.trim() || (!screenshotUrlInput.startsWith('http://') && !screenshotUrlInput.startsWith('https://'))}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg text-white transition-colors"
-                    >
-                      Add
-                    </button>
-                  </div>
-                  {/* Optional caption input */}
-                  <input
-                    type="text"
-                    value={screenshotCaptionInput}
-                    onChange={(e) => setScreenshotCaptionInput(e.target.value)}
-                    placeholder="Optional caption..."
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <p className="text-xs text-gray-500">
-                    Paste TradingView snapshot URLs or any image URL
-                  </p>
-                </div>
-
-                {/* Screenshot previews */}
-                {formData.screenshots.length > 0 && (
-                  <div className="mt-4 grid grid-cols-2 md:grid-cols-3 gap-4">
-                    {formData.screenshots.filter(s => s.url).map((screenshot) => (
-                      <div key={screenshot.id} className="relative group">
-                        <img
-                          src={screenshot.url}
-                          alt={screenshot.caption || 'Screenshot'}
-                          className="w-full h-32 object-cover rounded-lg bg-gray-700"
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
-                            // Show fallback
-                            const fallback = target.nextElementSibling as HTMLElement;
-                            if (fallback) fallback.style.display = 'flex';
-                          }}
-                        />
-                        {/* Fallback for broken images */}
-                        <div className="hidden w-full h-32 bg-gray-700 rounded-lg items-center justify-center text-gray-400 text-xs p-2 text-center">
-                          <a href={screenshot.url} target="_blank" rel="noopener noreferrer" className="hover:text-blue-400 underline break-all">
-                            {screenshot.url.length > 50 ? screenshot.url.substring(0, 50) + '...' : screenshot.url}
-                          </a>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => removeScreenshot(screenshot.id)}
-                          className="absolute top-2 right-2 p-1 bg-red-600 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                        <input
-                          type="text"
-                          value={screenshot.caption}
-                          onChange={(e) => updateScreenshotCaption(screenshot.id, e.target.value)}
-                          placeholder="Add caption..."
-                          className="mt-2 w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm text-white"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Tags */}
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Tags</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addTag();
-                      }
-                    }}
-                    className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Add a tag and press Enter..."
-                  />
-                  <button
-                    type="button"
-                    onClick={addTag}
-                    className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded-lg text-white transition-colors"
-                  >
-                    Add
-                  </button>
-                </div>
-                {formData.tags.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {formData.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center gap-1 px-2 py-1 bg-gray-700 rounded-full text-sm text-gray-200"
-                      >
-                        {tag}
-                        <button
-                          type="button"
-                          onClick={() => removeTag(tag)}
-                          className="text-gray-400 hover:text-white"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </FormSection>
-
-          {/* Post-Exit Review Section - Only for editing closed trades */}
-          {isEditMode && calculated.status === 'closed' && (
-            <FormSection title="Post-Exit Review" defaultOpen={!existingReviewedAt}>
-              <div className="space-y-4">
-                {!existingReviewedAt && (
-                  <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
-                    <p className="text-blue-400 text-sm">
-                      Record the price sequence after you exited. This helps analyze whether you should have held longer or if your exit was validated.
-                    </p>
-                  </div>
-                )}
-
-                {/* Level Sequence Review Nudge */}
-                {formData.levelSequence.length > 0 && formData.levelSequence.some(l => l.reaction === null) && (
-                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-4">
-                    <p className="text-amber-400 text-sm font-medium mb-2">
-                      Record what price did at each level
-                    </p>
-                    <div className="space-y-2">
-                      {formData.levelSequence.map((level, index) => (
-                        <div
-                          key={level.id}
-                          className="flex items-center gap-2 text-sm"
-                        >
-                          <span className="text-gray-400 w-4">{index + 1}.</span>
-                          <span className="text-gray-300">{level.levelType || 'Level'}</span>
-                          {level.timeframe && (
-                            <span className="text-gray-500">({level.timeframe})</span>
-                          )}
-                          <span className="text-gray-500">@ {level.price || '—'}</span>
-                          <span className="flex-1" />
-                          <select
-                            value={level.reaction || ''}
-                            onChange={(e) => {
-                              setFormData((prev) => ({
-                                ...prev,
-                                levelSequence: prev.levelSequence.map((l, i) =>
-                                  i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
-                                ),
-                              }));
-                            }}
-                            className={`w-40 px-2 py-1 rounded text-sm focus:outline-none focus:ring-1 focus:ring-amber-500 ${
-                              level.reaction
-                                ? level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400 border-green-500/50' :
-                                  level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400 border-blue-500/50' :
-                                  level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400 border-amber-500/50' :
-                                  'bg-red-500/20 text-red-400 border-red-500/50'
-                                : 'bg-gray-700 text-gray-300 border-gray-600'
-                            } border`}
-                          >
-                            <option value="">— Select</option>
-                            <option value="bounced">Bounced</option>
-                            <option value="front_run">Front-run</option>
-                            <option value="swept_then_bounced">Swept then bounced</option>
-                            <option value="broken">Broken</option>
-                          </select>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Post-Exit Price Sequence Builder */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Post-Exit Price Sequence
-                  </label>
-                  <p className="text-xs text-gray-500 mb-3">
-                    Add price milestones in chronological order (first move after exit = first row). Need at least a favourable and adverse extreme.
-                  </p>
-
-                  {/* Quick-add chips from trade data */}
-                  {(() => {
-                    const entryPrice = parseFloat(formData.entryPrice);
-                    const originalSL = originalStopLoss ?? parseFloat(formData.stopLoss);
-                    const targetPrice = parseFloat(formData.targetPrice);
-                    const chips: { label: string; price: number }[] = [];
-
-                    // Original SL
-                    if (!isNaN(originalSL)) {
-                      chips.push({ label: `Original SL [${originalSL}]`, price: originalSL });
-                    }
-
-                    // Stop adjustments
-                    formData.stopAdjustments.forEach((adj) => {
-                      const reasonLabel = adj.reason.toLowerCase().includes('be')
-                        ? `BE [${adj.newStop}]`
-                        : `${adj.reason} [${adj.newStop}]`;
-                      chips.push({ label: reasonLabel, price: adj.newStop });
-                    });
-
-                    // Target
-                    if (!isNaN(targetPrice)) {
-                      chips.push({ label: `Target [${targetPrice}]`, price: targetPrice });
-                    }
-
-                    // Entry price reference
-                    if (!isNaN(entryPrice)) {
-                      chips.push({ label: `Entry [${entryPrice}]`, price: entryPrice });
-                    }
-
-                    // Filter out chips that are already in the sequence
-                    const existingPrices = new Set(formData.postExitSequence.map(m => m.price));
-                    const availableChips = chips.filter(c => !existingPrices.has(c.price));
-
-                    if (availableChips.length === 0) return null;
-
-                    return (
-                      <div className="flex flex-wrap gap-2 mb-3">
-                        <span className="text-xs text-gray-500 self-center">Quick add:</span>
-                        {availableChips.map((chip) => (
-                          <button
-                            key={chip.label}
-                            type="button"
-                            onClick={() => {
-                              setFormData((prev) => ({
-                                ...prev,
-                                postExitSequence: [
-                                  ...prev.postExitSequence,
-                                  {
-                                    id: uuidv4(),
-                                    price: chip.price,
-                                    kind: 'leg' as PostExitMilestoneKind,
-                                    note: chip.label.split('[')[0].trim(),
-                                  },
-                                ],
-                              }));
-                            }}
-                            className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded transition-colors"
-                          >
-                            {chip.label}
-                          </button>
-                        ))}
-                      </div>
-                    );
-                  })()}
-
-                  {/* Milestone rows */}
-                  <div className="space-y-2">
-                    {formData.postExitSequence.map((milestone, index) => {
-                      // Auto-infer kind based on prices in the sequence
-                      const direction = formData.direction;
-                      const allPrices = formData.postExitSequence.map(m => m.price);
-                      const maxPrice = Math.max(...allPrices);
-                      const minPrice = Math.min(...allPrices);
-
-                      // For longs: highest = favourable, lowest = adverse
-                      // For shorts: lowest = favourable, highest = adverse
-                      const inferredKind = (() => {
-                        if (allPrices.length < 2) return milestone.kind;
-                        if (direction === 'long') {
-                          if (milestone.price === maxPrice) return 'favourable_extreme';
-                          if (milestone.price === minPrice) return 'adverse_extreme';
-                        } else {
-                          if (milestone.price === minPrice) return 'favourable_extreme';
-                          if (milestone.price === maxPrice) return 'adverse_extreme';
-                        }
-                        return 'leg';
-                      })();
-
-                      return (
-                        <div
-                          key={milestone.id}
-                          className="flex items-center gap-2 p-2 bg-gray-750 rounded-lg"
-                        >
-                          {/* Reorder buttons */}
-                          <div className="flex flex-col gap-0.5">
-                            <button
-                              type="button"
-                              disabled={index === 0}
-                              onClick={() => {
-                                if (index === 0) return;
-                                setFormData((prev) => {
-                                  const newSeq = [...prev.postExitSequence];
-                                  [newSeq[index - 1], newSeq[index]] = [newSeq[index], newSeq[index - 1]];
-                                  return { ...prev, postExitSequence: newSeq };
-                                });
-                              }}
-                              className={`p-0.5 rounded ${index === 0 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                              </svg>
-                            </button>
-                            <button
-                              type="button"
-                              disabled={index === formData.postExitSequence.length - 1}
-                              onClick={() => {
-                                if (index === formData.postExitSequence.length - 1) return;
-                                setFormData((prev) => {
-                                  const newSeq = [...prev.postExitSequence];
-                                  [newSeq[index], newSeq[index + 1]] = [newSeq[index + 1], newSeq[index]];
-                                  return { ...prev, postExitSequence: newSeq };
-                                });
-                              }}
-                              className={`p-0.5 rounded ${index === formData.postExitSequence.length - 1 ? 'text-gray-600' : 'text-gray-400 hover:text-white hover:bg-gray-600'}`}
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                              </svg>
-                            </button>
-                          </div>
-
-                          {/* Index */}
-                          <span className="text-xs text-gray-500 w-4">{index + 1}</span>
-
-                          {/* Price input */}
-                          <input
-                            type="number"
-                            step="any"
-                            value={milestone.price}
-                            onChange={(e) => {
-                              const newPrice = parseFloat(e.target.value);
-                              setFormData((prev) => ({
-                                ...prev,
-                                postExitSequence: prev.postExitSequence.map((m, i) =>
-                                  i === index ? { ...m, price: isNaN(newPrice) ? 0 : newPrice } : m
-                                ),
-                              }));
-                            }}
-                            className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            placeholder="Price"
-                          />
-
-                          {/* Kind selector */}
-                          <select
-                            value={milestone.kind}
-                            onChange={(e) => {
-                              setFormData((prev) => ({
-                                ...prev,
-                                postExitSequence: prev.postExitSequence.map((m, i) =>
-                                  i === index ? { ...m, kind: e.target.value as PostExitMilestoneKind } : m
-                                ),
-                              }));
-                            }}
-                            className={`w-36 px-2 py-1 rounded text-sm border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                              milestone.kind === 'favourable_extreme'
-                                ? 'bg-green-500/20 text-green-400 border-green-500/50'
-                                : milestone.kind === 'adverse_extreme'
-                                  ? 'bg-red-500/20 text-red-400 border-red-500/50'
-                                  : 'bg-gray-700 text-gray-300 border-gray-600'
-                            }`}
-                          >
-                            <option value="leg">Leg (swing)</option>
-                            <option value="favourable_extreme">Favourable extreme</option>
-                            <option value="adverse_extreme">Adverse extreme</option>
-                          </select>
-
-                          {/* Auto-infer indicator */}
-                          {inferredKind !== milestone.kind && formData.postExitSequence.length >= 2 && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFormData((prev) => ({
-                                  ...prev,
-                                  postExitSequence: prev.postExitSequence.map((m, i) =>
-                                    i === index ? { ...m, kind: inferredKind } : m
-                                  ),
-                                }));
-                              }}
-                              className="text-xs text-amber-400 hover:text-amber-300"
-                              title={`Auto-detected as ${inferredKind.replace('_', ' ')}`}
-                            >
-                              → {inferredKind === 'favourable_extreme' ? 'fav' : inferredKind === 'adverse_extreme' ? 'adv' : 'leg'}?
-                            </button>
-                          )}
-
-                          {/* Note input */}
-                          <input
-                            type="text"
-                            value={milestone.note || ''}
-                            onChange={(e) => {
-                              setFormData((prev) => ({
-                                ...prev,
-                                postExitSequence: prev.postExitSequence.map((m, i) =>
-                                  i === index ? { ...m, note: e.target.value || undefined } : m
-                                ),
-                              }));
-                            }}
-                            className="flex-1 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-                            placeholder="Note (optional)"
-                          />
-
-                          {/* Delete button */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFormData((prev) => ({
-                                ...prev,
-                                postExitSequence: prev.postExitSequence.filter((_, i) => i !== index),
-                              }));
-                            }}
-                            className="p-1 text-gray-400 hover:text-red-400 transition-colors"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Add milestone button */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFormData((prev) => ({
-                        ...prev,
-                        postExitSequence: [
-                          ...prev.postExitSequence,
-                          {
-                            id: uuidv4(),
-                            price: 0,
-                            kind: 'leg' as PostExitMilestoneKind,
-                          },
-                        ],
-                      }));
-                    }}
-                    className="mt-2 px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                    Add milestone
-                  </button>
-
-                  {/* Validation hint */}
-                  {(() => {
-                    const hasFav = formData.postExitSequence.some(m => m.kind === 'favourable_extreme');
-                    const hasAdv = formData.postExitSequence.some(m => m.kind === 'adverse_extreme');
-                    if (formData.postExitSequence.length > 0 && (!hasFav || !hasAdv)) {
-                      return (
-                        <p className="text-xs text-amber-400 mt-2">
-                          {!hasFav && !hasAdv
-                            ? 'Missing: favourable extreme and adverse extreme — mark the best and worst prices'
-                            : !hasFav
-                              ? 'No favourable extreme marked — select the best price in your favour'
-                              : 'No adverse extreme marked — select the worst price against you'}
-                        </p>
-                      );
-                    }
-                    return null;
-                  })()}
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-2">
-                    Did price reach your target after you exited?
-                  </label>
-                  <div className="flex gap-4">
-                    <button
-                      type="button"
-                      onClick={() => handleChange('reachedTargetPostExit', true)}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                        formData.reachedTargetPostExit === true
-                          ? 'bg-red-500/30 text-red-400 ring-2 ring-red-500'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      Yes
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleChange('reachedTargetPostExit', false)}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                        formData.reachedTargetPostExit === false
-                          ? 'bg-green-500/30 text-green-400 ring-2 ring-green-500'
-                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                      }`}
-                    >
-                      No
-                    </button>
-                    {formData.reachedTargetPostExit !== null && (
-                      <button
-                        type="button"
-                        onClick={() => handleChange('reachedTargetPostExit', null)}
-                        className="px-4 py-2 rounded-lg font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Post-Exit Reflection
-                  </label>
-                  <textarea
-                    value={formData.postExitNotes}
-                    onChange={(e) => handleChange('postExitNotes', e.target.value)}
-                    rows={3}
-                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    placeholder="Review this trade 3 days after closing. What happened? What would you do differently?"
-                  />
-                </div>
-
-                {existingReviewedAt && (
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    First reviewed on {new Date(existingReviewedAt).toLocaleDateString('en-US', {
-                      month: 'short',
-                      day: 'numeric',
-                      year: 'numeric'
-                    })}
-                  </div>
-                )}
-              </div>
-            </FormSection>
           )}
         </div>
+      </FormSection>
+
+      {/* Section 7: Post-Exit Review - Only for editing closed trades */}
+      {isEditMode && calculated.status === 'closed' && (
+        <FormSection title="Post-Exit Review" defaultOpen={!existingReviewedAt}>
+          <div className="space-y-4">
+            {!existingReviewedAt && (
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 mb-4">
+                <p className="text-blue-400 text-sm">
+                  Review your trade 3 days after closing. Did price reach your target? What would you do differently?
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Did price reach your target after you exited?
+              </label>
+              <div className="flex gap-4">
+                <button
+                  type="button"
+                  onClick={() => handleChange('reachedTargetPostExit', true)}
+                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                    formData.reachedTargetPostExit === true
+                      ? 'bg-red-500/30 text-red-400 ring-2 ring-red-500'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  Yes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleChange('reachedTargetPostExit', false)}
+                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                    formData.reachedTargetPostExit === false
+                      ? 'bg-green-500/30 text-green-400 ring-2 ring-green-500'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  No
+                </button>
+                {formData.reachedTargetPostExit !== null && (
+                  <button
+                    type="button"
+                    onClick={() => handleChange('reachedTargetPostExit', null)}
+                    className="px-4 py-2 rounded-lg font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Post-Exit Reflection
+              </label>
+              <textarea
+                value={formData.postExitNotes}
+                onChange={(e) => handleChange('postExitNotes', e.target.value)}
+                rows={3}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                placeholder="Review this trade 3 days after closing. What happened? What would you do differently?"
+              />
+            </div>
+
+            {existingReviewedAt && (
+              <div className="flex items-center gap-2 text-sm text-gray-500">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                First reviewed on {new Date(existingReviewedAt).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric'
+                })}
+              </div>
+            )}
+          </div>
+        </FormSection>
       )}
 
       {/* Form Actions */}

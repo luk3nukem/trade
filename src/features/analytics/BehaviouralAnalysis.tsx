@@ -15,9 +15,6 @@ import {
 } from 'recharts';
 import type { TradeRecord } from '../../types';
 import {
-  getEmotionalStateAnalysis,
-  getPlanAdherenceAnalysis,
-  getRevengeTradeAnalysis,
   getStreakAnalysis,
   getTradesPerDayAnalysis,
   getBehaviouralInsights,
@@ -27,18 +24,122 @@ import {
   getConfirmationTFInsights,
   CHART_TOOLTIP_STYLES,
 } from '../../utils';
+import { deriveStatus, getTradeRMetrics } from '../../utils/tradeCalculations';
 
 interface Props {
   trades: TradeRecord[];
 }
 
-// Gradient colors from green (calm) to red (anxious)
-const EMOTIONAL_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#10b981'];
+/**
+ * Timing-based revenge trade detection.
+ * Identifies trades entered within 30 minutes of a losing trade.
+ */
+interface RevengeTradeStats {
+  normalTrades: {
+    count: number;
+    winRate: number;
+    avgR: number;
+    totalPnl: number;
+  };
+  revengeTrades: {
+    count: number;
+    winRate: number;
+    avgR: number;
+    totalPnl: number;
+    trades: TradeRecord[];
+  };
+}
+
+function getTimingBasedRevengeAnalysis(trades: TradeRecord[]): RevengeTradeStats {
+  // Filter to closed trades only
+  const closedTrades = trades.filter(t => deriveStatus(t) === 'closed');
+
+  // Sort trades by entry time
+  const sortedTrades = [...closedTrades].sort(
+    (a, b) => new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime()
+  );
+
+  const revengeTrades: TradeRecord[] = [];
+  const normalTrades: TradeRecord[] = [];
+
+  const REVENGE_WINDOW_MS = 30 * 60 * 1000; // 30 minutes in milliseconds
+
+  for (let i = 0; i < sortedTrades.length; i++) {
+    const trade = sortedTrades[i];
+    const tradeEntryTime = new Date(trade.entryTime).getTime();
+
+    // Look for any losing trade that closed within 30 minutes before this trade's entry
+    let isRevengeTrade = false;
+
+    for (let j = 0; j < i; j++) {
+      const previousTrade = sortedTrades[j];
+      const prevMetrics = getTradeRMetrics(previousTrade);
+
+      // Skip if previous trade doesn't have exit info
+      if (!prevMetrics.exitTime) continue;
+
+      const prevExitTime = prevMetrics.exitTime.getTime();
+      const timeSinceExit = tradeEntryTime - prevExitTime;
+
+      // Check if previous trade was a loss and exited within 30 minutes of current entry
+      if (timeSinceExit > 0 && timeSinceExit <= REVENGE_WINDOW_MS) {
+        const prevRMultiple = prevMetrics.rMultiple;
+        if (prevRMultiple !== null && prevRMultiple < 0) {
+          isRevengeTrade = true;
+          break;
+        }
+      }
+    }
+
+    if (isRevengeTrade) {
+      revengeTrades.push(trade);
+    } else {
+      normalTrades.push(trade);
+    }
+  }
+
+  // Calculate stats for revenge trades
+  const revengeMetrics = revengeTrades.map(t => getTradeRMetrics(t));
+  const revengeWins = revengeMetrics.filter(m => m.rMultiple !== null && m.rMultiple > 0).length;
+  const revengeRValues = revengeMetrics
+    .map(m => m.rMultiple)
+    .filter((r): r is number => r !== null);
+  const revengePnlValues = revengeMetrics
+    .map(m => m.pnl)
+    .filter((p): p is number => p !== null);
+
+  // Calculate stats for normal trades
+  const normalMetrics = normalTrades.map(t => getTradeRMetrics(t));
+  const normalWins = normalMetrics.filter(m => m.rMultiple !== null && m.rMultiple > 0).length;
+  const normalRValues = normalMetrics
+    .map(m => m.rMultiple)
+    .filter((r): r is number => r !== null);
+  const normalPnlValues = normalMetrics
+    .map(m => m.pnl)
+    .filter((p): p is number => p !== null);
+
+  return {
+    normalTrades: {
+      count: normalTrades.length,
+      winRate: normalTrades.length > 0 ? (normalWins / normalTrades.length) * 100 : 0,
+      avgR: normalRValues.length > 0
+        ? normalRValues.reduce((a, b) => a + b, 0) / normalRValues.length
+        : 0,
+      totalPnl: normalPnlValues.reduce((a, b) => a + b, 0),
+    },
+    revengeTrades: {
+      count: revengeTrades.length,
+      winRate: revengeTrades.length > 0 ? (revengeWins / revengeTrades.length) * 100 : 0,
+      avgR: revengeRValues.length > 0
+        ? revengeRValues.reduce((a, b) => a + b, 0) / revengeRValues.length
+        : 0,
+      totalPnl: revengePnlValues.reduce((a, b) => a + b, 0),
+      trades: revengeTrades,
+    },
+  };
+}
 
 export function BehaviouralAnalysis({ trades }: Props) {
-  const emotionalStats = useMemo(() => getEmotionalStateAnalysis(trades), [trades]);
-  const planAdherence = useMemo(() => getPlanAdherenceAnalysis(trades), [trades]);
-  const revengeStats = useMemo(() => getRevengeTradeAnalysis(trades), [trades]);
   const streakAnalysis = useMemo(() => getStreakAnalysis(trades), [trades]);
   const tradesPerDay = useMemo(() => getTradesPerDayAnalysis(trades), [trades]);
   const entryConfirmationStats = useMemo(() => getEntryConfirmationAnalysis(trades), [trades]);
@@ -48,15 +149,16 @@ export function BehaviouralAnalysis({ trades }: Props) {
     () => getConfirmationTFInsights(confirmationTFStats, confirmationTFMatrix),
     [confirmationTFStats, confirmationTFMatrix]
   );
+  const revengeStats = useMemo(() => getTimingBasedRevengeAnalysis(trades), [trades]);
   const insights = useMemo(
     () => [
-      ...getBehaviouralInsights(emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats),
+      ...getBehaviouralInsights(streakAnalysis, tradesPerDay, entryConfirmationStats),
       ...confirmationTFInsights,
     ],
-    [emotionalStats, planAdherence, revengeStats, streakAnalysis, tradesPerDay, entryConfirmationStats, confirmationTFInsights]
+    [streakAnalysis, tradesPerDay, entryConfirmationStats, confirmationTFInsights]
   );
 
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => deriveStatus(t) === 'closed');
 
   if (closedTrades.length === 0) {
     return (
@@ -65,25 +167,6 @@ export function BehaviouralAnalysis({ trades }: Props) {
       </div>
     );
   }
-
-  // Prepare plan adherence comparison data
-  const planComparisonData = [
-    {
-      name: 'Win Rate',
-      followed: planAdherence.followed.winRate,
-      deviated: planAdherence.deviated.winRate,
-    },
-    {
-      name: 'Avg R',
-      followed: planAdherence.followed.avgR,
-      deviated: planAdherence.deviated.avgR,
-    },
-    {
-      name: 'Profit Factor',
-      followed: Math.min(planAdherence.followed.profitFactor, 5),
-      deviated: Math.min(planAdherence.deviated.profitFactor, 5),
-    },
-  ];
 
   // Prepare streak analysis data
   const streakData = [
@@ -95,226 +178,6 @@ export function BehaviouralAnalysis({ trades }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Emotional State Performance */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <div className="mb-4">
-          <h3 className="text-lg font-medium text-white">Emotional State Performance</h3>
-          <p className="text-sm text-gray-400">How your emotional state affects trading results</p>
-        </div>
-        {emotionalStats.some(s => s.count > 0) ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={emotionalStats} margin={{ left: 10, right: 10, bottom: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-              <XAxis
-                dataKey="label"
-                stroke="#6b7280"
-                fontSize={12}
-                angle={-20}
-                textAnchor="end"
-                height={60}
-              />
-              <YAxis
-                stroke="#6b7280"
-                fontSize={12}
-                tickFormatter={(v) => v.toFixed(1) + 'R'}
-              />
-              <Tooltip
-                {...CHART_TOOLTIP_STYLES}
-                formatter={(value: number, name: string) => {
-                  if (name === 'avgR') return [value.toFixed(2) + 'R', 'Avg R'];
-                  return [value, name];
-                }}
-                labelFormatter={(label) => label}
-              />
-              <ReferenceLine y={0} stroke="#6b7280" strokeDasharray="3 3" />
-              <Bar dataKey="avgR" name="avgR">
-                {emotionalStats.map((_entry, index) => (
-                  <Cell key={`cell-${index}`} fill={EMOTIONAL_COLORS[index]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-[300px] flex items-center justify-center text-gray-500">
-            No emotional state data recorded
-          </div>
-        )}
-        {emotionalStats.some(s => s.count > 0) && (
-          <div className="flex justify-center gap-4 mt-4 flex-wrap">
-            {emotionalStats.map((stat, i) => (
-              <div key={stat.label} className="flex items-center gap-2 text-xs">
-                <div className="w-3 h-3 rounded" style={{ backgroundColor: EMOTIONAL_COLORS[i] }} />
-                <span className="text-gray-400">{stat.label}: {stat.count} trades</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Plan Adherence */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <div className="mb-4">
-          <h3 className="text-lg font-medium text-white">Plan Adherence</h3>
-          <p className="text-sm text-gray-400">Impact of following vs deviating from your trading plan</p>
-        </div>
-
-        {/* Stat Cards */}
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4">
-            <h4 className="text-sm font-medium text-green-400 mb-3">Followed Plan</h4>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <p className="text-xs text-gray-500">Trades</p>
-                <p className="text-lg font-bold text-white">{planAdherence.followed.count}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Win Rate</p>
-                <p className="text-lg font-bold text-white">{planAdherence.followed.winRate.toFixed(1)}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Avg R</p>
-                <p className="text-lg font-bold text-white">{planAdherence.followed.avgR.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">P&L</p>
-                <p className={`text-lg font-bold ${planAdherence.followed.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  ${planAdherence.followed.totalPnl.toFixed(0)}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
-            <h4 className="text-sm font-medium text-red-400 mb-3">Deviated</h4>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <p className="text-xs text-gray-500">Trades</p>
-                <p className="text-lg font-bold text-white">{planAdherence.deviated.count}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Win Rate</p>
-                <p className="text-lg font-bold text-white">{planAdherence.deviated.winRate.toFixed(1)}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">Avg R</p>
-                <p className="text-lg font-bold text-white">{planAdherence.deviated.avgR.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-500">P&L</p>
-                <p className={`text-lg font-bold ${planAdherence.deviated.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  ${planAdherence.deviated.totalPnl.toFixed(0)}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Comparison Chart */}
-        {(planAdherence.followed.count > 0 || planAdherence.deviated.count > 0) && (
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={planComparisonData} margin={{ left: 10, right: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" vertical={false} />
-              <XAxis dataKey="name" stroke="#6b7280" fontSize={12} />
-              <YAxis stroke="#6b7280" fontSize={12} />
-              <Tooltip
-                {...CHART_TOOLTIP_STYLES}
-              />
-              <Bar dataKey="followed" fill="#22c55e" name="Followed Plan" />
-              <Bar dataKey="deviated" fill="#ef4444" name="Deviated" />
-            </BarChart>
-          </ResponsiveContainer>
-        )}
-
-        {/* Deviation Reasons */}
-        {planAdherence.deviationReasons.length > 0 && (
-          <div className="mt-4">
-            <h4 className="text-sm font-medium text-gray-400 mb-2">Common Deviation Reasons</h4>
-            <div className="bg-gray-750 rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-700">
-                    <th className="text-left py-2 px-3 text-gray-400 font-medium">Reason</th>
-                    <th className="text-right py-2 px-3 text-gray-400 font-medium">Count</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {planAdherence.deviationReasons.slice(0, 5).map((item, i) => (
-                    <tr key={i} className="border-b border-gray-700/50 last:border-0">
-                      <td className="py-2 px-3 text-gray-300">{item.reason}</td>
-                      <td className="py-2 px-3 text-right text-white">{item.count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Revenge Trade Analysis */}
-      <div className="bg-gray-800 rounded-lg p-6">
-        <div className="mb-4">
-          <h3 className="text-lg font-medium text-white">Revenge Trade Analysis</h3>
-          <p className="text-sm text-gray-400">Impact of revenge trading on your results</p>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div className="bg-gray-750 rounded-lg p-4">
-            <h4 className="text-sm font-medium text-gray-400 mb-3">Normal Trades</h4>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Count</span>
-                <span className="text-white font-medium">{revengeStats.normalTrades.count}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Win Rate</span>
-                <span className="text-white font-medium">{revengeStats.normalTrades.winRate.toFixed(1)}%</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Avg R</span>
-                <span className={`font-medium ${revengeStats.normalTrades.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {revengeStats.normalTrades.avgR.toFixed(2)}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-500">Total P&L</span>
-                <span className={`font-medium ${revengeStats.normalTrades.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  ${revengeStats.normalTrades.totalPnl.toFixed(0)}
-                </span>
-              </div>
-            </div>
-          </div>
-          <div className={`rounded-lg p-4 ${revengeStats.revengeTrades.count > 0 ? 'bg-red-500/10 border border-red-500/30' : 'bg-gray-750'}`}>
-            <h4 className="text-sm font-medium text-red-400 mb-3">Revenge Trades</h4>
-            {revengeStats.revengeTrades.count > 0 ? (
-              <div className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Count</span>
-                  <span className="text-white font-medium">{revengeStats.revengeTrades.count}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Win Rate</span>
-                  <span className="text-white font-medium">{revengeStats.revengeTrades.winRate.toFixed(1)}%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Avg R</span>
-                  <span className={`font-medium ${revengeStats.revengeTrades.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {revengeStats.revengeTrades.avgR.toFixed(2)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Total P&L</span>
-                  <span className={`font-medium ${revengeStats.revengeTrades.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    ${revengeStats.revengeTrades.totalPnl.toFixed(0)}
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">No revenge trades recorded</p>
-            )}
-          </div>
-        </div>
-      </div>
-
       {/* Entry Confirmation Analysis */}
       {entryConfirmationStats.length > 0 && (
         <div className="bg-gray-800 rounded-lg p-6">
@@ -524,6 +387,71 @@ export function BehaviouralAnalysis({ trades }: Props) {
           )}
         </div>
       )}
+
+      {/* Timing-Based Revenge Trade Analysis */}
+      <div className="bg-gray-800 rounded-lg p-6">
+        <div className="mb-4">
+          <h3 className="text-lg font-medium text-white">Revenge Trade Analysis</h3>
+          <p className="text-sm text-gray-400">Trades entered within 30 minutes of a loss</p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-gray-750 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-gray-400 mb-3">Normal Trades</h4>
+            <div className="space-y-2">
+              <div className="flex justify-between">
+                <span className="text-gray-500">Count</span>
+                <span className="text-white font-medium">{revengeStats.normalTrades.count}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Win Rate</span>
+                <span className="text-white font-medium">{revengeStats.normalTrades.winRate.toFixed(1)}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Avg R</span>
+                <span className={`font-medium ${revengeStats.normalTrades.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {revengeStats.normalTrades.avgR.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-500">Total P&L</span>
+                <span className={`font-medium ${revengeStats.normalTrades.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  ${revengeStats.normalTrades.totalPnl.toFixed(0)}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className={`rounded-lg p-4 ${revengeStats.revengeTrades.count > 0 ? 'bg-red-500/10 border border-red-500/30' : 'bg-gray-750'}`}>
+            <h4 className="text-sm font-medium text-red-400 mb-3">Revenge Trades</h4>
+            {revengeStats.revengeTrades.count > 0 ? (
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Count</span>
+                  <span className="text-white font-medium">{revengeStats.revengeTrades.count}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Win Rate</span>
+                  <span className="text-white font-medium">{revengeStats.revengeTrades.winRate.toFixed(1)}%</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Avg R</span>
+                  <span className={`font-medium ${revengeStats.revengeTrades.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {revengeStats.revengeTrades.avgR.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Total P&L</span>
+                  <span className={`font-medium ${revengeStats.revengeTrades.totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    ${revengeStats.revengeTrades.totalPnl.toFixed(0)}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-gray-500 text-sm">No revenge trades detected</p>
+            )}
+          </div>
+        </div>
+      </div>
 
       {/* Performance After Wins vs Losses (Streak Analysis) */}
       <div className="bg-gray-800 rounded-lg p-6">

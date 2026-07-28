@@ -1,21 +1,20 @@
-import type { TradingSession, TradeDirection, TradeStatus, ExitType, AssetClass, TradeRecord } from '../types';
+import type { TradingSession, TradeDirection, TradeStatus, ExitType, TradeRecord, TradeEvent } from '../types';
 
 /**
  * Maximum plausible R-multiple value.
- * Any R value beyond this is likely due to a calculation error (e.g., using adjusted stop near entry).
+ * Any R value beyond this is likely due to a calculation error.
  * Values exceeding this will be clamped and flagged.
  */
 export const MAX_PLAUSIBLE_R = 50;
 
 /**
  * Clamp an R-multiple to a plausible range to prevent display issues from calculation errors.
- * If the value is implausible, log a warning in dev mode.
  */
 export function clampRValue(r: number | undefined): number | undefined {
   if (r === undefined) return undefined;
   if (Math.abs(r) > MAX_PLAUSIBLE_R) {
     if (import.meta.env.DEV) {
-      console.warn(`Implausible R value detected: ${r.toFixed(2)}R - clamping to ±${MAX_PLAUSIBLE_R}R. Check stop distance calculation.`);
+      console.warn(`Implausible R value detected: ${r.toFixed(2)}R - clamping to ±${MAX_PLAUSIBLE_R}R.`);
     }
     return r > 0 ? MAX_PLAUSIBLE_R : -MAX_PLAUSIBLE_R;
   }
@@ -56,13 +55,6 @@ export function deriveSession(entryTime: Date): TradingSession {
 }
 
 /**
- * Derive trade status from exit time
- */
-export function deriveStatus(exitTime?: Date): TradeStatus {
-  return exitTime ? 'closed' : 'open';
-}
-
-/**
  * Calculate stop distance: |entryPrice - stopLoss|
  */
 export function calculateStopDistance(entryPrice: number, stopLoss: number): number {
@@ -70,19 +62,19 @@ export function calculateStopDistance(entryPrice: number, stopLoss: number): num
 }
 
 /**
- * Calculate planned R:R ratio: |entryPrice - TP1| / |entryPrice - stopLoss|
+ * Calculate planned R:R ratio: |entryPrice - targetPrice| / |entryPrice - stopLoss|
  */
 export function calculatePlannedRR(
   entryPrice: number,
   stopLoss: number,
-  takeProfit1?: number
+  targetPrice?: number
 ): number | undefined {
-  if (!takeProfit1) return undefined;
+  if (!targetPrice) return undefined;
 
   const stopDistance = calculateStopDistance(entryPrice, stopLoss);
   if (stopDistance === 0) return undefined;
 
-  const tpDistance = Math.abs(entryPrice - takeProfit1);
+  const tpDistance = Math.abs(entryPrice - targetPrice);
   return Number((tpDistance / stopDistance).toFixed(2));
 }
 
@@ -105,7 +97,7 @@ export function calculateActualRR(
 
 /**
  * Calculate R-Multiple (signed actualRR - positive for winners, negative for losers)
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
+ * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  */
 export function calculateRMultiple(
   entryPrice: number,
@@ -129,7 +121,6 @@ export function calculateRMultiple(
 /**
  * Calculate P&L using R-based method (instrument-agnostic)
  * Formula: ((exitPrice - entryPrice) / stopDistance) × riskAmount
- * This derives dollar P&L from the R-multiple and risk amount
  */
 export function calculatePnl(
   entryPrice: number,
@@ -144,7 +135,6 @@ export function calculatePnl(
   if (stopDistance === 0) return undefined;
 
   const priceDiff = exitPrice - entryPrice;
-  // For longs: positive diff = profit; For shorts: negative diff = profit
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
   const rMultiple = signedMove / stopDistance;
 
@@ -153,7 +143,6 @@ export function calculatePnl(
 
 /**
  * Calculate P&L for a single exit using R-based method
- * Formula: ((exitPrice - entryPrice) / stopDistance) × riskAmount × (exitSize / positionSize)
  */
 export function calculateExitPnl(
   entryPrice: number,
@@ -168,7 +157,6 @@ export function calculateExitPnl(
   if (stopDistance === 0 || positionSize === 0) return 0;
 
   const priceDiff = exitPrice - entryPrice;
-  // For longs: positive diff = profit; For shorts: negative diff = profit
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
   const rMultiple = signedMove / stopDistance;
   const sizePortion = exitSize / positionSize;
@@ -203,18 +191,6 @@ export function calculateTotalExitsPnl(
   }
 
   return Number(totalPnl.toFixed(2));
-}
-
-/**
- * Calculate Net P&L: pnl - commissions - swap
- */
-export function calculateNetPnl(
-  pnl: number | undefined,
-  commissions: number = 0,
-  swap: number = 0
-): number | undefined {
-  if (pnl === undefined) return undefined;
-  return Number((pnl - commissions - swap).toFixed(2));
 }
 
 /**
@@ -289,171 +265,337 @@ export function getCurrentDateTimeString(): string {
 }
 
 // ============================================
-// MAE/MFE DERIVATION FUNCTIONS
+// TIMELINE HELPERS
 // ============================================
 
 /**
- * Calculate MAE distance from price level
- * maeDistance = |entryPrice - maePrice|
+ * Get timeline events sorted by order
  */
-export function calculateMaeDistance(
-  entryPrice: number,
-  maePrice: number | null
-): number | undefined {
-  if (maePrice === null) return undefined;
-  return Math.abs(entryPrice - maePrice);
+export function getSortedTimeline(trade: TradeRecord): TradeEvent[] {
+  return [...trade.timeline].sort((a, b) => a.order - b.order);
 }
 
 /**
- * Calculate MFE distance from price level
- * mfeDistance = |entryPrice - mfePrice|
+ * Get the first exit order from a trade (used to partition pre/post exit events)
+ * Returns Infinity if no exits
  */
-export function calculateMfeDistance(
-  entryPrice: number,
-  mfePrice: number | null
-): number | undefined {
-  if (mfePrice === null) return undefined;
-  return Math.abs(entryPrice - mfePrice);
+export function getFirstExitOrder(trade: TradeRecord): number {
+  if (trade.exits.length === 0) return Infinity;
+
+  // Find the lowest order of any worst_price or best_price event that appears after entry
+  // Actually, we need to determine exit point differently
+  // The exits array has times, so we can compare timeline events to exit times
+  // For simplicity, use a heuristic: post-exit events are favourable_extreme, adverse_extreme, leg
+  // and pre-exit events are worst_price, best_price, stop_moved, etc.
+
+  // Better approach: look for first favourable_extreme or adverse_extreme after exit
+  const sortedTimeline = getSortedTimeline(trade);
+  const postExitTypes = ['favourable_extreme', 'adverse_extreme', 'leg'];
+
+  for (const event of sortedTimeline) {
+    if (postExitTypes.includes(event.eventType)) {
+      return event.order;
+    }
+  }
+
+  return Infinity;
 }
 
 /**
- * Calculate MAE expressed in R-multiples
- * maeR = maeDistance / stopDistance
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
+ * Check if an event is a post-exit event
  */
-export function calculateMaeR(
-  entryPrice: number,
-  maePrice: number | null,
-  stopDistance: number | undefined
-): number | undefined {
-  if (maePrice === null || !stopDistance || stopDistance === 0) return undefined;
-  const maeDistance = calculateMaeDistance(entryPrice, maePrice);
-  if (maeDistance === undefined) return undefined;
-  const raw = maeDistance / stopDistance;
-  return clampRValue(Number(raw.toFixed(2)));
+export function isPostExitEvent(event: TradeEvent, _trade: TradeRecord): boolean {
+  const postExitTypes = ['favourable_extreme', 'adverse_extreme', 'leg'];
+  return postExitTypes.includes(event.eventType);
 }
 
 /**
- * Calculate MFE expressed in R-multiples
- * mfeR = mfeDistance / stopDistance
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues from calculation errors.
+ * Get pre-exit timeline events (worst_price, best_price, stop_moved, etc.)
  */
-export function calculateMfeR(
-  entryPrice: number,
-  mfePrice: number | null,
-  stopDistance: number | undefined
-): number | undefined {
-  if (mfePrice === null || !stopDistance || stopDistance === 0) return undefined;
-  const mfeDistance = calculateMfeDistance(entryPrice, mfePrice);
-  if (mfeDistance === undefined) return undefined;
-  const raw = mfeDistance / stopDistance;
-  return clampRValue(Number(raw.toFixed(2)));
+export function getPreExitEvents(trade: TradeRecord): TradeEvent[] {
+  return getSortedTimeline(trade).filter(e => !isPostExitEvent(e, trade));
 }
 
 /**
- * Derive all MAE/MFE values from trade data
- * Returns distance values and R-multiples from price levels
+ * Get post-exit timeline events (favourable_extreme, adverse_extreme, leg)
  */
-export function deriveMaeMetrics(
-  entryPrice: number,
-  maePrice: number | null,
-  stopDistance: number | undefined
-): { maeDistance: number | undefined; maeR: number | undefined } {
-  const maeDistance = calculateMaeDistance(entryPrice, maePrice);
-  const maeR = calculateMaeR(entryPrice, maePrice, stopDistance);
-  return { maeDistance, maeR };
+export function getPostExitEvents(trade: TradeRecord): TradeEvent[] {
+  return getSortedTimeline(trade).filter(e => isPostExitEvent(e, trade));
 }
 
 /**
- * Derive all MFE values from trade data
- * Returns distance values and R-multiples from price levels
+ * Get the effective stop loss at a given timeline order.
+ * Returns the most recent stop_moved price before the given order, or the original stopLoss.
  */
-export function deriveMfeMetrics(
-  entryPrice: number,
-  mfePrice: number | null,
-  stopDistance: number | undefined
-): { mfeDistance: number | undefined; mfeR: number | undefined } {
-  const mfeDistance = calculateMfeDistance(entryPrice, mfePrice);
-  const mfeR = calculateMfeR(entryPrice, mfePrice, stopDistance);
-  return { mfeDistance, mfeR };
+export function getEffectiveStop(trade: TradeRecord, asOfOrder?: number): number {
+  const timeline = getSortedTimeline(trade);
+  const stopMoves = timeline.filter(e =>
+    e.eventType === 'stop_moved' &&
+    e.price !== null &&
+    (asOfOrder === undefined || e.order < asOfOrder)
+  );
+
+  if (stopMoves.length === 0) {
+    return trade.stopLoss;
+  }
+
+  // Return the last stop move price
+  return stopMoves[stopMoves.length - 1].price!;
+}
+
+/**
+ * Derive MAE (Maximum Adverse Excursion) price from pre-exit timeline events.
+ * Looks for worst_price event or calculates from adverse events.
+ */
+export function deriveMAE(trade: TradeRecord): number | null {
+  const preExitEvents = getPreExitEvents(trade);
+
+  // Look for explicit worst_price event
+  const worstPriceEvent = preExitEvents.find(e => e.eventType === 'worst_price' && e.price !== null);
+  if (worstPriceEvent) {
+    return worstPriceEvent.price;
+  }
+
+  // If no explicit worst_price, find the most adverse price from any event
+  // For longs: lowest price; for shorts: highest price
+  const pricesWithValues = preExitEvents
+    .filter(e => e.price !== null)
+    .map(e => e.price!);
+
+  if (pricesWithValues.length === 0) return null;
+
+  if (trade.direction === 'long') {
+    // MAE is the lowest price (most adverse for long)
+    return Math.min(...pricesWithValues);
+  } else {
+    // MAE is the highest price (most adverse for short)
+    return Math.max(...pricesWithValues);
+  }
+}
+
+/**
+ * Derive MFE (Maximum Favorable Excursion) price from pre-exit timeline events.
+ * Looks for best_price event or calculates from favorable events.
+ */
+export function deriveMFE(trade: TradeRecord): number | null {
+  const preExitEvents = getPreExitEvents(trade);
+
+  // Look for explicit best_price event
+  const bestPriceEvent = preExitEvents.find(e => e.eventType === 'best_price' && e.price !== null);
+  if (bestPriceEvent) {
+    return bestPriceEvent.price;
+  }
+
+  // If no explicit best_price, find the most favorable price from any event
+  // For longs: highest price; for shorts: lowest price
+  const pricesWithValues = preExitEvents
+    .filter(e => e.price !== null)
+    .map(e => e.price!);
+
+  if (pricesWithValues.length === 0) return null;
+
+  if (trade.direction === 'long') {
+    // MFE is the highest price (most favorable for long)
+    return Math.max(...pricesWithValues);
+  } else {
+    // MFE is the lowest price (most favorable for short)
+    return Math.min(...pricesWithValues);
+  }
+}
+
+/**
+ * Derive analysis timeframes from level sequence
+ */
+export function deriveAnalysisTFs(trade: TradeRecord): string[] {
+  const tfs = new Set<string>();
+  for (const level of trade.levelSequence) {
+    if (level.timeframe && level.timeframe.trim()) {
+      tfs.add(level.timeframe);
+    }
+  }
+  return Array.from(tfs);
+}
+
+/**
+ * Derive exit time from exits array
+ */
+export function deriveExitTime(trade: TradeRecord): Date | null {
+  if (trade.exits.length === 0) return null;
+
+  // Return the time of the last exit
+  const sortedExits = [...trade.exits].sort((a, b) =>
+    new Date(a.time).getTime() - new Date(b.time).getTime()
+  );
+
+  return new Date(sortedExits[sortedExits.length - 1].time);
+}
+
+/**
+ * Derive weighted average exit price from exits
+ */
+export function deriveExitPrice(trade: TradeRecord): number | null {
+  if (trade.exits.length === 0) return null;
+
+  let totalSize = 0;
+  let weightedSum = 0;
+
+  for (const exit of trade.exits) {
+    totalSize += exit.size;
+    weightedSum += exit.price * exit.size;
+  }
+
+  if (totalSize === 0) return null;
+
+  return weightedSum / totalSize;
+}
+
+/**
+ * Derive trade status from exits array
+ * - 'open': no exits
+ * - 'partial': exits exist but don't cover full position
+ * - 'closed': exits cover full position
+ */
+export function deriveStatus(trade: TradeRecord): TradeStatus {
+  if (trade.exits.length === 0) return 'open';
+
+  const totalExitSize = trade.exits.reduce((sum, e) => sum + e.size, 0);
+
+  // Allow small floating point tolerance
+  if (Math.abs(totalExitSize - trade.positionSize) < 0.0001) {
+    return 'closed';
+  }
+
+  if (totalExitSize < trade.positionSize) {
+    return 'partial';
+  }
+
+  return 'closed';
+}
+
+/**
+ * Derive primary exit type from exits
+ * Returns the type of the exit that closed the most size, or undefined for multiple
+ */
+export function deriveExitType(trade: TradeRecord): ExitType | undefined {
+  if (trade.exits.length === 0) return undefined;
+  if (trade.exits.length === 1) return trade.exits[0].type;
+
+  // Multiple exits - return type of largest exit
+  const sorted = [...trade.exits].sort((a, b) => b.size - a.size);
+  return sorted[0].type;
 }
 
 // ============================================
-// FIRST-TOUCH REACTION ANALYSIS FUNCTIONS
+// CENTRALIZED R-METRICS CALCULATION
 // ============================================
 
 /**
- * Calculate first-touch adverse R - the initial heat taken before the first favourable reaction
- * firstTouchAdverseR = |entryPrice - firstTouchWorstPrice| / stopDistance
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
- *
- * This measures how far price moves against you BEFORE the initial reaction in your favour.
- * Lower values indicate cleaner entries where price immediately moves in your direction.
+ * Result of centralized R-metrics calculation
  */
-export function calculateFirstTouchAdverseR(
-  entryPrice: number,
-  firstTouchWorstPrice: number | null,
-  stopDistance: number | undefined
-): number | undefined {
-  if (firstTouchWorstPrice === null || !stopDistance || stopDistance === 0) {
-    return undefined;
-  }
-  const adverseDistance = Math.abs(entryPrice - firstTouchWorstPrice);
-  const raw = adverseDistance / stopDistance;
-  return clampRValue(Number(raw.toFixed(2)));
+export interface TradeRMetrics {
+  stopDistance: number;
+  plannedRR: number | null;
+  exitPrice: number | null;
+  actualRR: number | null;
+  rMultiple: number | null;
+  pnl: number | null;
+  maePrice: number | null;
+  maeR: number | null;
+  mfePrice: number | null;
+  mfeR: number | null;
+  holdDuration: number | null;
+  status: TradeStatus;
+  exitTime: Date | null;
+  session: TradingSession;
+  isImplausible: boolean;
 }
 
 /**
- * Calculate reaction R - the R-multiple of the initial reaction relative to the first-touch extreme
- * reactionR = |mfePrice - entryPrice| / |entryPrice - firstTouchWorstPrice|
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
- *
- * This is the "what could have been" number - if you had placed your stop just beyond
- * the first-touch extreme, what R-multiple would the MFE have delivered?
- *
- * Higher values indicate better risk/reward relative to the actual price action at your entry level.
+ * Centralized function to get all R-metrics for a trade.
+ * Derives MAE/MFE from timeline events, exit info from exits array, etc.
  */
-export function calculateReactionR(
-  entryPrice: number,
-  mfePrice: number | null,
-  firstTouchWorstPrice: number | null
-): number | undefined {
-  if (mfePrice === null || firstTouchWorstPrice === null) {
-    return undefined;
+export function getTradeRMetrics(trade: TradeRecord): TradeRMetrics {
+  const entryPrice = trade.entryPrice;
+  const stopLoss = trade.stopLoss;
+  const stopDistance = calculateStopDistance(entryPrice, stopLoss);
+
+  // Derive values from exits
+  const exitPrice = deriveExitPrice(trade);
+  const exitTime = deriveExitTime(trade);
+  const status = deriveStatus(trade);
+  const session = deriveSession(trade.entryTime);
+
+  // Calculate R metrics (convert undefined to null for interface compatibility)
+  const plannedRR = calculatePlannedRR(entryPrice, stopLoss, trade.targetPrice) ?? null;
+  const actualRR = calculateActualRR(entryPrice, stopLoss, exitPrice ?? undefined) ?? null;
+  const rMultiple = calculateRMultiple(entryPrice, stopLoss, exitPrice ?? undefined, trade.direction) ?? null;
+
+  // Calculate PnL
+  let pnl: number | null = null;
+  if (trade.riskAmount && trade.exits.length > 0) {
+    pnl = calculateTotalExitsPnl(
+      entryPrice,
+      stopLoss,
+      trade.riskAmount,
+      trade.positionSize,
+      trade.direction,
+      trade.exits
+    );
   }
 
-  const firstTouchAdverseDistance = Math.abs(entryPrice - firstTouchWorstPrice);
-  if (firstTouchAdverseDistance === 0) {
-    return undefined; // Avoid division by zero
+  // Calculate hold duration
+  const holdDuration = exitTime ? calculateHoldDuration(trade.entryTime, exitTime) ?? null : null;
+
+  // Derive MAE/MFE from timeline
+  const maePrice = deriveMAE(trade);
+  const mfePrice = deriveMFE(trade);
+
+  // Calculate MAE/MFE in R
+  let maeR: number | null = null;
+  let mfeR: number | null = null;
+  let isImplausible = false;
+
+  if (stopDistance > 0) {
+    if (maePrice !== null) {
+      const maeDistance = Math.abs(maePrice - entryPrice);
+      const rawMaeR = maeDistance / stopDistance;
+      if (rawMaeR > MAX_PLAUSIBLE_R) {
+        isImplausible = true;
+        maeR = MAX_PLAUSIBLE_R;
+      } else {
+        maeR = Number(rawMaeR.toFixed(2));
+      }
+    }
+
+    if (mfePrice !== null) {
+      const mfeDistance = Math.abs(mfePrice - entryPrice);
+      const rawMfeR = mfeDistance / stopDistance;
+      if (rawMfeR > MAX_PLAUSIBLE_R) {
+        isImplausible = true;
+        mfeR = MAX_PLAUSIBLE_R;
+      } else {
+        mfeR = Number(rawMfeR.toFixed(2));
+      }
+    }
   }
 
-  const mfeDistance = Math.abs(mfePrice - entryPrice);
-  const raw = mfeDistance / firstTouchAdverseDistance;
-  return clampRValue(Number(raw.toFixed(2)));
-}
-
-/**
- * Derive all first-touch reaction metrics
- */
-export function deriveFirstTouchMetrics(
-  entryPrice: number,
-  mfePrice: number | null,
-  firstTouchWorstPrice: number | null,
-  stopDistance: number | undefined
-): {
-  firstTouchAdverseR: number | undefined;
-  reactionR: number | undefined;
-  firstTouchAdversePercent: number | undefined;
-} {
-  const firstTouchAdverseR = calculateFirstTouchAdverseR(entryPrice, firstTouchWorstPrice, stopDistance);
-  const reactionR = calculateReactionR(entryPrice, mfePrice, firstTouchWorstPrice);
-
-  // Also calculate as percentage of stop distance for intuitive display
-  const firstTouchAdversePercent = firstTouchAdverseR !== undefined
-    ? Number((firstTouchAdverseR * 100).toFixed(1))
-    : undefined;
-
-  return { firstTouchAdverseR, reactionR, firstTouchAdversePercent };
+  return {
+    stopDistance,
+    plannedRR,
+    exitPrice,
+    actualRR,
+    rMultiple,
+    pnl,
+    maePrice,
+    maeR,
+    mfePrice,
+    mfeR,
+    holdDuration,
+    status,
+    exitTime,
+    session,
+    isImplausible,
+  };
 }
 
 // ============================================
@@ -461,11 +603,7 @@ export function deriveFirstTouchMetrics(
 // ============================================
 
 /**
- * Calculate "missed R" for voluntary exits - how much additional R you would have made if held to post-exit best price
- * missedR = |postExitBestPrice - exitPrice| / stopDistance
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
- *
- * NOTE: This is the original behavior, kept for voluntary exits (tp_hit, manual_close, trail_stop_hit, be_stop_hit, time_exit)
+ * Calculate "missed R" for voluntary exits
  */
 export function calculateMissedR(
   exitPrice: number | undefined,
@@ -477,43 +615,9 @@ export function calculateMissedR(
     return undefined;
   }
 
-  // For longs: best price is higher than exit, so positive missed R
-  // For shorts: best price is lower than exit, so positive missed R
   const priceDiff = postExitBestPrice - exitPrice;
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
 
-  // Only count as "missed" if it went further in your favor
-  if (signedMove <= 0) return 0;
-
-  const raw = signedMove / stopDistance;
-  return clampRValue(Number(raw.toFixed(2)));
-}
-
-/**
- * Calculate post-stop move R for stopouts (sl_hit) - how far price moved in trader's favor after being stopped out
- * This is measured from entry price, NOT from exit price (since stop was a full loss)
- * postStopMoveR = |postExitBestPrice - entryPrice| / stopDistance (if in trader's favor)
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
- *
- * This metric answers: "After I got stopped, did price move in my direction?"
- * A positive value indicates the thesis may have been correct but stop placement was the issue.
- */
-export function calculatePostStopMoveR(
-  entryPrice: number,
-  postExitBestPrice: number | null,
-  stopDistance: number | undefined,
-  direction: TradeDirection
-): number | undefined {
-  if (postExitBestPrice === null || !stopDistance || stopDistance === 0) {
-    return undefined;
-  }
-
-  const priceDiff = postExitBestPrice - entryPrice;
-  // For longs: positive priceDiff = move in trader's favor
-  // For shorts: negative priceDiff = move in trader's favor
-  const signedMove = direction === 'long' ? priceDiff : -priceDiff;
-
-  // Only count if it moved in trader's favor after the stop
   if (signedMove <= 0) return 0;
 
   const raw = signedMove / stopDistance;
@@ -522,8 +626,6 @@ export function calculatePostStopMoveR(
 
 /**
  * Calculate "would have R" - the R you would have achieved if held to post-exit best price
- * wouldHaveR = |postExitBestPrice - entryPrice| / stopDistance
- * Clamped to MAX_PLAUSIBLE_R to prevent display issues.
  */
 export function calculateWouldHaveR(
   entryPrice: number,
@@ -536,7 +638,6 @@ export function calculateWouldHaveR(
   }
 
   const priceDiff = postExitBestPrice - entryPrice;
-  // For longs: positive priceDiff = win; For shorts: negative priceDiff = win
   const signedMove = direction === 'long' ? priceDiff : -priceDiff;
 
   const raw = signedMove / stopDistance;
@@ -545,8 +646,6 @@ export function calculateWouldHaveR(
 
 /**
  * Calculate exit efficiency - what percentage of the total available move you captured
- * exitEfficiency = actualR / wouldHaveR × 100
- * 100% = perfect exit (you captured all available R)
  */
 export function calculateExitEfficiency(
   actualR: number | undefined,
@@ -556,7 +655,6 @@ export function calculateExitEfficiency(
     return undefined;
   }
 
-  // If actualR is negative (losing trade), efficiency doesn't make sense
   if (actualR < 0) {
     return undefined;
   }
@@ -566,74 +664,72 @@ export function calculateExitEfficiency(
 }
 
 /**
- * Derive all post-exit metrics from trade data
- *
- * For stopouts (sl_hit): missedR uses postStopMoveR - just the post-exit move in trader's favor from entry
- * For voluntary exits: missedR uses the traditional calculation - move from exit price to best price
+ * Derive post-exit metrics from timeline events
  */
 export function derivePostExitMetrics(
-  entryPrice: number,
-  exitPrice: number | undefined,
-  postExitBestPrice: number | null,
-  stopDistance: number | undefined,
-  direction: TradeDirection,
-  actualR: number | undefined,
-  exitType?: ExitType
+  trade: TradeRecord
 ): {
   missedR: number | undefined;
   wouldHaveR: number | undefined;
   exitEfficiency: number | undefined;
-  isStopout: boolean;
-  postStopMoveR: number | undefined;
+  postExitBestPrice: number | null;
+  postExitWorstPrice: number | null;
 } {
-  const wouldHaveR = calculateWouldHaveR(entryPrice, postExitBestPrice, stopDistance, direction);
-  const exitEfficiency = calculateExitEfficiency(actualR, wouldHaveR);
+  const postExitEvents = getPostExitEvents(trade);
+  const metrics = getTradeRMetrics(trade);
 
-  // Check if this is a stopout (sl_hit)
-  const isStopout = exitType === 'sl_hit';
+  // Find favourable and adverse extremes from post-exit events
+  const favourableExtreme = postExitEvents.find(e => e.eventType === 'favourable_extreme');
+  const adverseExtreme = postExitEvents.find(e => e.eventType === 'adverse_extreme');
 
-  // Calculate both metrics - let the caller decide which to display
-  const postStopMoveR = calculatePostStopMoveR(entryPrice, postExitBestPrice, stopDistance, direction);
-  const voluntaryMissedR = calculateMissedR(exitPrice, postExitBestPrice, stopDistance, direction);
+  const postExitBestPrice = favourableExtreme?.price ?? null;
+  const postExitWorstPrice = adverseExtreme?.price ?? null;
 
-  // For stopouts: use postStopMoveR (move from entry after stop)
-  // For voluntary exits: use traditional missedR (additional move from exit price)
-  const missedR = isStopout ? postStopMoveR : voluntaryMissedR;
+  const wouldHaveR = calculateWouldHaveR(
+    trade.entryPrice,
+    postExitBestPrice,
+    metrics.stopDistance,
+    trade.direction
+  );
 
-  return { missedR, wouldHaveR, exitEfficiency, isStopout, postStopMoveR };
+  const missedR = calculateMissedR(
+    metrics.exitPrice ?? undefined,
+    postExitBestPrice,
+    metrics.stopDistance,
+    trade.direction
+  );
+
+  const exitEfficiency = calculateExitEfficiency(metrics.rMultiple ?? undefined, wouldHaveR);
+
+  return {
+    missedR,
+    wouldHaveR,
+    exitEfficiency,
+    postExitBestPrice,
+    postExitWorstPrice,
+  };
 }
 
 /**
  * Check if a post-exit review is complete.
- * A review is only complete when ALL four fields have values:
- * - postExitBestPrice is not null
- * - postExitWorstPrice is not null
- * - reachedTargetPostExit is not null (must be explicitly yes or no)
- * - postExitNotes is not empty string
+ * Requires: ≥1 favourable_extreme AND ≥1 adverse_extreme in timeline,
+ * reachedTargetPostExit set, postExitNotes non-empty
  */
-export function isPostExitReviewComplete(
-  postExitBestPrice: number | null | undefined,
-  postExitWorstPrice: number | null | undefined,
-  reachedTargetPostExit: boolean | null | undefined,
-  postExitNotes: string | undefined
-): boolean {
-  // postExitBestPrice must be a valid number (not null, not undefined, not NaN)
-  if (postExitBestPrice === null || postExitBestPrice === undefined || isNaN(postExitBestPrice)) {
+export function isPostExitReviewComplete(trade: TradeRecord): boolean {
+  const postExitEvents = getPostExitEvents(trade);
+
+  const hasFavourableExtreme = postExitEvents.some(e => e.eventType === 'favourable_extreme');
+  const hasAdverseExtreme = postExitEvents.some(e => e.eventType === 'adverse_extreme');
+
+  if (!hasFavourableExtreme || !hasAdverseExtreme) {
     return false;
   }
 
-  // postExitWorstPrice must be a valid number (not null, not undefined, not NaN)
-  if (postExitWorstPrice === null || postExitWorstPrice === undefined || isNaN(postExitWorstPrice)) {
+  if (trade.reachedTargetPostExit === null || trade.reachedTargetPostExit === undefined) {
     return false;
   }
 
-  // reachedTargetPostExit must be explicitly true or false (not null, not undefined)
-  if (reachedTargetPostExit === null || reachedTargetPostExit === undefined) {
-    return false;
-  }
-
-  // postExitNotes must be a non-empty string
-  if (!postExitNotes || postExitNotes.trim() === '') {
+  if (!trade.postExitNotes || trade.postExitNotes.trim() === '') {
     return false;
   }
 
@@ -641,22 +737,18 @@ export function isPostExitReviewComplete(
 }
 
 /**
- * Check if a post-exit review is partially complete (some fields filled but not all)
+ * Check if a post-exit review is partially complete
  */
-export function isPostExitReviewPartial(
-  postExitBestPrice: number | null | undefined,
-  postExitWorstPrice: number | null | undefined,
-  reachedTargetPostExit: boolean | null | undefined,
-  postExitNotes: string | undefined
-): boolean {
-  const hasBestPrice = postExitBestPrice !== null && postExitBestPrice !== undefined && !isNaN(postExitBestPrice);
-  const hasWorstPrice = postExitWorstPrice !== null && postExitWorstPrice !== undefined && !isNaN(postExitWorstPrice);
-  const hasReachedTarget = reachedTargetPostExit !== null && reachedTargetPostExit !== undefined;
-  const hasNotes = postExitNotes !== undefined && postExitNotes.trim() !== '';
+export function isPostExitReviewPartial(trade: TradeRecord): boolean {
+  const postExitEvents = getPostExitEvents(trade);
 
-  const filledCount = [hasBestPrice, hasWorstPrice, hasReachedTarget, hasNotes].filter(Boolean).length;
+  const hasFavourableExtreme = postExitEvents.some(e => e.eventType === 'favourable_extreme');
+  const hasAdverseExtreme = postExitEvents.some(e => e.eventType === 'adverse_extreme');
+  const hasReachedTarget = trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined;
+  const hasNotes = trade.postExitNotes !== undefined && trade.postExitNotes.trim() !== '';
 
-  // Partial means at least one field but not all four
+  const filledCount = [hasFavourableExtreme, hasAdverseExtreme, hasReachedTarget, hasNotes].filter(Boolean).length;
+
   return filledCount > 0 && filledCount < 4;
 }
 
@@ -665,154 +757,24 @@ export function isPostExitReviewPartial(
 // ============================================
 
 /**
- * Calculate when a post-exit review is due, accounting for market hours.
- *
- * - Crypto: 24/7 market, so review due = exitTime + 72 hours flat
- * - All other asset classes (forex, commodities, indices, equities):
- *   Review due = exitTime + 72 hours of market time, skipping Saturdays and Sundays entirely.
- *
- * This means weekday hours count normally, but Saturday and Sunday are skipped.
- * Example: Trade closed Friday 09:00 → due Wednesday 09:00
- *   - Fri 09:00→Sat 00:00 = 15 weekday hours
- *   - Sat/Sun = skipped
- *   - Mon 00:00→Tue 00:00 = 24 weekday hours (total: 39)
- *   - Tue 00:00→Wed 00:00 = 24 weekday hours (total: 63)
- *   - Wed 00:00→Wed 09:00 = 9 weekday hours (total: 72)
+ * Calculate when a post-exit review is due.
+ * Due at exit + 7 flat calendar days (no weekend logic).
  */
-export function getReviewDueDate(exitTime: Date, assetClass: AssetClass): Date {
-  const REVIEW_HOURS = 72;
-  const MS_IN_HOUR = 60 * 60 * 1000;
-
-  // Crypto is 24/7, no adjustment needed
-  if (assetClass === 'crypto') {
-    return new Date(exitTime.getTime() + REVIEW_HOURS * MS_IN_HOUR);
-  }
-
-  // For all other asset classes, skip weekends entirely
-  let hoursRemaining = REVIEW_HOURS;
-  let current = new Date(exitTime);
-
-  while (hoursRemaining > 0) {
-    const dayOfWeek = current.getDay(); // 0 = Sunday, 6 = Saturday
-
-    // If we're on a weekend, skip to Monday (keep same time of day)
-    if (dayOfWeek === 0) {
-      // Sunday → skip to Monday
-      current.setDate(current.getDate() + 1);
-      continue;
-    }
-    if (dayOfWeek === 6) {
-      // Saturday → skip to Monday
-      current.setDate(current.getDate() + 2);
-      continue;
-    }
-
-    // We're on a weekday (Mon=1, Tue=2, Wed=3, Thu=4, Fri=5)
-    // Calculate hours until midnight (start of next day)
-    const startOfNextDay = new Date(current);
-    startOfNextDay.setDate(startOfNextDay.getDate() + 1);
-    startOfNextDay.setHours(0, 0, 0, 0);
-
-    const msUntilMidnight = startOfNextDay.getTime() - current.getTime();
-    const hoursUntilMidnight = msUntilMidnight / MS_IN_HOUR;
-
-    if (hoursRemaining <= hoursUntilMidnight) {
-      // We'll finish within this day
-      current = new Date(current.getTime() + hoursRemaining * MS_IN_HOUR);
-      hoursRemaining = 0;
-    } else {
-      // Move to start of next day, subtract the hours we used
-      current = startOfNextDay;
-      hoursRemaining -= hoursUntilMidnight;
-    }
-  }
-
-  return current;
+export function getReviewDueDate(exitTime: Date): Date {
+  const REVIEW_DAYS = 7;
+  const MS_IN_DAY = 24 * 60 * 60 * 1000;
+  return new Date(exitTime.getTime() + REVIEW_DAYS * MS_IN_DAY);
 }
 
 /**
  * Check if a trade's post-exit review is due.
- * Uses market-hours-aware calculation based on asset class.
  */
-export function isReviewDue(exitTime: Date, assetClass: AssetClass): boolean {
-  const dueDate = getReviewDueDate(exitTime, assetClass);
+export function isReviewDue(trade: TradeRecord): boolean {
+  const exitTime = deriveExitTime(trade);
+  if (!exitTime) return false;
+
+  const dueDate = getReviewDueDate(exitTime);
   return new Date() >= dueDate;
-}
-
-// ============================================
-// CENTRALIZED R-METRICS CALCULATION
-// ============================================
-
-/**
- * Result of centralized R-metrics calculation
- */
-export interface TradeRMetrics {
-  maeR: number;
-  mfeR: number;
-  stopDistance: number;
-  isImplausible: boolean; // True if raw values exceeded MAX_PLAUSIBLE_R
-}
-
-/**
- * Centralized function to get properly calculated R-metrics for a trade.
- *
- * CRITICAL: This function ALWAYS uses the original stop distance (|entry - originalStopLoss|)
- * to calculate R-multiples. This ensures consistent R values even when stops are adjusted.
- *
- * Use this instead of reading trade.mfeR/maeR directly, as stored values may have been
- * calculated incorrectly if the stop was adjusted before the trade was saved.
- *
- * @param trade - The trade record to calculate metrics for
- * @returns Recalculated R-metrics, or null if trade lacks required data
- */
-export function getTradeRMetrics(trade: TradeRecord): TradeRMetrics | null {
-  const entryPrice = trade.entryPrice;
-  const mfePrice = trade.mfePrice;
-  const maePrice = trade.maePrice;
-
-  // Use original stop loss if available, otherwise fall back to current stop
-  const stopLossForCalc = trade.originalStopLoss ?? trade.stopLoss;
-  const stopDistance = Math.abs(entryPrice - stopLossForCalc);
-
-  // Can't calculate R without stop distance
-  if (stopDistance === 0) {
-    return null;
-  }
-
-  // Calculate MFE R from price
-  let mfeR = 0;
-  let mfeImplausible = false;
-  if (mfePrice !== null) {
-    const mfeDistance = Math.abs(mfePrice - entryPrice);
-    const rawMfeR = mfeDistance / stopDistance;
-    if (rawMfeR > MAX_PLAUSIBLE_R) {
-      mfeImplausible = true;
-      mfeR = MAX_PLAUSIBLE_R;
-    } else {
-      mfeR = rawMfeR;
-    }
-  }
-
-  // Calculate MAE R from price
-  let maeR = 0;
-  let maeImplausible = false;
-  if (maePrice !== null) {
-    const maeDistance = Math.abs(maePrice - entryPrice);
-    const rawMaeR = maeDistance / stopDistance;
-    if (rawMaeR > MAX_PLAUSIBLE_R) {
-      maeImplausible = true;
-      maeR = MAX_PLAUSIBLE_R;
-    } else {
-      maeR = rawMaeR;
-    }
-  }
-
-  return {
-    maeR: Number(maeR.toFixed(2)),
-    mfeR: Number(mfeR.toFixed(2)),
-    stopDistance,
-    isImplausible: mfeImplausible || maeImplausible,
-  };
 }
 
 // ============================================
@@ -823,179 +785,119 @@ export function getTradeRMetrics(trade: TradeRecord): TradeRMetrics | null {
  * Result of replay hold simulation
  */
 export type HoldReplayOutcome =
-  | { type: 'stopped'; stopLevel: number; beforeReaching: number }  // Stopped at [stopLevel] before reaching [favourable extreme]
-  | { type: 'survived'; favourableExtremeR: number }                // Survived to favourable extreme [R]
-  | { type: 'no_sequence' };                                        // No sequence data available
+  | { type: 'stopped'; stopLevel: number; beforeReaching: number }
+  | { type: 'survived'; favourableExtremeR: number }
+  | { type: 'no_sequence' };
 
 /**
- * Replay a hypothetical hold with a given stop level against the post-exit price sequence.
- *
- * Walks the postExitSequence in chronological order and determines:
- * - If the stop would have been hit before reaching the favourable extreme
- * - Or if the trade would have survived to reach the favourable extreme
- *
- * A milestone breaches the stop if its price is at or beyond the stop in the adverse direction.
- * This is conservative - any adverse milestone at/past the stop kills the hold.
- *
- * @param trade - The trade record containing postExitSequence
- * @param stopLevel - The stop level to test (e.g., originalStopLoss or an adjusted stop)
- * @returns The outcome of the simulated hold
+ * Replay a hypothetical hold with a given stop level against the post-exit timeline.
  */
 export function replayHold(trade: TradeRecord, stopLevel: number): HoldReplayOutcome {
-  const sequence = trade.postExitSequence;
+  const postExitEvents = getPostExitEvents(trade);
 
-  // No sequence data
-  if (!sequence || sequence.length === 0) {
+  if (postExitEvents.length === 0) {
     return { type: 'no_sequence' };
   }
 
-  const direction = trade.direction;
-  const entryPrice = trade.entryPrice;
-  const stopDistance = trade.originalStopLoss
-    ? Math.abs(entryPrice - trade.originalStopLoss)
-    : trade.stopDistance ?? Math.abs(entryPrice - trade.stopLoss);
-
-  if (!stopDistance || stopDistance === 0) {
+  const stopDistance = calculateStopDistance(trade.entryPrice, trade.stopLoss);
+  if (stopDistance === 0) {
     return { type: 'no_sequence' };
   }
 
-  // Find the favourable extreme in the sequence
-  const favourableExtreme = sequence.find(m => m.kind === 'favourable_extreme');
-  if (!favourableExtreme) {
+  const favourableExtreme = postExitEvents.find(e => e.eventType === 'favourable_extreme');
+  if (!favourableExtreme || favourableExtreme.price === null) {
     return { type: 'no_sequence' };
   }
 
-  // Check if a price breaches the stop
   const breachesStop = (price: number): boolean => {
-    if (direction === 'long') {
-      // For longs, stop is below entry; breach if price <= stop
+    if (trade.direction === 'long') {
       return price <= stopLevel;
     } else {
-      // For shorts, stop is above entry; breach if price >= stop
       return price >= stopLevel;
     }
   };
 
-  // Walk the sequence in chronological order
-  for (const milestone of sequence) {
-    // Check if we've reached the favourable extreme
-    if (milestone.id === favourableExtreme.id) {
-      // We reached the favourable extreme - survived!
-      const favourableR = calculateRMultipleFromPrice(
-        entryPrice,
-        favourableExtreme.price,
-        stopDistance,
-        direction
-      );
+  // Walk the sequence in order
+  for (const event of postExitEvents) {
+    if (event.id === favourableExtreme.id) {
+      // Reached the favourable extreme - survived!
+      const priceDiff = favourableExtreme.price! - trade.entryPrice;
+      const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
+      const favourableR = Number((signedMove / stopDistance).toFixed(2));
       return { type: 'survived', favourableExtremeR: favourableR };
     }
 
-    // Check if this milestone breaches the stop
-    if (breachesStop(milestone.price)) {
+    if (event.price !== null && breachesStop(event.price)) {
       // Stopped out before reaching the favourable extreme
-      const favourableR = calculateRMultipleFromPrice(
-        entryPrice,
-        favourableExtreme.price,
-        stopDistance,
-        direction
-      );
+      const priceDiff = favourableExtreme.price! - trade.entryPrice;
+      const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
+      const favourableR = Number((signedMove / stopDistance).toFixed(2));
       return { type: 'stopped', stopLevel, beforeReaching: favourableR };
     }
   }
 
-  // If we didn't find the favourable extreme in the loop, calculate it anyway
-  // This shouldn't happen if the data is correct, but handle it gracefully
-  const favourableR = calculateRMultipleFromPrice(
-    entryPrice,
-    favourableExtreme.price,
-    stopDistance,
-    direction
-  );
+  // Default to survived if we get here
+  const priceDiff = favourableExtreme.price! - trade.entryPrice;
+  const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
+  const favourableR = Number((signedMove / stopDistance).toFixed(2));
   return { type: 'survived', favourableExtremeR: favourableR };
 }
 
 /**
- * Helper to calculate R-multiple from a price level
- */
-function calculateRMultipleFromPrice(
-  entryPrice: number,
-  targetPrice: number,
-  stopDistance: number,
-  direction: TradeDirection
-): number {
-  const priceDiff = targetPrice - entryPrice;
-  const signedMove = direction === 'long' ? priceDiff : -priceDiff;
-  return Number((signedMove / stopDistance).toFixed(2));
-}
-
-/**
- * Full replay analysis for a trade with multiple stop variants
+ * Full replay analysis for a trade
  */
 export interface HoldReplayAnalysis {
   hasSequence: boolean;
   originalStopOutcome: HoldReplayOutcome;
-  finalStopOutcome?: HoldReplayOutcome;  // Only if there were stop adjustments
-  replayMissedR: number | null;          // Replay-based missed R (null if no sequence)
-  replayExitEfficiency: number | null;   // Replay-based exit efficiency (null if no sequence)
-  holdSurvived: boolean;                 // Did the original hold survive?
+  stopMovedOutcomes: Array<{ stopLevel: number; outcome: HoldReplayOutcome }>;
+  replayMissedR: number | null;
+  replayExitEfficiency: number | null;
+  holdSurvived: boolean;
 }
 
 /**
  * Perform full replay analysis for a trade
- *
- * This replaces the naive "post-exit best price" analysis with sequence-aware replay:
- * - missedR reflects the stop outcome, not just the best price
- * - If the hold would have been stopped before reaching the best price, exit is "validated"
  */
 export function getHoldReplayAnalysis(trade: TradeRecord): HoldReplayAnalysis {
-  const sequence = trade.postExitSequence;
-  const hasSequence = !!(sequence && sequence.length >= 2 &&
-    sequence.some(m => m.kind === 'favourable_extreme') &&
-    sequence.some(m => m.kind === 'adverse_extreme'));
+  const postExitEvents = getPostExitEvents(trade);
+  const hasSequence = postExitEvents.length >= 2 &&
+    postExitEvents.some(e => e.eventType === 'favourable_extreme') &&
+    postExitEvents.some(e => e.eventType === 'adverse_extreme');
 
-  const originalStop = trade.originalStopLoss ?? trade.stopLoss;
-  const originalStopOutcome = replayHold(trade, originalStop);
+  const originalStopOutcome = replayHold(trade, trade.stopLoss);
 
-  // Check if there were stop adjustments
-  const hasStopAdjustments = trade.stopAdjustments && trade.stopAdjustments.length > 0;
-  let finalStopOutcome: HoldReplayOutcome | undefined;
+  // Replay with each stop_moved level
+  const preExitEvents = getPreExitEvents(trade);
+  const stopMoves = preExitEvents.filter(e => e.eventType === 'stop_moved' && e.price !== null);
+  const stopMovedOutcomes = stopMoves.map(sm => ({
+    stopLevel: sm.price!,
+    outcome: replayHold(trade, sm.price!),
+  }));
 
-  if (hasStopAdjustments) {
-    // Get the final adjusted stop (last adjustment)
-    const finalStop = trade.stopAdjustments![trade.stopAdjustments!.length - 1].newStop;
-    finalStopOutcome = replayHold(trade, finalStop);
-  }
+  const metrics = getTradeRMetrics(trade);
 
-  // Calculate replay-based missed R
   let replayMissedR: number | null = null;
   let replayExitEfficiency: number | null = null;
   let holdSurvived = false;
 
   if (originalStopOutcome.type === 'survived') {
     holdSurvived = true;
-    // Would have survived to the favourable extreme
-    // Missed R = favourable extreme R - actual R achieved
-    if (trade.rMultiple !== undefined) {
-      replayMissedR = Math.max(0, originalStopOutcome.favourableExtremeR - trade.rMultiple);
+    if (metrics.rMultiple !== null) {
+      replayMissedR = Math.max(0, originalStopOutcome.favourableExtremeR - metrics.rMultiple);
       if (originalStopOutcome.favourableExtremeR > 0) {
-        replayExitEfficiency = (trade.rMultiple / originalStopOutcome.favourableExtremeR) * 100;
+        replayExitEfficiency = (metrics.rMultiple / originalStopOutcome.favourableExtremeR) * 100;
       }
     }
   } else if (originalStopOutcome.type === 'stopped') {
     holdSurvived = false;
-    // Would have been stopped before reaching the high
-    // Missed R = 0 or negative (exit was validated)
-    // Actually, if stopped, the outcome would be worse than actual exit
-    // So missed R is effectively 0 or the exit actually saved money
     replayMissedR = 0;
-    // Can't calculate meaningful efficiency when stop would have been hit
     replayExitEfficiency = null;
   }
 
   return {
     hasSequence,
     originalStopOutcome,
-    finalStopOutcome,
+    stopMovedOutcomes,
     replayMissedR,
     replayExitEfficiency,
     holdSurvived,

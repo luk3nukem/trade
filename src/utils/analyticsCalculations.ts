@@ -1,5 +1,48 @@
-import type { TradeRecord, TradingSession } from '../types';
-import { calculateMaeDistance, calculateMfeDistance, calculatePostStopMoveR, calculateMissedR, getTradeRMetrics, getHoldReplayAnalysis } from './tradeCalculations';
+import type { TradeRecord, TradingSession, LevelEntry, TradeEvent } from '../types';
+import { DETAIL_LEVEL_TYPES } from '../types';
+import { getTradeRMetrics, getHoldReplayAnalysis, deriveAnalysisTFs, deriveExitType, type TradeRMetrics } from './tradeCalculations';
+
+// Helper function to calculate MAE distance
+function calculateMaeDistance(entryPrice: number, maePrice: number | null | undefined): number | null {
+  if (maePrice === null || maePrice === undefined) return null;
+  return Math.abs(entryPrice - maePrice);
+}
+
+// Helper function to calculate MFE distance
+function calculateMfeDistance(entryPrice: number, mfePrice: number | null | undefined): number | null {
+  if (mfePrice === null || mfePrice === undefined) return null;
+  return Math.abs(mfePrice - entryPrice);
+}
+
+// Metrics cache
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
+
+// Level types that show a detail field
+const DETAIL_TYPES = DETAIL_LEVEL_TYPES as readonly string[];
+
+// Helper to check if a level type should show detail
+const isDetailLevelType = (levelType: string): boolean => {
+  return DETAIL_TYPES.includes(levelType.toLowerCase());
+};
+
+// Helper to create a grouping key for level type + detail
+// Returns "fib · GP" for fib with detail, or just "fib" for fib without detail
+const getLevelTypeKey = (level: LevelEntry): string => {
+  const type = level.levelType || 'Unknown';
+  const detail = (level as { levelDetail?: string }).levelDetail;
+  if (detail && isDetailLevelType(type)) {
+    return `${type} · ${detail}`;
+  }
+  return type;
+};
 
 // Generic group performance stats
 export interface GroupStats {
@@ -86,7 +129,7 @@ export function groupPerformanceBy(
   trades: TradeRecord[],
   field: keyof TradeRecord
 ): GroupStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
   const groups = new Map<string, TradeRecord[]>();
 
   for (const trade of closedTrades) {
@@ -99,26 +142,26 @@ export function groupPerformanceBy(
   const results: GroupStats[] = [];
 
   for (const [group, groupTrades] of groups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = groupTrades.filter(t => (t.rMultiple ?? 0) === 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
 
-    const rMultiples = groupTrades.map(t => t.rMultiple ?? 0);
+    const rMultiples = groupTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.length > 0
       ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length
       : 0;
 
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     const avgWinR = wins.length > 0
-      ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length
+      ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length
       : 0;
     const avgLossR = losses.length > 0
-      ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length
+      ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length
       : 0;
 
     const rStdDev = calculateStdDev(rMultiples);
@@ -148,13 +191,48 @@ export function getTimeAnalysis(trades: TradeRecord[]): {
   hourlyStats: HourStats[];
   holdTimeData: HoldTimePoint[];
 } {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.exitTime);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).exitTime);
 
-  const sessionGroups = groupPerformanceBy(trades, 'session');
-  const sessions: SessionStats[] = sessionGroups.map(g => ({
-    ...g,
-    session: g.group as TradingSession,
-  }));
+  // Group by session (derived from entry time)
+  const sessionMap = new Map<TradingSession, TradeRecord[]>();
+  for (const trade of closedTrades) {
+    const session = getCachedMetrics(trade).session;
+    const existing = sessionMap.get(session) || [];
+    existing.push(trade);
+    sessionMap.set(session, existing);
+  }
+
+  const sessions: SessionStats[] = [];
+  for (const [session, groupTrades] of sessionMap) {
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
+    const rMultiples = groupTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
+    const avgR = rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length;
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
+    const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+    const avgWinR = wins.length > 0 ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length : 0;
+    const avgLossR = losses.length > 0 ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length : 0;
+    const rStdDev = calculateStdDev(rMultiples);
+
+    sessions.push({
+      group: session,
+      session,
+      count: groupTrades.length,
+      wins: wins.length,
+      losses: losses.length,
+      breakevens: breakevens.length,
+      winRate: groupTrades.length > 0 ? (wins.length / groupTrades.length) * 100 : 0,
+      avgR,
+      totalPnl,
+      profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
+      avgWinR,
+      avgLossR,
+      rStdDev,
+    });
+  }
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const dayGroups = new Map<number, TradeRecord[]>();
@@ -181,15 +259,15 @@ export function getTimeAnalysis(trades: TradeRecord[]): {
       continue;
     }
 
-    const wins = dayTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = dayTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = dayTrades.filter(t => (t.rMultiple ?? 0) === 0);
-    const rMultiples = dayTrades.map(t => t.rMultiple ?? 0);
+    const wins = dayTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = dayTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = dayTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
+    const rMultiples = dayTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length;
-    const totalPnl = dayTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const totalPnl = dayTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     daysOfWeek.push({
@@ -204,8 +282,8 @@ export function getTimeAnalysis(trades: TradeRecord[]): {
       avgR,
       totalPnl,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length : 0,
-      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length : 0,
+      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length : 0,
+      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length : 0,
       rStdDev: calculateStdDev(rMultiples),
     });
   }
@@ -220,7 +298,7 @@ export function getTimeAnalysis(trades: TradeRecord[]): {
 
   let maxAbsPnl = 0;
   for (const [, hourTrades] of hourGroups) {
-    const avgPnl = hourTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0) / hourTrades.length;
+    const avgPnl = hourTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0) / hourTrades.length;
     maxAbsPnl = Math.max(maxAbsPnl, Math.abs(avgPnl));
   }
 
@@ -231,19 +309,19 @@ export function getTimeAnalysis(trades: TradeRecord[]): {
       hourlyStats.push({ hour: h, count: 0, avgPnl: 0, avgR: 0, intensity: 0 });
       continue;
     }
-    const avgPnl = hourTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0) / hourTrades.length;
-    const avgR = hourTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / hourTrades.length;
+    const avgPnl = hourTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0) / hourTrades.length;
+    const avgR = hourTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / hourTrades.length;
     const intensity = maxAbsPnl > 0 ? avgPnl / maxAbsPnl : 0;
     hourlyStats.push({ hour: h, count: hourTrades.length, avgPnl, avgR, intensity });
   }
 
   const holdTimeData: HoldTimePoint[] = closedTrades
-    .filter(t => t.holdDuration !== undefined)
+    .filter(t => getCachedMetrics(t).holdDuration !== undefined)
     .map(t => ({
       tradeId: t.id,
-      holdMinutes: t.holdDuration!,
-      rMultiple: t.rMultiple ?? 0,
-      isWinner: (t.rMultiple ?? 0) > 0,
+      holdMinutes: getCachedMetrics(t).holdDuration!,
+      rMultiple: getCachedMetrics(t).rMultiple ?? 0,
+      isWinner: (getCachedMetrics(t).rMultiple ?? 0) > 0,
       pair: t.pair,
     }));
 
@@ -260,12 +338,13 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
   entryTF: TimeframeStats[];
   analysisTFCount: TimeframeStats[]; // TF count analysis - does analyzing more TFs correlate with better results?
 } {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
 
   // Group by analysis timeframe (trades can appear in multiple groups)
   const analysisTFGroups = new Map<string, TradeRecord[]>();
   for (const trade of closedTrades) {
-    const tfs = trade.analysisTFs && trade.analysisTFs.length > 0 ? trade.analysisTFs : ['Not set'];
+    const derivedTFs = deriveAnalysisTFs(trade);
+    const tfs = derivedTFs.length > 0 ? derivedTFs : ['Not set'];
     for (const tf of tfs) {
       const existing = analysisTFGroups.get(tf) || [];
       existing.push(trade);
@@ -275,14 +354,14 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
 
   const analysisTF: TimeframeStats[] = [];
   for (const [tf, tfTrades] of analysisTFGroups) {
-    const wins = tfTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = tfTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = tfTrades.filter(t => (t.rMultiple ?? 0) === 0);
-    const rMultiples = tfTrades.map(t => t.rMultiple ?? 0);
+    const wins = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
+    const rMultiples = tfTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.length > 0 ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length : 0;
-    const totalPnl = tfTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const totalPnl = tfTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     analysisTF.push({
@@ -296,8 +375,8 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
       avgR,
       totalPnl,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length : 0,
-      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length : 0,
+      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length : 0,
+      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length : 0,
       rStdDev: calculateStdDev(rMultiples),
     });
   }
@@ -305,7 +384,7 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
   // Group by analysis TF count (how many timeframes were analyzed)
   const tfCountGroups = new Map<string, TradeRecord[]>();
   for (const trade of closedTrades) {
-    const tfCount = trade.analysisTFs?.length ?? 0;
+    const tfCount = deriveAnalysisTFs(trade).length;
     const label = tfCount === 0 ? 'None' : tfCount === 1 ? '1 TF' : `${tfCount} TFs`;
     const existing = tfCountGroups.get(label) || [];
     existing.push(trade);
@@ -314,14 +393,14 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
 
   const analysisTFCount: TimeframeStats[] = [];
   for (const [label, countTrades] of tfCountGroups) {
-    const wins = countTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = countTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = countTrades.filter(t => (t.rMultiple ?? 0) === 0);
-    const rMultiples = countTrades.map(t => t.rMultiple ?? 0);
+    const wins = countTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = countTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = countTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
+    const rMultiples = countTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.length > 0 ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length : 0;
-    const totalPnl = countTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const totalPnl = countTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     analysisTFCount.push({
@@ -335,8 +414,8 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
       avgR,
       totalPnl,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length : 0,
-      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length : 0,
+      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length : 0,
+      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length : 0,
       rStdDev: calculateStdDev(rMultiples),
     });
   }
@@ -352,14 +431,14 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
 
   const entryTF: TimeframeStats[] = [];
   for (const [tf, tfTrades] of entryTFGroups) {
-    const wins = tfTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = tfTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = tfTrades.filter(t => (t.rMultiple ?? 0) === 0);
-    const rMultiples = tfTrades.map(t => t.rMultiple ?? 0);
+    const wins = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = tfTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
+    const rMultiples = tfTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.length > 0 ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length : 0;
-    const totalPnl = tfTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const totalPnl = tfTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     entryTF.push({
@@ -373,8 +452,8 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
       avgR,
       totalPnl,
       profitFactor: Number.isFinite(profitFactor) ? profitFactor : 0,
-      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length : 0,
-      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length : 0,
+      avgWinR: wins.length > 0 ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length : 0,
+      avgLossR: losses.length > 0 ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length : 0,
       rStdDev: calculateStdDev(rMultiples),
     });
   }
@@ -393,7 +472,7 @@ export function getTimeframeAnalysis(trades: TradeRecord[]): {
 }
 
 export function getRMultipleDistribution(trades: TradeRecord[]): RDistributionBucket[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
 
   const buckets: RDistributionBucket[] = [
     { label: '< -2R', min: -Infinity, max: -2, count: 0, isPositive: false },
@@ -408,7 +487,7 @@ export function getRMultipleDistribution(trades: TradeRecord[]): RDistributionBu
   ];
 
   for (const trade of closedTrades) {
-    const r = trade.rMultiple!;
+    const r = getCachedMetrics(trade).rMultiple!;
     for (const bucket of buckets) {
       if (r > bucket.min && r <= bucket.max) {
         bucket.count++;
@@ -426,18 +505,22 @@ export function getRMultipleDistribution(trades: TradeRecord[]): RDistributionBu
 
 export function getPlannedVsActual(trades: TradeRecord[]): PlannedVsActualPoint[] {
   return trades
-    .filter(t => 
-      t.status === 'closed' && 
-      t.plannedRR !== undefined && 
-      t.actualRR !== undefined
-    )
-    .map(t => ({
-      tradeId: t.id,
-      plannedRR: t.plannedRR!,
-      actualRR: t.actualRR!,
-      pair: t.pair,
-      isWinner: (t.rMultiple ?? 0) > 0,
-    }));
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' &&
+        metrics.plannedRR !== null &&
+        metrics.actualRR !== null;
+    })
+    .map(t => {
+      const metrics = getCachedMetrics(t);
+      return {
+        tradeId: t.id,
+        plannedRR: metrics.plannedRR!,
+        actualRR: metrics.actualRR!,
+        pair: t.pair,
+        isWinner: (metrics.rMultiple ?? 0) > 0,
+      };
+    });
 }
 
 export function getPositionSizingData(trades: TradeRecord[]): {
@@ -446,7 +529,7 @@ export function getPositionSizingData(trades: TradeRecord[]): {
   stdDev: number;
 } {
   const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.riskPercent !== undefined)
+    .filter(t => getCachedMetrics(t).status === 'closed' && t.riskPercent !== undefined)
     .sort((a, b) => new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime());
 
   if (closedTrades.length === 0) {
@@ -462,7 +545,7 @@ export function getPositionSizingData(trades: TradeRecord[]): {
     tradeIndex: i + 1,
     tradeId: t.id,
     riskPercent: t.riskPercent!,
-    isWinner: (t.rMultiple ?? 0) > 0,
+    isWinner: (getCachedMetrics(t).rMultiple ?? 0) > 0,
     pair: t.pair,
     isOutlier: Math.abs(t.riskPercent! - avgRiskPercent) > outlierThreshold,
   }));
@@ -657,16 +740,16 @@ export interface StopPlacementSummary {
 }
 
 export function getMAEDistribution(trades: TradeRecord[], bucketCount: number = 6): MAEBucket[] {
-  const tradesWithMAE = trades.filter(t => 
-    t.status === 'closed' && 
-    t.maeR !== undefined && 
-    t.stopDistance !== undefined
+  const tradesWithMAE = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' &&
+    getCachedMetrics(t).maeR !== undefined &&
+    getCachedMetrics(t).stopDistance !== undefined
   );
 
   if (tradesWithMAE.length === 0) return [];
 
   // Calculate MAE as percentage of stop for bucketing
-  const maePercents = tradesWithMAE.map(t => (t.maeR! / 1) * 100); // maeR is already in R terms
+  const maePercents = tradesWithMAE.map(t => (getCachedMetrics(t).maeR! / 1) * 100); // maeR is already in R terms
   const maxMAE = Math.max(...maePercents);
   const bucketSize = Math.ceil(maxMAE / bucketCount);
 
@@ -675,9 +758,9 @@ export function getMAEDistribution(trades: TradeRecord[], bucketCount: number = 
     const min = i * bucketSize;
     const max = (i + 1) * bucketSize;
     const label = i === bucketCount - 1 ? min + '%+' : min + '-' + max + '%';
-    
+
     const inBucket = tradesWithMAE.filter(t => {
-      const maePercent = (t.maeR! / 1) * 100;
+      const maePercent = (getCachedMetrics(t).maeR! / 1) * 100;
       if (i === bucketCount - 1) return maePercent >= min;
       return maePercent >= min && maePercent < max;
     });
@@ -686,8 +769,8 @@ export function getMAEDistribution(trades: TradeRecord[], bucketCount: number = 
       label,
       min,
       max: i === bucketCount - 1 ? Infinity : max,
-      winners: inBucket.filter(t => (t.rMultiple ?? 0) > 0).length,
-      losers: inBucket.filter(t => (t.rMultiple ?? 0) <= 0).length,
+      winners: inBucket.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0).length,
+      losers: inBucket.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0).length,
       total: inBucket.length,
     });
   }
@@ -697,67 +780,79 @@ export function getMAEDistribution(trades: TradeRecord[], bucketCount: number = 
 
 export function getStopEfficiencyData(trades: TradeRecord[]): StopEfficiencyPoint[] {
   return trades
-    .filter(t => t.status === 'closed' && t.stopDistance !== undefined && t.entryPrice !== undefined)
-    .map(t => ({
-      tradeId: t.id,
-      stopDistance: t.stopDistance!,
-      stopDistancePercent: (t.stopDistance! / t.entryPrice) * 100,
-      rMultiple: t.rMultiple ?? 0,
-      isWinner: (t.rMultiple ?? 0) > 0,
-      pair: t.pair,
-    }));
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' && metrics.stopDistance !== undefined && t.entryPrice !== undefined;
+    })
+    .map(t => {
+      const metrics = getCachedMetrics(t);
+      return {
+        tradeId: t.id,
+        stopDistance: metrics.stopDistance!,
+        stopDistancePercent: (metrics.stopDistance! / t.entryPrice) * 100,
+        rMultiple: metrics.rMultiple ?? 0,
+        isWinner: (metrics.rMultiple ?? 0) > 0,
+        pair: t.pair,
+      };
+    });
 }
 
 export function getMAEOutcomeData(trades: TradeRecord[]): MAEOutcomePoint[] {
   return trades
-    .filter(t =>
-      t.status === 'closed' &&
-      t.maePrice !== null &&
-      t.maeR !== undefined &&
-      t.stopDistance !== undefined
-    )
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' &&
+        metrics.maePrice !== null &&
+        metrics.maeR !== undefined &&
+        metrics.stopDistance !== undefined;
+    })
     .map(t => {
-      const maeDistance = calculateMaeDistance(t.entryPrice, t.maePrice);
+      const metrics = getCachedMetrics(t);
+      const maeDistance = calculateMaeDistance(t.entryPrice, metrics.maePrice);
       return {
         tradeId: t.id,
         mae: maeDistance ?? 0,
-        maeR: t.maeR!,
-        rMultiple: t.rMultiple ?? 0,
-        isWinner: (t.rMultiple ?? 0) > 0,
+        maeR: metrics.maeR!,
+        rMultiple: metrics.rMultiple ?? 0,
+        isWinner: (metrics.rMultiple ?? 0) > 0,
         pair: t.pair,
-        stopDistance: t.stopDistance!,
+        stopDistance: metrics.stopDistance!,
       };
     });
 }
 
 export function getStopPlacementSummary(trades: TradeRecord[]): StopPlacementSummary {
-  const closedTrades = trades.filter(t => t.status === 'closed');
-  const tradesWithMAE = closedTrades.filter(t => t.maeR !== undefined && t.stopDistance !== undefined);
-  
-  const winners = tradesWithMAE.filter(t => (t.rMultiple ?? 0) > 0);
-  const losers = tradesWithMAE.filter(t => (t.rMultiple ?? 0) <= 0);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
+  const tradesWithMAE = closedTrades.filter(t => {
+    const metrics = getCachedMetrics(t);
+    return metrics.maeR !== undefined && metrics.stopDistance !== undefined;
+  });
 
-  const avgStopDistance = closedTrades.length > 0
-    ? closedTrades.filter(t => t.stopDistance).reduce((sum, t) => sum + t.stopDistance!, 0) / 
-      closedTrades.filter(t => t.stopDistance).length
+  const winners = tradesWithMAE.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+  const losers = tradesWithMAE.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0);
+
+  const tradesWithStopDistance = closedTrades.filter(t => getCachedMetrics(t).stopDistance);
+  const avgStopDistance = tradesWithStopDistance.length > 0
+    ? tradesWithStopDistance.reduce((sum, t) => sum + getCachedMetrics(t).stopDistance!, 0) /
+      tradesWithStopDistance.length
     : 0;
 
   const avgMAEWinners = winners.length > 0
-    ? winners.reduce((sum, t) => sum + t.maeR!, 0) / winners.length
+    ? winners.reduce((sum, t) => sum + getCachedMetrics(t).maeR!, 0) / winners.length
     : 0;
 
   const avgMAELosers = losers.length > 0
-    ? losers.reduce((sum, t) => sum + t.maeR!, 0) / losers.length
+    ? losers.reduce((sum, t) => sum + getCachedMetrics(t).maeR!, 0) / losers.length
     : 0;
 
   // Winners where MAE < 50% of stop (maeR < 0.5)
-  const winnersMAEUnderHalfStop = winners.filter(t => t.maeR! < 0.5).length;
+  const winnersMAEUnderHalfStop = winners.filter(t => getCachedMetrics(t).maeR! < 0.5).length;
   const winnersMAEUnderHalfStopPercent = winners.length > 0
     ? (winnersMAEUnderHalfStop / winners.length) * 100
     : 0;
 
   // Losers where MAE > 80% of stop (maeR > 0.8)
-  const losersMAEOverEightyStop = losers.filter(t => t.maeR! > 0.8).length;
+  const losersMAEOverEightyStop = losers.filter(t => getCachedMetrics(t).maeR! > 0.8).length;
   const losersMAEOverEightyStopPercent = losers.length > 0
     ? (losersMAEOverEightyStop / losers.length) * 100
     : 0;
@@ -765,7 +860,7 @@ export function getStopPlacementSummary(trades: TradeRecord[]): StopPlacementSum
   // Suggested optimal stop: MAE value where 90% of winners are covered
   let suggestedOptimalStop = 0;
   if (winners.length > 0) {
-    const sortedMAEs = winners.map(t => t.maeR!).sort((a, b) => a - b);
+    const sortedMAEs = winners.map(t => getCachedMetrics(t).maeR!).sort((a, b) => a - b);
     const index90 = Math.floor(sortedMAEs.length * 0.9);
     suggestedOptimalStop = sortedMAEs[index90] ?? sortedMAEs[sortedMAEs.length - 1];
   }
@@ -879,26 +974,27 @@ export interface SimulationResult {
 export function getMFECaptureData(trades: TradeRecord[]): MFECapturePoint[] {
   return trades
     .filter(t =>
-      t.status === 'closed' &&
-      t.mfeR !== undefined &&
-      t.mfeR > 0 &&
-      t.rMultiple !== undefined
+      getCachedMetrics(t).status === 'closed' &&
+      getCachedMetrics(t).mfeR !== undefined &&
+      getCachedMetrics(t).mfeR! > 0 &&
+      getCachedMetrics(t).rMultiple !== undefined
     )
     .map(t => {
-      const exitR = Math.abs(t.rMultiple!);
-      const capturePercent = t.mfeR! > 0 ? (exitR / t.mfeR!) * 100 : 0;
-      const mfeDistance = calculateMfeDistance(t.entryPrice, t.mfePrice);
+      const metrics = getCachedMetrics(t);
+      const exitR = Math.abs(metrics.rMultiple!);
+      const capturePercent = metrics.mfeR! > 0 ? (exitR / metrics.mfeR!) * 100 : 0;
+      const mfeDistance = calculateMfeDistance(t.entryPrice, metrics.mfePrice);
 
       return {
         tradeId: t.id,
         mfe: mfeDistance ?? 0,
-        mfeR: t.mfeR!,
-        exitDistance: t.actualRR ?? 0,
+        mfeR: metrics.mfeR!,
+        exitDistance: metrics.actualRR ?? 0,
         exitR,
         capturePercent: Math.min(capturePercent, 100), // Cap at 100%
-        isWinner: (t.rMultiple ?? 0) > 0,
+        isWinner: (metrics.rMultiple ?? 0) > 0,
         pair: t.pair,
-        exitType: t.exitType ?? 'unknown',
+        exitType: deriveExitType(t) ?? 'unknown',
       };
     });
 }
@@ -910,13 +1006,13 @@ export function getProfitGivebackData(trades: TradeRecord[]): {
 } {
   // Only winners where MFE > actual exit (gave back profit)
   const givebackTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    (t.rMultiple ?? 0) > 0 &&
-    t.mfeR !== undefined &&
-    t.mfeR > Math.abs(t.rMultiple ?? 0)
+    getCachedMetrics(t).status === 'closed' &&
+    (getCachedMetrics(t).rMultiple ?? 0) > 0 &&
+    getCachedMetrics(t).mfeR !== undefined &&
+    getCachedMetrics(t).mfeR! > Math.abs(getCachedMetrics(t).rMultiple ?? 0)
   );
 
-  const givebacks = givebackTrades.map(t => t.mfeR! - Math.abs(t.rMultiple!));
+  const givebacks = givebackTrades.map(t => getCachedMetrics(t).mfeR! - Math.abs(getCachedMetrics(t).rMultiple!));
   
   const buckets: ProfitGivebackBucket[] = [
     { label: '0-0.5R', min: 0, max: 0.5, count: 0 },
@@ -945,11 +1041,11 @@ export function getProfitGivebackData(trades: TradeRecord[]): {
 }
 
 export function getExitTypeComparison(trades: TradeRecord[]): ExitTypeStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.exitType);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && deriveExitType(t));
   const groups = new Map<string, TradeRecord[]>();
 
   for (const trade of closedTrades) {
-    const key = trade.exitType!;
+    const key = deriveExitType(trade)!;
     const existing = groups.get(key) || [];
     existing.push(trade);
     groups.set(key, existing);
@@ -958,25 +1054,25 @@ export function getExitTypeComparison(trades: TradeRecord[]): ExitTypeStats[] {
   const results: ExitTypeStats[] = [];
 
   for (const [exitType, groupTrades] of groups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) <= 0);
-    
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
-    
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0);
+
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
+
     // MFE capture for trades with MFE data
-    const withMFE = groupTrades.filter(t => t.mfeR !== undefined && t.mfeR > 0);
+    const withMFE = groupTrades.filter(t => getCachedMetrics(t).mfeR !== undefined && getCachedMetrics(t).mfeR! > 0);
     const avgMFECapture = withMFE.length > 0
       ? withMFE.reduce((sum, t) => {
-          const exitR = Math.abs(t.rMultiple ?? 0);
-          return sum + (exitR / t.mfeR!) * 100;
+          const exitR = Math.abs(getCachedMetrics(t).rMultiple ?? 0);
+          return sum + (exitR / getCachedMetrics(t).mfeR!) * 100;
         }, 0) / withMFE.length
       : 0;
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
-    
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
     results.push({
       exitType,
@@ -994,7 +1090,7 @@ export function getExitTypeComparison(trades: TradeRecord[]): ExitTypeStats[] {
 }
 
 export function getPartialsComparison(trades: TradeRecord[]): PartialsComparison | null {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
   // "Partials" = trades with multiple exits (scaled out)
   const withPartials = closedTrades.filter(t => t.exits && t.exits.length > 1);
   const withoutPartials = closedTrades.filter(t => !t.exits || t.exits.length <= 1);
@@ -1002,22 +1098,22 @@ export function getPartialsComparison(trades: TradeRecord[]): PartialsComparison
   if (withPartials.length < 3 || withoutPartials.length < 3) return null;
 
   const calcStats = (arr: TradeRecord[]) => {
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = arr.filter(t => (t.rMultiple ?? 0) <= 0);
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
-    
-    const withMFE = arr.filter(t => t.mfeR !== undefined && t.mfeR > 0);
+    const wins = arr.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = arr.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0);
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
+
+    const withMFE = arr.filter(t => getCachedMetrics(t).mfeR !== undefined && getCachedMetrics(t).mfeR! > 0);
     const avgMFECapture = withMFE.length > 0
       ? withMFE.reduce((sum, t) => {
-          const exitR = Math.abs(t.rMultiple ?? 0);
-          return sum + (exitR / t.mfeR!) * 100;
+          const exitR = Math.abs(getCachedMetrics(t).rMultiple ?? 0);
+          return sum + (exitR / getCachedMetrics(t).mfeR!) * 100;
         }, 0) / withMFE.length
       : 0;
 
     return {
       count: arr.length,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
+      avgR: arr.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / arr.length,
       winRate: (wins.length / arr.length) * 100,
       profitFactor: grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0,
       avgMFECapture: Math.min(avgMFECapture, 100),
@@ -1039,8 +1135,11 @@ export function simulateExitStrategy(
 ): SimulationResult & { tradesExcludedImplausible: number } {
   // Filter to closed trades with MFE price data
   const closedTrades = trades
-    .filter(t => t.status === 'closed' && (t.mfePrice !== null || t.mfeR !== undefined))
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' && (metrics.mfePrice !== null || metrics.mfeR !== undefined);
+    })
+    .sort((a, b) => new Date(getCachedMetrics(a).exitTime!).getTime() - new Date(getCachedMetrics(b).exitTime!).getTime());
 
   const equityCurve: { tradeIndex: number; cumulative: number }[] = [];
   let cumulative = 0;
@@ -1052,7 +1151,7 @@ export function simulateExitStrategy(
 
   for (const trade of closedTrades) {
     // Use centralized R-metrics calculation to ensure original stop is used
-    const metrics = getTradeRMetrics(trade);
+    const metrics = getCachedMetrics(trade);
 
     // Skip trades with implausible R values (data corruption from stop adjustments)
     if (metrics?.isImplausible) {
@@ -1063,8 +1162,8 @@ export function simulateExitStrategy(
     // Get properly calculated R metrics
     const mfeR = metrics?.mfeR ?? 0;
     const maeR = metrics?.maeR ?? 1; // Assume full stop if no MAE
-    const actualR = trade.rMultiple ?? 0;
-    const plannedRR = trade.plannedRR ?? 2;
+    const actualR = metrics.rMultiple ?? 0;
+    const plannedRR = metrics.plannedRR ?? 2;
 
     let simulatedR: number;
 
@@ -1185,8 +1284,11 @@ export function simulateFixedRTarget(
 ): FixedRTargetResult {
   // Filter to closed trades with MFE price data
   const closedTrades = trades
-    .filter(t => t.status === 'closed' && (t.mfePrice !== null || t.mfeR !== undefined))
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' && (metrics.mfePrice !== null || metrics.mfeR !== undefined);
+    })
+    .sort((a, b) => new Date(getCachedMetrics(a).exitTime!).getTime() - new Date(getCachedMetrics(b).exitTime!).getTime());
 
   const equityCurve: { tradeIndex: number; cumulative: number }[] = [];
   let cumulative = 0;
@@ -1198,7 +1300,7 @@ export function simulateFixedRTarget(
 
   for (const trade of closedTrades) {
     // Use centralized R-metrics calculation to ensure original stop is used
-    const metrics = getTradeRMetrics(trade);
+    const metrics = getCachedMetrics(trade);
 
     // Skip trades with implausible R values (data corruption from stop adjustments)
     if (metrics?.isImplausible) {
@@ -1326,48 +1428,6 @@ export function getExitManagementInsights(
 // BEHAVIOURAL ANALYSIS
 // ============================================
 
-export interface EmotionalStateStats {
-  state: number;
-  label: string;
-  count: number;
-  avgR: number;
-  winRate: number;
-  totalPnl: number;
-}
-
-export interface PlanAdherenceStats {
-  followed: {
-    count: number;
-    winRate: number;
-    avgR: number;
-    profitFactor: number;
-    totalPnl: number;
-  };
-  deviated: {
-    count: number;
-    winRate: number;
-    avgR: number;
-    profitFactor: number;
-    totalPnl: number;
-  };
-  deviationReasons: { reason: string; count: number }[];
-}
-
-export interface RevengeTradeStats {
-  revengeTrades: {
-    count: number;
-    winRate: number;
-    avgR: number;
-    totalPnl: number;
-  };
-  normalTrades: {
-    count: number;
-    winRate: number;
-    avgR: number;
-    totalPnl: number;
-  };
-}
-
 export interface StreakAnalysisData {
   afterWin: { count: number; avgR: number; winRate: number };
   afterLoss: { count: number; avgR: number; winRate: number };
@@ -1382,129 +1442,10 @@ export interface TradesPerDayPoint {
   totalPnl: number;
 }
 
-export function getEmotionalStateAnalysis(trades: TradeRecord[]): EmotionalStateStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.emotionalState !== undefined);
-
-  const stateLabels: Record<number, string> = {
-    1: 'Very Anxious',
-    2: 'Anxious',
-    3: 'Neutral',
-    4: 'Confident',
-    5: 'Very Confident',
-  };
-
-  const groups = new Map<number, TradeRecord[]>();
-  for (const trade of closedTrades) {
-    const state = trade.emotionalState!;
-    const existing = groups.get(state) || [];
-    existing.push(trade);
-    groups.set(state, existing);
-  }
-
-  const results: EmotionalStateStats[] = [];
-  for (let state = 1; state <= 5; state++) {
-    const groupTrades = groups.get(state) || [];
-    if (groupTrades.length === 0) {
-      results.push({
-        state,
-        label: stateLabels[state],
-        count: 0,
-        avgR: 0,
-        winRate: 0,
-        totalPnl: 0,
-      });
-      continue;
-    }
-
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-
-    results.push({
-      state,
-      label: stateLabels[state],
-      count: groupTrades.length,
-      avgR,
-      winRate: (wins.length / groupTrades.length) * 100,
-      totalPnl,
-    });
-  }
-
-  return results;
-}
-
-export function getPlanAdherenceAnalysis(trades: TradeRecord[]): PlanAdherenceStats {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.followedPlan !== undefined);
-
-  const followed = closedTrades.filter(t => t.followedPlan === true);
-  const deviated = closedTrades.filter(t => t.followedPlan === false);
-
-  const calcStats = (arr: TradeRecord[]) => {
-    if (arr.length === 0) {
-      return { count: 0, winRate: 0, avgR: 0, profitFactor: 0, totalPnl: 0 };
-    }
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = arr.filter(t => (t.rMultiple ?? 0) <= 0);
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
-
-    return {
-      count: arr.length,
-      winRate: (wins.length / arr.length) * 100,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
-      profitFactor: grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0,
-      totalPnl: arr.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0),
-    };
-  };
-
-  // Count deviation reasons
-  const reasonCounts = new Map<string, number>();
-  for (const trade of deviated) {
-    if (trade.planDeviation) {
-      const reason = trade.planDeviation.trim();
-      reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
-    }
-  }
-  const deviationReasons = Array.from(reasonCounts.entries())
-    .map(([reason, count]) => ({ reason, count }))
-    .sort((a, b) => b.count - a.count);
-
-  return {
-    followed: calcStats(followed),
-    deviated: calcStats(deviated),
-    deviationReasons,
-  };
-}
-
-export function getRevengeTradeAnalysis(trades: TradeRecord[]): RevengeTradeStats {
-  const closedTrades = trades.filter(t => t.status === 'closed');
-
-  const revengeTrades = closedTrades.filter(t => t.isRevengeTrade === true);
-  const normalTrades = closedTrades.filter(t => t.isRevengeTrade !== true);
-
-  const calcStats = (arr: TradeRecord[]) => {
-    if (arr.length === 0) {
-      return { count: 0, winRate: 0, avgR: 0, totalPnl: 0 };
-    }
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
-    return {
-      count: arr.length,
-      winRate: (wins.length / arr.length) * 100,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
-      totalPnl: arr.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0),
-    };
-  };
-
-  return {
-    revengeTrades: calcStats(revengeTrades),
-    normalTrades: calcStats(normalTrades),
-  };
-}
-
 export function getStreakAnalysis(trades: TradeRecord[]): StreakAnalysisData {
   const closedTrades = trades
-    .filter(t => t.status === 'closed')
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+    .filter(t => getCachedMetrics(t).status === 'closed')
+    .sort((a, b) => new Date(getCachedMetrics(a).exitTime!).getTime() - new Date(getCachedMetrics(b).exitTime!).getTime());
 
   const afterWin: TradeRecord[] = [];
   const afterLoss: TradeRecord[] = [];
@@ -1513,7 +1454,7 @@ export function getStreakAnalysis(trades: TradeRecord[]): StreakAnalysisData {
 
   for (let i = 1; i < closedTrades.length; i++) {
     const prevTrade = closedTrades[i - 1];
-    const prevWin = (prevTrade.rMultiple ?? 0) > 0;
+    const prevWin = (getCachedMetrics(prevTrade).rMultiple ?? 0) > 0;
 
     if (prevWin) {
       afterWin.push(closedTrades[i]);
@@ -1524,7 +1465,7 @@ export function getStreakAnalysis(trades: TradeRecord[]): StreakAnalysisData {
     // Check for streaks (2+ consecutive)
     if (i >= 2) {
       const prev2Trade = closedTrades[i - 2];
-      const prev2Win = (prev2Trade.rMultiple ?? 0) > 0;
+      const prev2Win = (getCachedMetrics(prev2Trade).rMultiple ?? 0) > 0;
 
       if (prevWin && prev2Win) {
         afterWinStreak.push(closedTrades[i]);
@@ -1538,10 +1479,10 @@ export function getStreakAnalysis(trades: TradeRecord[]): StreakAnalysisData {
     if (arr.length === 0) {
       return { count: 0, avgR: 0, winRate: 0 };
     }
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
+    const wins = arr.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
     return {
       count: arr.length,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
+      avgR: arr.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / arr.length,
       winRate: (wins.length / arr.length) * 100,
     };
   };
@@ -1559,7 +1500,7 @@ export function getTradesPerDayAnalysis(trades: TradeRecord[]): {
   optimalTradeCount: number;
   overtradeThreshold: number;
 } {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.exitTime);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).exitTime);
 
   // Group by date
   const dayGroups = new Map<string, TradeRecord[]>();
@@ -1572,8 +1513,8 @@ export function getTradesPerDayAnalysis(trades: TradeRecord[]): {
 
   const points: TradesPerDayPoint[] = [];
   for (const [date, dayTrades] of dayGroups) {
-    const avgR = dayTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / dayTrades.length;
-    const totalPnl = dayTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const avgR = dayTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / dayTrades.length;
+    const totalPnl = dayTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
     points.push({
       date,
       tradeCount: dayTrades.length,
@@ -1639,7 +1580,7 @@ const ENTRY_CONFIRMATION_LABELS: Record<string, string> = {
 };
 
 export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfirmationStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.entryConfirmation);
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && t.entryConfirmation);
 
   const groups = new Map<string, TradeRecord[]>();
   for (const trade of closedTrades) {
@@ -1656,52 +1597,29 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
     const groupTrades = groups.get(type);
     if (!groupTrades || groupTrades.length === 0) continue;
 
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
 
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     // Calculate avg first touch adverse in R
-    const tradesWithFirstTouch = groupTrades.filter(t =>
-      t.firstTouchWorstPrice !== null &&
-      t.firstTouchWorstPrice !== undefined &&
-      t.stopLoss &&
-      t.entryPrice
-    );
-    let avgFirstTouchAdverse: number | null = null;
-    if (tradesWithFirstTouch.length > 0) {
-      const firstTouchRs = tradesWithFirstTouch.map(t => {
-        const stopDistance = Math.abs(t.entryPrice - t.stopLoss);
-        if (stopDistance === 0) return 0;
-        const adverseDistance = t.direction === 'long'
-          ? t.entryPrice - t.firstTouchWorstPrice!
-          : t.firstTouchWorstPrice! - t.entryPrice;
-        return adverseDistance / stopDistance;
-      });
-      avgFirstTouchAdverse = firstTouchRs.reduce((a, b) => a + b, 0) / firstTouchRs.length;
-    }
+    // TODO: firstTouchWorstPrice removed in v2 schema
+    const avgFirstTouchAdverse: number | null = null;
 
-    // Calculate avg MAE in R
-    const tradesWithMae = groupTrades.filter(t =>
-      t.maePrice !== null &&
-      t.maePrice !== undefined &&
-      t.stopLoss &&
-      t.entryPrice
-    );
+    // Calculate avg MAE in R - use metrics
+    const tradesWithMae = groupTrades.filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.maePrice !== null &&
+        metrics.maePrice !== undefined &&
+        metrics.stopDistance;
+    });
     let avgMae: number | null = null;
     if (tradesWithMae.length > 0) {
-      const maeRs = tradesWithMae.map(t => {
-        const stopDistance = Math.abs(t.entryPrice - t.stopLoss);
-        if (stopDistance === 0) return 0;
-        const adverseDistance = t.direction === 'long'
-          ? t.entryPrice - t.maePrice!
-          : t.maePrice! - t.entryPrice;
-        return adverseDistance / stopDistance;
-      });
+      const maeRs = tradesWithMae.map(t => getCachedMetrics(t).maeR ?? 0);
       avgMae = maeRs.reduce((a, b) => a + b, 0) / maeRs.length;
     }
 
@@ -1722,11 +1640,11 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
     if (typeOrder.includes(type)) continue;
     if (groupTrades.length === 0) continue;
 
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     results.push({
@@ -1745,53 +1663,11 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
 }
 
 export function getBehaviouralInsights(
-  emotionalStats: EmotionalStateStats[],
-  planAdherence: PlanAdherenceStats,
-  revengeStats: RevengeTradeStats,
   streakAnalysis: StreakAnalysisData,
   tradesPerDay: { optimalTradeCount: number; overtradeThreshold: number },
   entryConfirmationStats?: EntryConfirmationStats[]
 ): string[] {
   const insights: string[] = [];
-
-  // Emotional state insights
-  const calmStates = emotionalStats.filter(s => s.state >= 3 && s.count > 0);
-  const anxiousStates = emotionalStats.filter(s => s.state < 3 && s.count > 0);
-
-  if (calmStates.length > 0 && anxiousStates.length > 0) {
-    const avgCalmR = calmStates.reduce((sum, s) => sum + s.avgR * s.count, 0) /
-      calmStates.reduce((sum, s) => sum + s.count, 0);
-    const avgAnxiousR = anxiousStates.reduce((sum, s) => sum + s.avgR * s.count, 0) /
-      anxiousStates.reduce((sum, s) => sum + s.count, 0);
-
-    if (avgCalmR > avgAnxiousR) {
-      const pnlDiff = calmStates.reduce((sum, s) => sum + s.totalPnl, 0) -
-        anxiousStates.reduce((sum, s) => sum + s.totalPnl, 0);
-      insights.push(
-        'Your avg R when calm/confident is ' + avgCalmR.toFixed(2) + ' vs ' + avgAnxiousR.toFixed(2) +
-        ' when anxious. Emotional trading costs you approximately $' + Math.abs(pnlDiff).toFixed(0) + '.'
-      );
-    }
-  }
-
-  // Plan adherence insights
-  if (planAdherence.followed.count > 0 && planAdherence.deviated.count > 0) {
-    const savings = planAdherence.followed.totalPnl - planAdherence.deviated.totalPnl;
-    insights.push(
-      'Following your plan produces ' + planAdherence.followed.profitFactor.toFixed(2) +
-      ' profit factor vs ' + planAdherence.deviated.profitFactor.toFixed(2) + ' when deviating. ' +
-      (savings > 0 ? 'Plan adherence saved you $' + savings.toFixed(0) + '.' : '')
-    );
-  }
-
-  // Revenge trade insights
-  if (revengeStats.revengeTrades.count > 0) {
-    insights.push(
-      'Revenge trades have cost you $' + Math.abs(revengeStats.revengeTrades.totalPnl).toFixed(0) + '. ' +
-      'Your win rate drops from ' + revengeStats.normalTrades.winRate.toFixed(1) + '% to ' +
-      revengeStats.revengeTrades.winRate.toFixed(1) + '% on revenge trades.'
-    );
-  }
 
   // Streak insights
   if (streakAnalysis.afterWin.count > 0 && streakAnalysis.afterLoss.count > 0) {
@@ -1872,193 +1748,7 @@ export function getBehaviouralInsights(
 
 
 // ============================================
-// MARKET CONTEXT ANALYSIS
-// ============================================
-
-export interface MarketConditionStats {
-  condition: string;
-  count: number;
-  avgR: number;
-  winRate: number;
-  totalPnl: number;
-}
-
-export interface HTFBiasStats {
-  alignment: 'with' | 'against' | 'neutral';
-  count: number;
-  avgR: number;
-  winRate: number;
-  totalPnl: number;
-}
-
-export interface ContextHeatmapCell {
-  condition: string;
-  alignment: string;
-  avgR: number;
-  count: number;
-}
-
-export function getMarketConditionAnalysis(trades: TradeRecord[]): MarketConditionStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.marketCondition);
-
-  const groups = new Map<string, TradeRecord[]>();
-  for (const trade of closedTrades) {
-    const condition = trade.marketCondition!;
-    const existing = groups.get(condition) || [];
-    existing.push(trade);
-    groups.set(condition, existing);
-  }
-
-  const results: MarketConditionStats[] = [];
-  for (const [condition, groupTrades] of groups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    results.push({
-      condition,
-      count: groupTrades.length,
-      avgR: groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length,
-      winRate: (wins.length / groupTrades.length) * 100,
-      totalPnl: groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0),
-    });
-  }
-
-  return results.sort((a, b) => b.avgR - a.avgR);
-}
-
-export function getHTFBiasAnalysis(trades: TradeRecord[]): HTFBiasStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed');
-
-  const withBias: TradeRecord[] = [];
-  const againstBias: TradeRecord[] = [];
-  const neutralBias: TradeRecord[] = [];
-
-  for (const trade of closedTrades) {
-    if (!trade.htfBias || trade.htfBias === 'neutral' || trade.htfBias === 'ranging') {
-      neutralBias.push(trade);
-    } else if (
-      (trade.direction === 'long' && trade.htfBias === 'bullish') ||
-      (trade.direction === 'short' && trade.htfBias === 'bearish')
-    ) {
-      withBias.push(trade);
-    } else {
-      againstBias.push(trade);
-    }
-  }
-
-  const calcStats = (arr: TradeRecord[], alignment: 'with' | 'against' | 'neutral'): HTFBiasStats => {
-    if (arr.length === 0) {
-      return { alignment, count: 0, avgR: 0, winRate: 0, totalPnl: 0 };
-    }
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
-    return {
-      alignment,
-      count: arr.length,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
-      winRate: (wins.length / arr.length) * 100,
-      totalPnl: arr.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0),
-    };
-  };
-
-  return [
-    calcStats(withBias, 'with'),
-    calcStats(againstBias, 'against'),
-    calcStats(neutralBias, 'neutral'),
-  ];
-}
-
-export function getContextHeatmapData(trades: TradeRecord[]): ContextHeatmapCell[] {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.marketCondition);
-
-  // Group by condition + bias alignment
-  const groups = new Map<string, TradeRecord[]>();
-
-  for (const trade of closedTrades) {
-    const condition = trade.marketCondition!;
-    let alignment: string;
-
-    if (!trade.htfBias || trade.htfBias === 'neutral' || trade.htfBias === 'ranging') {
-      alignment = 'neutral';
-    } else if (
-      (trade.direction === 'long' && trade.htfBias === 'bullish') ||
-      (trade.direction === 'short' && trade.htfBias === 'bearish')
-    ) {
-      alignment = 'with';
-    } else {
-      alignment = 'against';
-    }
-
-    const key = condition + '|' + alignment;
-    const existing = groups.get(key) || [];
-    existing.push(trade);
-    groups.set(key, existing);
-  }
-
-  const results: ContextHeatmapCell[] = [];
-  for (const [key, groupTrades] of groups) {
-    const [condition, alignment] = key.split('|');
-    results.push({
-      condition,
-      alignment,
-      avgR: groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length,
-      count: groupTrades.length,
-    });
-  }
-
-  return results;
-}
-
-export function getMarketContextInsights(
-  conditionStats: MarketConditionStats[],
-  biasStats: HTFBiasStats[]
-): string[] {
-  const insights: string[] = [];
-
-  // Market condition insights
-  const qualifiedConditions = conditionStats.filter(c => c.count >= 3);
-  if (qualifiedConditions.length >= 2) {
-    const best = qualifiedConditions[0];
-    const worst = [...qualifiedConditions].sort((a, b) => a.avgR - b.avgR)[0];
-
-    if (best.avgR > 0) {
-      insights.push(
-        'You perform best in ' + best.condition + ' markets (' + best.avgR.toFixed(2) + 'R avg over ' +
-        best.count + ' trades).'
-      );
-    }
-
-    if (worst.avgR < 0 && worst.condition !== best.condition) {
-      insights.push(
-        'Consider sitting out ' + worst.condition + ' conditions (' + worst.avgR.toFixed(2) +
-        'R avg). This pattern has cost you $' + Math.abs(worst.totalPnl).toFixed(0) + '.'
-      );
-    }
-  }
-
-  // HTF bias insights
-  const withBias = biasStats.find(b => b.alignment === 'with');
-  const againstBias = biasStats.find(b => b.alignment === 'against');
-
-  if (withBias && againstBias && withBias.count >= 3 && againstBias.count >= 3) {
-    if (withBias.avgR > againstBias.avgR) {
-      const improvement = withBias.avgR - againstBias.avgR;
-      insights.push(
-        'Trading with the HTF bias gives you ' + withBias.winRate.toFixed(1) + '% win rate vs ' +
-        againstBias.winRate.toFixed(1) + '% against. ' +
-        'Aligning with HTF would improve expectancy by ' + improvement.toFixed(2) + 'R per trade.'
-      );
-    } else {
-      insights.push(
-        'Interestingly, you perform better against HTF bias (' + againstBias.avgR.toFixed(2) + 'R) than with it (' +
-        withBias.avgR.toFixed(2) + 'R). This may indicate contrarian edge or HTF bias misidentification.'
-      );
-    }
-  }
-
-  return insights;
-}
-
-
-// ============================================
-// SETUP TAG ANALYTICS (Confluence System)
+// CONTEXT TAG ANALYTICS (Confluence System)
 // ============================================
 
 export interface TagStats extends GroupStats {
@@ -2088,12 +1778,12 @@ export interface TagCombinationStats {
  * Group performance by individual setup tags (explodes array so each tag gets counted)
  */
 export function groupPerformanceByTag(trades: TradeRecord[]): TagStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
   const tagGroups = new Map<string, TradeRecord[]>();
 
   // Explode tags - each trade can appear in multiple tag groups
   for (const trade of closedTrades) {
-    const tags = trade.setupTags || [];
+    const tags = trade.contextTags || [];
     for (const tag of tags) {
       const existing = tagGroups.get(tag) || [];
       existing.push(trade);
@@ -2104,26 +1794,26 @@ export function groupPerformanceByTag(trades: TradeRecord[]): TagStats[] {
   const results: TagStats[] = [];
 
   for (const [tag, groupTrades] of tagGroups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
-    const breakevens = groupTrades.filter(t => (t.rMultiple ?? 0) === 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
+    const breakevens = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) === 0);
 
-    const rMultiples = groupTrades.map(t => t.rMultiple ?? 0);
+    const rMultiples = groupTrades.map(t => getCachedMetrics(t).rMultiple ?? 0);
     const avgR = rMultiples.length > 0
       ? rMultiples.reduce((a, b) => a + b, 0) / rMultiples.length
       : 0;
 
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     const avgWinR = wins.length > 0
-      ? wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / wins.length
+      ? wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / wins.length
       : 0;
     const avgLossR = losses.length > 0
-      ? losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / losses.length
+      ? losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / losses.length
       : 0;
 
     const rStdDev = calculateStdDev(rMultiples);
@@ -2152,11 +1842,11 @@ export function groupPerformanceByTag(trades: TradeRecord[]): TagStats[] {
  * Analyze performance by number of confluences (tag count)
  */
 export function getConfluenceCountAnalysis(trades: TradeRecord[]): ConfluenceCountStats[] {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
   const countGroups = new Map<number, TradeRecord[]>();
 
   for (const trade of closedTrades) {
-    const tagCount = (trade.setupTags || []).length;
+    const tagCount = (trade.contextTags || []).length;
     // Group 4+ tags together
     const bucket = tagCount >= 4 ? 4 : tagCount;
     const existing = countGroups.get(bucket) || [];
@@ -2167,9 +1857,9 @@ export function getConfluenceCountAnalysis(trades: TradeRecord[]): ConfluenceCou
   const results: ConfluenceCountStats[] = [];
 
   for (const [tagCount, groupTrades] of countGroups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
     results.push({
       tagCount,
@@ -2191,14 +1881,14 @@ export function getTagCombinationAnalysis(
   minOccurrences: number = 3
 ): TagCombinationStats[] {
   const closedTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    (t.setupTags || []).length >= 2
+    getCachedMetrics(t).status === 'closed' &&
+    (t.contextTags || []).length >= 2
   );
 
   const comboGroups = new Map<string, TradeRecord[]>();
 
   for (const trade of closedTrades) {
-    const tags = [...(trade.setupTags || [])].sort();
+    const tags = [...(trade.contextTags || [])].sort();
     const comboKey = tags.join(' + ');
     const existing = comboGroups.get(comboKey) || [];
     existing.push(trade);
@@ -2210,14 +1900,14 @@ export function getTagCombinationAnalysis(
   for (const [combination, groupTrades] of comboGroups) {
     if (groupTrades.length < minOccurrences) continue;
 
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
 
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
-    const totalPnl = groupTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
+    const totalPnl = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     const tags = combination.split(' + ');
@@ -2332,13 +2022,14 @@ export function simulateStopAdjustment(
   adjustmentPercent: number
 ): StopSimulationResult {
   const eligibleTrades = trades
-    .filter(t =>
-      t.status === 'closed' &&
-      t.stopDistance !== undefined &&
-      t.maeR !== undefined &&
-      t.rMultiple !== undefined
-    )
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+    .filter(t => {
+      const metrics = getCachedMetrics(t);
+      return metrics.status === 'closed' &&
+        metrics.stopDistance !== undefined &&
+        metrics.maeR !== undefined &&
+        metrics.rMultiple !== undefined;
+    })
+    .sort((a, b) => new Date(getCachedMetrics(a).exitTime!).getTime() - new Date(getCachedMetrics(b).exitTime!).getTime());
 
   const simulatedTrades: SimulatedTrade[] = [];
   const equityCurve: { tradeIndex: number; original: number; simulated: number }[] = [];
@@ -2347,9 +2038,10 @@ export function simulateStopAdjustment(
 
   for (let i = 0; i < eligibleTrades.length; i++) {
     const trade = eligibleTrades[i];
-    const originalStopDistance = trade.stopDistance!;
-    const maeR = trade.maeR!;
-    const originalR = trade.rMultiple!;
+    const metrics = getCachedMetrics(trade);
+    const originalStopDistance = metrics.stopDistance!;
+    const maeR = metrics.maeR!;
+    const originalR = metrics.rMultiple!;
 
     // Adjusted stop distance as a factor (1 = original size)
     // Negative adjustmentPercent = tighter stop (smaller factor)
@@ -2388,7 +2080,7 @@ export function simulateStopAdjustment(
       }
     }
 
-    const maeDistance = calculateMaeDistance(trade.entryPrice, trade.maePrice);
+    const maeDistance = calculateMaeDistance(trade.entryPrice, metrics.maePrice);
     simulatedTrades.push({
       tradeId: trade.id!,
       originalR,
@@ -2509,189 +2201,49 @@ export interface StopDestinationStats {
 /**
  * Analyze break-even move effectiveness
  * @param minRThreshold - Minimum R move to consider BE as having "cost you" a valid trade
+ *
+ * TODO: Stubbed out in v2 schema - stopAdjustments and postExitBestPrice removed.
+ * Re-implement when timeline stop_moved events are fully available.
  */
-export function getBEAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): BEAnalysisStats {
-  const closedTrades = trades.filter(t => t.status === 'closed');
-
-  // Trades with BE moves (look for "BE" or "break" or "breakeven" in stop adjustment reasons)
-  const hasBEMove = (t: TradeRecord) => {
-    return (t.stopAdjustments || []).some(adj =>
-      adj.reason.toLowerCase().includes('be') ||
-      adj.reason.toLowerCase().includes('break') ||
-      adj.reason.toLowerCase().includes('breakeven') ||
-      adj.reason.toLowerCase().includes('break even')
-    );
-  };
-
-  const movedToBE = closedTrades.filter(hasBEMove);
-  const stayedOriginal = closedTrades.filter(t => !hasBEMove(t));
-
-  const calcStats = (arr: TradeRecord[]) => {
-    if (arr.length === 0) {
-      return { count: 0, avgR: 0, winRate: 0, totalPnl: 0 };
-    }
-    const wins = arr.filter(t => (t.rMultiple ?? 0) > 0);
-    return {
-      count: arr.length,
-      avgR: arr.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / arr.length,
-      winRate: (wins.length / arr.length) * 100,
-      totalPnl: arr.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0),
-    };
-  };
-
-  // Analyze BE-specific outcomes
-  let heldForWin = 0;
-  let savedByBE = 0;
-  let missedProfit = 0;
-
-  for (const trade of movedToBE) {
-    const r = trade.rMultiple ?? 0;
-    const mfeR = trade.mfeR ?? 0;
-
-    if (r > 0) {
-      // Won after moving to BE
-      heldForWin++;
-    } else if (r === 0 || (r > -0.1 && r < 0.1)) {
-      // Exited near BE - was this a save or missed profit?
-      if (mfeR > 1) {
-        // Had significant MFE but got stopped at BE
-        missedProfit++;
-      } else {
-        // Never really moved in their favor, BE saved them
-        savedByBE++;
-      }
-    } else {
-      // Lost despite BE move (shouldn't really happen if BE was executed correctly)
-      // Count as neither saved nor missed
-    }
-  }
-
-  // Post-exit validation: Only count "BE cost you" if post-exit move exceeded threshold
-  // This uses post-exit best price data when available
-  const beTradesStoppedAtBE = movedToBE.filter(t => {
-    const r = t.rMultiple ?? 0;
-    return r === 0 || (r > -0.1 && r < 0.1); // Stopped at BE
-  });
-
-  const beTradesWithPostExitData = beTradesStoppedAtBE.filter(t =>
-    t.postExitBestPrice !== null && t.stopDistance && t.stopDistance > 0
-  );
-
-  let thesisCostYou = 0;
-  let belowThreshold = 0;
-  let totalPostExitMoveR = 0;
-
-  for (const trade of beTradesWithPostExitData) {
-    // Calculate post-exit move from entry (how far price went in trader's favour after BE stop)
-    const postExitMoveR = calculatePostStopMoveR(
-      trade.entryPrice,
-      trade.postExitBestPrice,
-      trade.stopDistance,
-      trade.direction
-    ) ?? 0;
-
-    totalPostExitMoveR += postExitMoveR;
-
-    if (postExitMoveR >= minRThreshold) {
-      thesisCostYou++;
-    } else {
-      belowThreshold++;
-    }
-  }
-
+export function getBEAnalysis(_trades: TradeRecord[], _minRThreshold: number = 1.0): BEAnalysisStats {
+  // Stubbed - stopAdjustments and postExitBestPrice removed in v2 schema
   return {
-    movedToBE: calcStats(movedToBE),
-    stayedOriginal: calcStats(stayedOriginal),
+    movedToBE: { count: 0, avgR: 0, winRate: 0, totalPnl: 0 },
+    stayedOriginal: { count: 0, avgR: 0, winRate: 0, totalPnl: 0 },
     beOutcomes: {
-      heldForWin,
-      savedByBE,
-      missedProfit,
+      heldForWin: 0,
+      savedByBE: 0,
+      missedProfit: 0,
     },
     postExitValidation: {
-      tradesWithPostExitData: beTradesWithPostExitData.length,
-      thesisCostYou,
-      belowThreshold,
-      avgPostExitMoveR: beTradesWithPostExitData.length > 0
-        ? totalPostExitMoveR / beTradesWithPostExitData.length
-        : 0,
+      tradesWithPostExitData: 0,
+      thesisCostYou: 0,
+      belowThreshold: 0,
+      avgPostExitMoveR: 0,
     },
   };
 }
 
 /**
  * Analyze stop adjustments by trigger (what caused the move)
+ *
+ * TODO: Stubbed out in v2 schema - stopAdjustments removed.
+ * Re-implement when timeline stop_moved events are fully available.
  */
-export function getStopAdjustmentTriggerAnalysis(trades: TradeRecord[]): StopAdjustmentTriggerStats[] {
-  const closedTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    (t.stopAdjustments || []).length > 0
-  );
-
-  // Group by trigger
-  const triggerGroups = new Map<string, TradeRecord[]>();
-
-  for (const trade of closedTrades) {
-    for (const adj of trade.stopAdjustments || []) {
-      const trigger = adj.trigger?.trim() || 'Manual';
-      const existing = triggerGroups.get(trigger) || [];
-      if (!existing.includes(trade)) {
-        existing.push(trade);
-      }
-      triggerGroups.set(trigger, existing);
-    }
-  }
-
-  const results: StopAdjustmentTriggerStats[] = [];
-
-  for (const [trigger, groupTrades] of triggerGroups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    results.push({
-      trigger,
-      count: groupTrades.length,
-      avgRAfter: groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length,
-      winRate: (wins.length / groupTrades.length) * 100,
-    });
-  }
-
-  return results.sort((a, b) => b.count - a.count);
+export function getStopAdjustmentTriggerAnalysis(_trades: TradeRecord[]): StopAdjustmentTriggerStats[] {
+  // Stubbed - stopAdjustments removed in v2 schema
+  return [];
 }
 
 /**
  * Analyze stop adjustments by destination/reason
+ *
+ * TODO: Stubbed out in v2 schema - stopAdjustments removed.
+ * Re-implement when timeline stop_moved events are fully available.
  */
-export function getStopDestinationAnalysis(trades: TradeRecord[]): StopDestinationStats[] {
-  const closedTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    (t.stopAdjustments || []).length > 0
-  );
-
-  // Group by reason/destination
-  const reasonGroups = new Map<string, TradeRecord[]>();
-
-  for (const trade of closedTrades) {
-    for (const adj of trade.stopAdjustments || []) {
-      const reason = adj.reason?.trim() || 'Unspecified';
-      const existing = reasonGroups.get(reason) || [];
-      if (!existing.includes(trade)) {
-        existing.push(trade);
-      }
-      reasonGroups.set(reason, existing);
-    }
-  }
-
-  const results: StopDestinationStats[] = [];
-
-  for (const [destination, groupTrades] of reasonGroups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    results.push({
-      destination,
-      count: groupTrades.length,
-      avgR: groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length,
-      winRate: (wins.length / groupTrades.length) * 100,
-    });
-  }
-
-  return results.sort((a, b) => b.count - a.count);
+export function getStopDestinationAnalysis(_trades: TradeRecord[]): StopDestinationStats[] {
+  // Stubbed - stopAdjustments removed in v2 schema
+  return [];
 }
 
 /**
@@ -2836,8 +2388,8 @@ export function getSelectivityAnalysis(allTrades: TradeRecord[]): SelectivityCom
   const missed = allTrades.filter(t => t.tradeTaken === false);
 
   // Only include closed trades with R-multiple for stats
-  const takenClosed = taken.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
-  const missedClosed = missed.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const takenClosed = taken.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
+  const missedClosed = missed.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
 
   if (takenClosed.length < 1 && missedClosed.length < 1) return null;
 
@@ -2845,13 +2397,13 @@ export function getSelectivityAnalysis(allTrades: TradeRecord[]): SelectivityCom
     if (trades.length === 0) {
       return { count: 0, winRate: 0, avgR: 0, profitFactor: 0, totalR: 0 };
     }
-    const wins = trades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = trades.filter(t => (t.rMultiple ?? 0) <= 0);
-    const totalR = trades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
+    const wins = trades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = trades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0);
+    const totalR = trades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
     const avgR = totalR / trades.length;
     const winRate = (wins.length / trades.length) * 100;
-    const grossWins = wins.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     return { count: trades.length, winRate, avgR, profitFactor, totalR };
@@ -2865,13 +2417,13 @@ export function getSelectivityAnalysis(allTrades: TradeRecord[]): SelectivityCom
 
 export function getSelectivityValue(missedTrades: TradeRecord[]): SelectivityValue {
   // Only include closed trades with outcome data
-  const withOutcome = missedTrades.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const withOutcome = missedTrades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
 
-  const winners = withOutcome.filter(t => (t.rMultiple ?? 0) > 0);
-  const losers = withOutcome.filter(t => (t.rMultiple ?? 0) <= 0);
+  const winners = withOutcome.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+  const losers = withOutcome.filter(t => (getCachedMetrics(t).rMultiple ?? 0) <= 0);
 
-  const missedProfit = winners.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
-  const savedLosses = Math.abs(losers.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0));
+  const missedProfit = winners.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+  const savedLosses = Math.abs(losers.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0));
   const netValue = savedLosses - missedProfit;
 
   return {
@@ -2885,7 +2437,7 @@ export function getSelectivityValue(missedTrades: TradeRecord[]): SelectivityVal
 }
 
 export function getNotTakenReasonBreakdown(missedTrades: TradeRecord[]): ReasonBreakdown[] {
-  const withOutcome = missedTrades.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const withOutcome = missedTrades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
 
   // Group by reason
   const reasonMap = new Map<string, TradeRecord[]>();
@@ -2899,8 +2451,8 @@ export function getNotTakenReasonBreakdown(missedTrades: TradeRecord[]): ReasonB
 
   const breakdown: ReasonBreakdown[] = [];
   for (const [reason, trades] of reasonMap) {
-    const wins = trades.filter(t => (t.rMultiple ?? 0) > 0);
-    const totalR = trades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
+    const wins = trades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const totalR = trades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
     const avgR = trades.length > 0 ? totalR / trades.length : 0;
     const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
 
@@ -2918,12 +2470,12 @@ export function getNotTakenReasonBreakdown(missedTrades: TradeRecord[]): ReasonB
 }
 
 export function getMissedTradesByTag(missedTrades: TradeRecord[]): TagBreakdown[] {
-  const withOutcome = missedTrades.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const withOutcome = missedTrades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
 
   // Group by setup tag
   const tagMap = new Map<string, TradeRecord[]>();
   for (const trade of withOutcome) {
-    const tags = trade.setupTags || [];
+    const tags = trade.contextTags || [];
     for (const tag of tags) {
       if (!tagMap.has(tag)) {
         tagMap.set(tag, []);
@@ -2934,8 +2486,8 @@ export function getMissedTradesByTag(missedTrades: TradeRecord[]): TagBreakdown[
 
   const breakdown: TagBreakdown[] = [];
   for (const [tag, trades] of tagMap) {
-    const wins = trades.filter(t => (t.rMultiple ?? 0) > 0);
-    const totalR = trades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0);
+    const wins = trades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const totalR = trades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
     const avgR = trades.length > 0 ? totalR / trades.length : 0;
     const winRate = trades.length > 0 ? (wins.length / trades.length) * 100 : 0;
 
@@ -2960,7 +2512,7 @@ export function getSelectivityInsights(allTrades: TradeRecord[]): string[] {
     return insights;
   }
 
-  const missedClosed = missed.filter(t => t.status === 'closed' && t.rMultiple !== undefined);
+  const missedClosed = missed.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).rMultiple !== undefined);
   const selectivityValue = getSelectivityValue(missed);
 
   // Overall selectivity insight
@@ -3079,7 +2631,7 @@ export interface RetracementScatterPoint {
  */
 function getTradesWithDrawdownData(trades: TradeRecord[]): TradeRecord[] {
   return trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     t.exits &&
     t.exits.length > 1 &&
     t.exits.some(e => e.drawdownAfter != null)
@@ -3308,7 +2860,7 @@ export function getPostTPByTagAnalysis(trades: TradeRecord[]): TagRetracementSta
 
     const reachedEntry = didReachEntry(trade.entryPrice, firstExitWithDrawdown.drawdownAfter, trade.direction);
 
-    for (const tag of (trade.setupTags || [])) {
+    for (const tag of (trade.contextTags || [])) {
       if (!tagData.has(tag)) {
         tagData.set(tag, { retracements: [], reachedEntry: 0, total: 0 });
       }
@@ -3507,65 +3059,19 @@ export interface PostExitScatterPoint {
 
 /**
  * Get overall post-exit analysis
+ *
+ * TODO: Stubbed out in v2 schema - postExitBestPrice, postExitWorstPrice, reachedTargetPostExit removed.
  */
 export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false);
-  const tradesWithData = closedTrades.filter(t =>
-    t.postExitBestPrice !== null || t.postExitWorstPrice !== null || t.reachedTargetPostExit !== null
-  );
-
-  if (tradesWithData.length === 0) {
-    return {
-      tradesWithData: 0,
-      totalClosedTrades: closedTrades.length,
-      avgExitEfficiency: 0,
-      avgMissedR: 0,
-      reachedTargetPercent: 0,
-      tradesReachedTarget: 0,
-    };
-  }
-
-  // Calculate exit efficiency and missed R for trades with post-exit best price
-  const tradesWithBestPrice = tradesWithData.filter(t =>
-    t.postExitBestPrice !== null && t.exitPrice !== undefined && t.stopDistance
-  );
-
-  let totalMissedR = 0;
-  let totalEfficiency = 0;
-  let efficiencyCount = 0;
-
-  for (const trade of tradesWithBestPrice) {
-    if (!trade.stopDistance || trade.stopDistance === 0) continue;
-
-    // Calculate missed R
-    const priceDiff = trade.postExitBestPrice! - trade.exitPrice!;
-    const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
-    const missedR = signedMove > 0 ? signedMove / trade.stopDistance : 0;
-    totalMissedR += missedR;
-
-    // Calculate exit efficiency
-    if (trade.rMultiple !== undefined && trade.rMultiple > 0) {
-      const wouldHaveR = Math.abs(trade.postExitBestPrice! - trade.entryPrice) / trade.stopDistance;
-      if (wouldHaveR > 0) {
-        const efficiency = (trade.rMultiple / wouldHaveR) * 100;
-        totalEfficiency += efficiency;
-        efficiencyCount++;
-      }
-    }
-  }
-
-  const tradesWithTargetInfo = tradesWithData.filter(t => t.reachedTargetPostExit !== null);
-  const tradesReachedTarget = tradesWithTargetInfo.filter(t => t.reachedTargetPostExit === true).length;
-
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false);
+  // Stubbed - post-exit tracking removed in v2 schema
   return {
-    tradesWithData: tradesWithData.length,
+    tradesWithData: 0,
     totalClosedTrades: closedTrades.length,
-    avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
-    avgMissedR: tradesWithBestPrice.length > 0 ? totalMissedR / tradesWithBestPrice.length : 0,
-    reachedTargetPercent: tradesWithTargetInfo.length > 0
-      ? (tradesReachedTarget / tradesWithTargetInfo.length) * 100
-      : 0,
-    tradesReachedTarget,
+    avgExitEfficiency: 0,
+    avgMissedR: 0,
+    reachedTargetPercent: 0,
+    tradesReachedTarget: 0,
   };
 }
 
@@ -3573,126 +3079,36 @@ export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
  * Get stopout-specific post-exit analysis
  * For stopouts, we measure how far price moved in the trader's favour AFTER being stopped out
  * This helps identify if the thesis was correct but stop placement was wrong
+ *
+ * TODO: Stubbed out in v2 schema - postExitBestPrice, exitType removed.
  */
-export function getStopoutPostExitAnalysis(trades: TradeRecord[], minRThreshold: number = 1.0): StopoutAnalysis {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false);
-  const stopouts = closedTrades.filter(t => t.exitType === 'sl_hit');
-  const stopoutsWithData = stopouts.filter(t =>
-    t.postExitBestPrice !== null && t.stopDistance && t.stopDistance > 0
-  );
-
-  if (stopoutsWithData.length === 0) {
-    return {
-      totalStopouts: stopouts.length,
-      stopoutsWithPostExitData: 0,
-      avgPostStopMoveR: 0,
-      stopoutsAboveThreshold: 0,
-      stopoutsAboveThresholdPercent: 0,
-      avgPostStopMoveAboveThreshold: 0,
-      avgPostStopMoveBelowThreshold: 0,
-    };
-  }
-
-  let totalPostStopMoveR = 0;
-  let aboveThresholdCount = 0;
-  let aboveThresholdTotalR = 0;
-  let belowThresholdCount = 0;
-  let belowThresholdTotalR = 0;
-
-  for (const trade of stopoutsWithData) {
-    const postStopMoveR = calculatePostStopMoveR(
-      trade.entryPrice,
-      trade.postExitBestPrice,
-      trade.stopDistance,
-      trade.direction
-    ) ?? 0;
-
-    totalPostStopMoveR += postStopMoveR;
-
-    if (postStopMoveR >= minRThreshold) {
-      aboveThresholdCount++;
-      aboveThresholdTotalR += postStopMoveR;
-    } else {
-      belowThresholdCount++;
-      belowThresholdTotalR += postStopMoveR;
-    }
-  }
-
+export function getStopoutPostExitAnalysis(_trades: TradeRecord[], _minRThreshold: number = 1.0): StopoutAnalysis {
+  // Stubbed - post-exit tracking and exitType removed in v2 schema
   return {
-    totalStopouts: stopouts.length,
-    stopoutsWithPostExitData: stopoutsWithData.length,
-    avgPostStopMoveR: totalPostStopMoveR / stopoutsWithData.length,
-    stopoutsAboveThreshold: aboveThresholdCount,
-    stopoutsAboveThresholdPercent: (aboveThresholdCount / stopoutsWithData.length) * 100,
-    avgPostStopMoveAboveThreshold: aboveThresholdCount > 0 ? aboveThresholdTotalR / aboveThresholdCount : 0,
-    avgPostStopMoveBelowThreshold: belowThresholdCount > 0 ? belowThresholdTotalR / belowThresholdCount : 0,
+    totalStopouts: 0,
+    stopoutsWithPostExitData: 0,
+    avgPostStopMoveR: 0,
+    stopoutsAboveThreshold: 0,
+    stopoutsAboveThresholdPercent: 0,
+    avgPostStopMoveAboveThreshold: 0,
+    avgPostStopMoveBelowThreshold: 0,
   };
 }
 
 /**
  * Get voluntary exit (non-stopout) post-exit analysis
  * For voluntary exits, we use the traditional missedR calculation (how much more could have been captured)
+ *
+ * TODO: Stubbed out in v2 schema - postExitBestPrice, exitPrice, exitType, reachedTargetPostExit removed.
  */
-export function getVoluntaryExitPostExitAnalysis(trades: TradeRecord[]): VoluntaryExitAnalysis {
-  const closedTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false);
-  const voluntaryExits = closedTrades.filter(t =>
-    t.exitType && t.exitType !== 'sl_hit'
-  );
-  const withData = voluntaryExits.filter(t =>
-    t.postExitBestPrice !== null && t.exitPrice !== undefined && t.stopDistance && t.stopDistance > 0
-  );
-
-  if (withData.length === 0) {
-    return {
-      totalVoluntaryExits: voluntaryExits.length,
-      withPostExitData: 0,
-      avgMissedR: 0,
-      avgExitEfficiency: 0,
-      reachedTargetPercent: 0,
-    };
-  }
-
-  let totalMissedR = 0;
-  let totalEfficiency = 0;
-  let efficiencyCount = 0;
-  let reachedTargetCount = 0;
-  let targetInfoCount = 0;
-
-  for (const trade of withData) {
-    // Calculate traditional missed R (from exit price to best price)
-    const missedR = calculateMissedR(
-      trade.exitPrice,
-      trade.postExitBestPrice,
-      trade.stopDistance,
-      trade.direction
-    ) ?? 0;
-    totalMissedR += missedR;
-
-    // Calculate efficiency
-    if (trade.rMultiple !== undefined && trade.rMultiple > 0) {
-      const wouldHaveR = Math.abs(trade.postExitBestPrice! - trade.entryPrice) / trade.stopDistance!;
-      if (wouldHaveR > 0) {
-        const efficiency = (trade.rMultiple / wouldHaveR) * 100;
-        totalEfficiency += efficiency;
-        efficiencyCount++;
-      }
-    }
-
-    // Track reached target
-    if (trade.reachedTargetPostExit !== null) {
-      targetInfoCount++;
-      if (trade.reachedTargetPostExit) {
-        reachedTargetCount++;
-      }
-    }
-  }
-
+export function getVoluntaryExitPostExitAnalysis(_trades: TradeRecord[]): VoluntaryExitAnalysis {
+  // Stubbed - post-exit tracking removed in v2 schema
   return {
-    totalVoluntaryExits: voluntaryExits.length,
-    withPostExitData: withData.length,
-    avgMissedR: totalMissedR / withData.length,
-    avgExitEfficiency: efficiencyCount > 0 ? totalEfficiency / efficiencyCount : 0,
-    reachedTargetPercent: targetInfoCount > 0 ? (reachedTargetCount / targetInfoCount) * 100 : 0,
+    totalVoluntaryExits: 0,
+    withPostExitData: 0,
+    avgMissedR: 0,
+    avgExitEfficiency: 0,
+    reachedTargetPercent: 0,
   };
 }
 
@@ -3733,11 +3149,12 @@ export interface HoldReplayBuckets {
  * Replaces the naive favourable-first/adverse-first split with replay-based logic
  */
 export function getHoldReplayBuckets(trades: TradeRecord[]): HoldReplayBuckets {
-  const closedTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.exitType !== 'sl_hit' // Only voluntary exits (stopouts are different)
-  );
+  const closedTrades = trades.filter(t => {
+    const exitType = deriveExitType(t);
+    return getCachedMetrics(t).status === 'closed' &&
+      t.tradeTaken !== false &&
+      exitType !== 'sl_hit'; // Only voluntary exits (stopouts are different)
+  });
 
   const survivedTrades: TradeRecord[] = [];
   const stoppedTrades: TradeRecord[] = [];
@@ -3745,23 +3162,16 @@ export function getHoldReplayBuckets(trades: TradeRecord[]): HoldReplayBuckets {
 
   let totalSurvivedMissedR = 0;
   let totalStoppedSavedR = 0;
-  let totalUnknownMissedR = 0;
+  const totalUnknownMissedR = 0;
 
   for (const trade of closedTrades) {
     const replayAnalysis = getHoldReplayAnalysis(trade);
+    const metrics = getCachedMetrics(trade);
 
     if (!replayAnalysis.hasSequence) {
-      // Fall back to legacy calculation
+      // Fall back to legacy calculation - but postExitBestPrice is removed in v2
       unknownTrades.push(trade);
-      if (trade.postExitBestPrice !== null && trade.exitPrice !== undefined && trade.stopDistance) {
-        const legacyMissedR = calculateMissedR(
-          trade.exitPrice,
-          trade.postExitBestPrice,
-          trade.stopDistance,
-          trade.direction
-        ) ?? 0;
-        totalUnknownMissedR += legacyMissedR;
-      }
+      // TODO: Legacy missed R calculation removed - postExitBestPrice no longer available
     } else if (replayAnalysis.holdSurvived) {
       // Would have survived to the high
       survivedTrades.push(trade);
@@ -3770,10 +3180,10 @@ export function getHoldReplayBuckets(trades: TradeRecord[]): HoldReplayBuckets {
       // Would have been stopped first
       stoppedTrades.push(trade);
       // Calculate what the exit "saved" - if holding would have hit stop, actual result was better
-      if (trade.rMultiple !== undefined) {
+      if (metrics.rMultiple !== undefined && metrics.rMultiple !== null) {
         // Saved R = actual R - (-1R for stop hit) = actual R + 1
         // But if actual R was already negative, the "saved" amount is less
-        const savedR = trade.rMultiple - (-1); // What they got vs what stop would give
+        const savedR = metrics.rMultiple - (-1); // What they got vs what stop would give
         totalStoppedSavedR += Math.max(0, savedR);
       }
     }
@@ -3835,259 +3245,45 @@ export interface StopVariantComparison {
   insight: string;
 }
 
-export function getStopVariantComparison(trades: TradeRecord[]): StopVariantComparison | null {
-  const tradesWithAdjustments = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.stopAdjustments &&
-    t.stopAdjustments.length > 0 &&
-    t.postExitSequence &&
-    t.postExitSequence.length >= 2 &&
-    t.postExitSequence.some(m => m.kind === 'favourable_extreme') &&
-    t.postExitSequence.some(m => m.kind === 'adverse_extreme')
-  );
-
-  if (tradesWithAdjustments.length < 3) {
-    return null;
-  }
-
-  let originalSurvived = 0;
-  let originalStopped = 0;
-  let finalSurvived = 0;
-  let finalStopped = 0;
-  let originalBetter = 0;
-  let finalBetter = 0;
-
-  for (const trade of tradesWithAdjustments) {
-    const replayAnalysis = getHoldReplayAnalysis(trade);
-
-    // Original stop outcome
-    if (replayAnalysis.originalStopOutcome.type === 'survived') {
-      originalSurvived++;
-    } else if (replayAnalysis.originalStopOutcome.type === 'stopped') {
-      originalStopped++;
-    }
-
-    // Final stop outcome
-    if (replayAnalysis.finalStopOutcome) {
-      if (replayAnalysis.finalStopOutcome.type === 'survived') {
-        finalSurvived++;
-      } else if (replayAnalysis.finalStopOutcome.type === 'stopped') {
-        finalStopped++;
-      }
-
-      // Compare which was better
-      const originalSurvivedBool = replayAnalysis.originalStopOutcome.type === 'survived';
-      const finalSurvivedBool = replayAnalysis.finalStopOutcome.type === 'survived';
-
-      if (originalSurvivedBool && !finalSurvivedBool) {
-        // Original would have survived but final got stopped
-        originalBetter++;
-      } else if (!originalSurvivedBool && finalSurvivedBool) {
-        // Final survived but original would have been stopped
-        finalBetter++;
-      }
-    }
-  }
-
-  // Generate insight
-  let insight = '';
-  if (originalBetter > finalBetter) {
-    insight = `Your stop adjustments hurt ${originalBetter} trades (would have survived with original stop).`;
-  } else if (finalBetter > originalBetter) {
-    insight = `Your stop adjustments helped ${finalBetter} trades survive to the high.`;
-  } else {
-    insight = 'Stop adjustments had neutral impact on hold survival.';
-  }
-
-  return {
-    originalStopSurvived: originalSurvived,
-    originalStopStopped: originalStopped,
-    finalStopSurvived: finalSurvived,
-    finalStopStopped: finalStopped,
-    tradesWithAdjustments: tradesWithAdjustments.length,
-    originalBetterCount: originalBetter,
-    finalBetterCount: finalBetter,
-    insight,
-  };
+/**
+ * TODO: Stubbed out in v2 schema - stopAdjustments, postExitSequence, finalStopOutcome removed.
+ * Re-implement when timeline stop_moved events are fully available.
+ */
+export function getStopVariantComparison(_trades: TradeRecord[]): StopVariantComparison | null {
+  // Stubbed - stopAdjustments and postExitSequence removed in v2 schema
+  return null;
 }
 
 /**
  * Cross-reference stop adjustments with post-exit data
  * Groups by the stop adjustment reason (especially "moved to BE")
+ *
+ * TODO: Stubbed out in v2 schema - stopAdjustments, postExitBestPrice, exitPrice, stopDistance removed.
  */
-export function getMissedRByStopReason(trades: TradeRecord[]): MissedRByStopReason[] {
-  // Get trades that have both stop adjustments AND post-exit data
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.postExitBestPrice !== null &&
-    t.stopAdjustments &&
-    t.stopAdjustments.length > 0 &&
-    t.exitPrice !== undefined &&
-    t.stopDistance
-  );
-
-  // Group by stop adjustment reason
-  const byReason = new Map<string, {
-    trades: TradeRecord[];
-    totalMissedR: number;
-    reachedTargetCount: number;
-    reachedTargetTotal: number;
-  }>();
-
-  for (const trade of relevantTrades) {
-    // Use the first stop adjustment reason (most common case)
-    const reason = trade.stopAdjustments[0]?.reason || 'Unknown';
-    const normalizedReason = reason.toLowerCase().includes('be') ? 'Moved to BE' : reason;
-
-    if (!byReason.has(normalizedReason)) {
-      byReason.set(normalizedReason, {
-        trades: [],
-        totalMissedR: 0,
-        reachedTargetCount: 0,
-        reachedTargetTotal: 0,
-      });
-    }
-
-    const group = byReason.get(normalizedReason)!;
-    group.trades.push(trade);
-
-    // Calculate missed R
-    const priceDiff = trade.postExitBestPrice! - trade.exitPrice!;
-    const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
-    const missedR = signedMove > 0 ? signedMove / trade.stopDistance! : 0;
-    group.totalMissedR += missedR;
-
-    // Track reached target
-    if (trade.reachedTargetPostExit !== null) {
-      group.reachedTargetTotal++;
-      if (trade.reachedTargetPostExit) {
-        group.reachedTargetCount++;
-      }
-    }
-  }
-
-  const results: MissedRByStopReason[] = [];
-  for (const [reason, data] of byReason.entries()) {
-    results.push({
-      reason,
-      tradeCount: data.trades.length,
-      avgMissedR: data.totalMissedR / data.trades.length,
-      reachedTargetPercent: data.reachedTargetTotal > 0
-        ? (data.reachedTargetCount / data.reachedTargetTotal) * 100
-        : 0,
-    });
-  }
-
-  return results.sort((a, b) => b.tradeCount - a.tradeCount);
+export function getMissedRByStopReason(_trades: TradeRecord[]): MissedRByStopReason[] {
+  // Stubbed - stopAdjustments and post-exit tracking removed in v2 schema
+  return [];
 }
 
 /**
  * Groups missed R by exit type from the exits array
+ *
+ * TODO: Stubbed out in v2 schema - postExitBestPrice, exitPrice, stopDistance, exitType removed.
  */
-export function getMissedRByExitType(trades: TradeRecord[]): MissedRByExitType[] {
-  // Get trades with post-exit data
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.postExitBestPrice !== null &&
-    t.exitPrice !== undefined &&
-    t.stopDistance &&
-    t.exitType
-  );
-
-  // Group by exit type
-  const byType = new Map<string, {
-    trades: TradeRecord[];
-    totalMissedR: number;
-    totalEfficiency: number;
-    efficiencyCount: number;
-  }>();
-
-  for (const trade of relevantTrades) {
-    const exitType = trade.exitType || 'unknown';
-    const label = exitType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-
-    if (!byType.has(label)) {
-      byType.set(label, {
-        trades: [],
-        totalMissedR: 0,
-        totalEfficiency: 0,
-        efficiencyCount: 0,
-      });
-    }
-
-    const group = byType.get(label)!;
-    group.trades.push(trade);
-
-    // Calculate missed R
-    const priceDiff = trade.postExitBestPrice! - trade.exitPrice!;
-    const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
-    const missedR = signedMove > 0 ? signedMove / trade.stopDistance! : 0;
-    group.totalMissedR += missedR;
-
-    // Calculate exit efficiency
-    if (trade.rMultiple !== undefined && trade.rMultiple > 0) {
-      const wouldHaveR = Math.abs(trade.postExitBestPrice! - trade.entryPrice) / trade.stopDistance!;
-      if (wouldHaveR > 0) {
-        const efficiency = (trade.rMultiple / wouldHaveR) * 100;
-        group.totalEfficiency += efficiency;
-        group.efficiencyCount++;
-      }
-    }
-  }
-
-  const results: MissedRByExitType[] = [];
-  for (const [exitType, data] of byType.entries()) {
-    results.push({
-      exitType,
-      tradeCount: data.trades.length,
-      avgMissedR: data.totalMissedR / data.trades.length,
-      avgExitEfficiency: data.efficiencyCount > 0 ? data.totalEfficiency / data.efficiencyCount : 0,
-    });
-  }
-
-  return results.sort((a, b) => b.tradeCount - a.tradeCount);
+export function getMissedRByExitType(_trades: TradeRecord[]): MissedRByExitType[] {
+  // Stubbed - post-exit tracking and exitType removed in v2 schema
+  return [];
 }
 
 /**
  * Get scatter data for "should-have-held" visualization
  * X: actual R achieved, Y: would-have R (if held to post-exit best price)
+ *
+ * TODO: Stubbed out in v2 schema - postExitBestPrice, stopDistance, stopAdjustments removed.
  */
-export function getPostExitScatterData(trades: TradeRecord[]): PostExitScatterPoint[] {
-  const points: PostExitScatterPoint[] = [];
-
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.postExitBestPrice !== null &&
-    t.rMultiple !== undefined &&
-    t.stopDistance &&
-    t.stopDistance > 0
-  );
-
-  for (const trade of relevantTrades) {
-    // Calculate would-have R
-    const priceDiff = trade.postExitBestPrice! - trade.entryPrice;
-    const signedMove = trade.direction === 'long' ? priceDiff : -priceDiff;
-    const wouldHaveR = signedMove / trade.stopDistance!;
-
-    // Check if trade had a BE stop adjustment
-    const hadBEAdjustment = trade.stopAdjustments?.some(adj =>
-      adj.reason.toLowerCase().includes('be')
-    ) ?? false;
-
-    points.push({
-      tradeId: trade.id!,
-      pair: trade.pair,
-      actualR: trade.rMultiple!,
-      wouldHaveR,
-      hadBEAdjustment,
-    });
-  }
-
-  return points;
+export function getPostExitScatterData(_trades: TradeRecord[]): PostExitScatterPoint[] {
+  // Stubbed - post-exit tracking removed in v2 schema
+  return [];
 }
 
 /**
@@ -4243,377 +3439,81 @@ export interface FirstTouchByTag {
 
 /**
  * Get first-touch reaction summary
+ *
+ * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
  */
 export function getFirstTouchSummary(trades: TradeRecord[]): FirstTouchSummary {
   const closedTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     t.tradeTaken !== false
   );
 
-  const tradesWithFirstTouch = closedTrades.filter(t =>
-    t.firstTouchWorstPrice !== null &&
-    t.firstTouchWorstPrice !== undefined &&
-    t.mfePrice !== null &&
-    t.stopDistance &&
-    t.stopDistance > 0
-  );
-
-  if (tradesWithFirstTouch.length === 0) {
-    return {
-      totalTrades: closedTrades.length,
-      tradesWithFirstTouch: 0,
-      avgFirstTouchAdverseR: 0,
-      avgFirstTouchAdversePercent: 0,
-      avgReactionR: 0,
-      levelWorkedPercent: 0,
-      levelWorkedCount: 0,
-    };
-  }
-
-  let totalFirstTouchAdverseR = 0;
-  let totalReactionR = 0;
-  let levelWorkedCount = 0;
-  let reactionRCount = 0;
-
-  for (const trade of tradesWithFirstTouch) {
-    // Calculate first-touch adverse R
-    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
-    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
-    totalFirstTouchAdverseR += firstTouchAdverseR;
-
-    // Calculate reaction R (only if first touch adverse > 0 to avoid division by zero)
-    if (adverseDistance > 0 && trade.mfePrice !== null) {
-      const mfeDistance = Math.abs(trade.mfePrice - trade.entryPrice);
-      const reactionR = mfeDistance / adverseDistance;
-      totalReactionR += reactionR;
-      reactionRCount++;
-
-      // Level "worked" if there was a meaningful favorable move after first touch
-      // We define this as MFE being better than entry (i.e., some favorable reaction happened)
-      if (mfeDistance > 0) {
-        levelWorkedCount++;
-      }
-    }
-  }
-
-  const avgFirstTouchAdverseR = totalFirstTouchAdverseR / tradesWithFirstTouch.length;
-
+  // Stubbed - firstTouchWorstPrice removed in v2 schema
   return {
     totalTrades: closedTrades.length,
-    tradesWithFirstTouch: tradesWithFirstTouch.length,
-    avgFirstTouchAdverseR,
-    avgFirstTouchAdversePercent: avgFirstTouchAdverseR * 100,
-    avgReactionR: reactionRCount > 0 ? totalReactionR / reactionRCount : 0,
-    levelWorkedPercent: (levelWorkedCount / tradesWithFirstTouch.length) * 100,
-    levelWorkedCount,
+    tradesWithFirstTouch: 0,
+    avgFirstTouchAdverseR: 0,
+    avgFirstTouchAdversePercent: 0,
+    avgReactionR: 0,
+    levelWorkedPercent: 0,
+    levelWorkedCount: 0,
   };
 }
 
 /**
  * Get entry level quality vs trade outcome groupings
  * Groups trades into: "Level worked, trade won" / "Level worked, trade lost" / "Level failed"
+ *
+ * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
  */
-export function getEntryQualityAnalysis(trades: TradeRecord[]): EntryQualityGroup[] {
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.firstTouchWorstPrice !== null &&
-    t.mfePrice !== null &&
-    t.rMultiple !== undefined &&
-    t.stopDistance &&
-    t.stopDistance > 0
-  );
-
-  if (relevantTrades.length === 0) {
-    return [];
-  }
-
-  const groups: Record<string, { trades: TradeRecord[]; totalAdverseR: number; totalReactionR: number }> = {
-    level_worked_won: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
-    level_worked_lost: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
-    level_failed: { trades: [], totalAdverseR: 0, totalReactionR: 0 },
-  };
-
-  for (const trade of relevantTrades) {
-    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
-    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
-    const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
-
-    // Level "worked" if MFE is greater than entry (any favorable reaction)
-    const levelWorked = mfeDistance > adverseDistance * 0.1; // At least 10% of adverse as favorable
-    const isWinner = trade.rMultiple !== undefined && trade.rMultiple > 0;
-
-    let category: string;
-    if (!levelWorked) {
-      category = 'level_failed';
-    } else if (isWinner) {
-      category = 'level_worked_won';
-    } else {
-      category = 'level_worked_lost';
-    }
-
-    groups[category].trades.push(trade);
-    groups[category].totalAdverseR += firstTouchAdverseR;
-
-    if (adverseDistance > 0) {
-      groups[category].totalReactionR += mfeDistance / adverseDistance;
-    }
-  }
-
-  const results: EntryQualityGroup[] = [];
-  const labels: Record<string, string> = {
-    level_worked_won: 'Level worked, trade won',
-    level_worked_lost: 'Level worked, trade lost',
-    level_failed: 'Level failed (no favorable reaction)',
-  };
-
-  for (const [key, data] of Object.entries(groups)) {
-    if (data.trades.length > 0) {
-      results.push({
-        category: key as EntryQualityGroup['category'],
-        label: labels[key],
-        count: data.trades.length,
-        percent: (data.trades.length / relevantTrades.length) * 100,
-        avgFirstTouchAdverseR: data.totalAdverseR / data.trades.length,
-        avgReactionR: data.totalReactionR / data.trades.length,
-      });
-    }
-  }
-
-  return results;
+export function getEntryQualityAnalysis(_trades: TradeRecord[]): EntryQualityGroup[] {
+  // Stubbed - firstTouchWorstPrice removed in v2 schema
+  return [];
 }
 
 /**
  * Simulate stop placement at first-touch extreme + buffer
  *
- * For each trade:
- * - stop = firstTouchWorstPrice ± buffer%
- * - If MAE would have hit this tighter stop before MFE → loss at -1R
- * - Otherwise → what R would the MFE have delivered with this tighter stop?
- *
- * Note: MAE timing isn't recorded, so trades where deep MAE came AFTER favorable reaction
- * will be simulated pessimistically.
+ * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, maePrice, stopDistance removed from TradeRecord.
  */
 export function simulateFirstTouchStop(
-  trades: TradeRecord[],
+  _trades: TradeRecord[],
   bufferPercent: number = 0
 ): FirstTouchStopSimulation {
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.firstTouchWorstPrice !== null &&
-    t.mfePrice !== null &&
-    t.maePrice !== null &&
-    t.rMultiple !== undefined &&
-    t.stopDistance &&
-    t.stopDistance > 0
-  );
-
-  if (relevantTrades.length === 0) {
-    return {
-      bufferPercent,
-      simulatedTrades: 0,
-      originalTotalR: 0,
-      simulatedTotalR: 0,
-      netRImpact: 0,
-      originalWinRate: 0,
-      simulatedWinRate: 0,
-      avgWinnerR: 0,
-      originalAvgWinnerR: 0,
-      stoppedOutCount: 0,
-      improvedCount: 0,
-    };
-  }
-
-  let originalTotalR = 0;
-  let simulatedTotalR = 0;
-  let originalWinners = 0;
-  let simulatedWinners = 0;
-  let stoppedOutCount = 0;
-  let improvedCount = 0;
-  let originalWinnerRSum = 0;
-  let simulatedWinnerRSum = 0;
-
-  for (const trade of relevantTrades) {
-    const originalR = trade.rMultiple!;
-    originalTotalR += originalR;
-
-    if (originalR > 0) {
-      originalWinners++;
-      originalWinnerRSum += originalR;
-    }
-
-    // Calculate first-touch adverse distance
-    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
-
-    // New stop = first-touch adverse + buffer
-    const buffer = adverseDistance * (bufferPercent / 100);
-    const newStopDistance = adverseDistance + buffer;
-
-    // Check if MAE would have hit the new tighter stop
-    // MAE is the worst price, so if MAE is worse than the new stop, we get stopped out
-    const maeDistance = Math.abs(trade.entryPrice - trade.maePrice!);
-
-    if (maeDistance >= newStopDistance) {
-      // Would have been stopped out at -1R (relative to the new stop)
-      simulatedTotalR -= 1;
-      stoppedOutCount++;
-    } else {
-      // Trade survives, calculate MFE relative to new stop distance
-      const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
-      const simulatedR = mfeDistance / newStopDistance;
-      simulatedTotalR += simulatedR;
-      simulatedWinners++;
-      simulatedWinnerRSum += simulatedR;
-
-      if (simulatedR > originalR) {
-        improvedCount++;
-      }
-    }
-  }
-
-  const originalWinRate = (originalWinners / relevantTrades.length) * 100;
-  const simulatedWinRate = (simulatedWinners / relevantTrades.length) * 100;
-
+  // Stubbed - firstTouchWorstPrice removed in v2 schema
   return {
     bufferPercent,
-    simulatedTrades: relevantTrades.length,
-    originalTotalR: Number(originalTotalR.toFixed(2)),
-    simulatedTotalR: Number(simulatedTotalR.toFixed(2)),
-    netRImpact: Number((simulatedTotalR - originalTotalR).toFixed(2)),
-    originalWinRate,
-    simulatedWinRate,
-    avgWinnerR: simulatedWinners > 0 ? Number((simulatedWinnerRSum / simulatedWinners).toFixed(2)) : 0,
-    originalAvgWinnerR: originalWinners > 0 ? Number((originalWinnerRSum / originalWinners).toFixed(2)) : 0,
-    stoppedOutCount,
-    improvedCount,
+    simulatedTrades: 0,
+    originalTotalR: 0,
+    simulatedTotalR: 0,
+    netRImpact: 0,
+    originalWinRate: 0,
+    simulatedWinRate: 0,
+    avgWinnerR: 0,
+    originalAvgWinnerR: 0,
+    stoppedOutCount: 0,
+    improvedCount: 0,
   };
 }
 
 /**
  * Get scatter data for first-touch adverse vs reaction size visualization
+ *
+ * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
  */
-export function getFirstTouchScatterData(trades: TradeRecord[]): FirstTouchScatterPoint[] {
-  const points: FirstTouchScatterPoint[] = [];
-
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.firstTouchWorstPrice !== null &&
-    t.mfePrice !== null &&
-    t.stopDistance &&
-    t.stopDistance > 0 &&
-    t.rMultiple !== undefined
-  );
-
-  for (const trade of relevantTrades) {
-    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
-    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
-
-    // Only include if there's meaningful adverse movement to avoid division by zero
-    if (adverseDistance > 0) {
-      const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
-      const reactionR = mfeDistance / adverseDistance;
-
-      points.push({
-        tradeId: trade.id!,
-        pair: trade.pair,
-        firstTouchAdverseR: Number(firstTouchAdverseR.toFixed(2)),
-        reactionR: Number(reactionR.toFixed(2)),
-        isWinner: trade.rMultiple! > 0,
-      });
-    }
-  }
-
-  return points;
+export function getFirstTouchScatterData(_trades: TradeRecord[]): FirstTouchScatterPoint[] {
+  // Stubbed - firstTouchWorstPrice removed in v2 schema
+  return [];
 }
 
 /**
  * Get first-touch analysis grouped by setup tags
+ *
+ * TODO: Stubbed out in v2 schema - firstTouchWorstPrice, mfePrice, stopDistance removed from TradeRecord.
  */
-export function getFirstTouchByTag(trades: TradeRecord[]): FirstTouchByTag[] {
-  const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
-    t.tradeTaken !== false &&
-    t.firstTouchWorstPrice !== null &&
-    t.mfePrice !== null &&
-    t.setupTags &&
-    t.setupTags.length > 0 &&
-    t.stopDistance &&
-    t.stopDistance > 0
-  );
-
-  if (relevantTrades.length === 0) {
-    return [];
-  }
-
-  // Group by tag
-  const tagMap = new Map<string, {
-    trades: TradeRecord[];
-    totalAdverseR: number;
-    totalReactionR: number;
-    reactionRCount: number;
-    levelWorkedCount: number;
-  }>();
-
-  for (const trade of relevantTrades) {
-    const adverseDistance = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice!);
-    const firstTouchAdverseR = adverseDistance / trade.stopDistance!;
-    const mfeDistance = Math.abs(trade.mfePrice! - trade.entryPrice);
-    const levelWorked = mfeDistance > 0;
-
-    for (const tag of trade.setupTags) {
-      if (!tagMap.has(tag)) {
-        tagMap.set(tag, {
-          trades: [],
-          totalAdverseR: 0,
-          totalReactionR: 0,
-          reactionRCount: 0,
-          levelWorkedCount: 0,
-        });
-      }
-
-      const group = tagMap.get(tag)!;
-      group.trades.push(trade);
-      group.totalAdverseR += firstTouchAdverseR;
-
-      if (adverseDistance > 0) {
-        const reactionR = mfeDistance / adverseDistance;
-        group.totalReactionR += reactionR;
-        group.reactionRCount++;
-      }
-
-      if (levelWorked) {
-        group.levelWorkedCount++;
-      }
-    }
-  }
-
-  // Convert to results
-  const results: FirstTouchByTag[] = [];
-  for (const [tag, data] of tagMap.entries()) {
-    if (data.trades.length >= 2) { // Require at least 2 trades for meaningful stats
-      const avgAdverseR = data.totalAdverseR / data.trades.length;
-      const avgReactionR = data.reactionRCount > 0 ? data.totalReactionR / data.reactionRCount : 0;
-      const levelWorkedPercent = (data.levelWorkedCount / data.trades.length) * 100;
-
-      // Clean entry score: low adverse + high reaction = higher score
-      // Normalized: (2 - avgAdverseR) + avgReactionR, clamped
-      const cleanEntryScore = Math.max(0, (2 - avgAdverseR) + avgReactionR);
-
-      results.push({
-        tag,
-        count: data.trades.length,
-        avgFirstTouchAdverseR: Number(avgAdverseR.toFixed(2)),
-        avgReactionR: Number(avgReactionR.toFixed(2)),
-        levelWorkedPercent: Number(levelWorkedPercent.toFixed(1)),
-        cleanEntryScore: Number(cleanEntryScore.toFixed(2)),
-      });
-    }
-  }
-
-  // Sort by clean entry score (best first)
-  return results.sort((a, b) => b.cleanEntryScore - a.cleanEntryScore);
+export function getFirstTouchByTag(_trades: TradeRecord[]): FirstTouchByTag[] {
+  // Stubbed - firstTouchWorstPrice removed in v2 schema
+  return [];
 }
 
 /**
@@ -4741,16 +3641,17 @@ export interface EntryVsTurnAnalysis {
 
 /**
  * Get level type × timeframe reaction statistics
+ * For fib types, sub-groups by levelDetail (e.g., "fib · GP", "fib · 0.5")
  */
 export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReactionStats[] {
   const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     t.tradeTaken !== false &&
     t.levelSequence &&
     t.levelSequence.length > 0
   );
 
-  // Group by levelType + timeframe
+  // Group by levelType (+ detail for fib types) + timeframe
   const statsMap = new Map<string, {
     levelType: string;
     timeframe: string;
@@ -4765,10 +3666,12 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
     for (const level of trade.levelSequence) {
       if (!level.reaction) continue;
 
-      const key = `${level.timeframe || '—'} ${level.levelType || 'Unknown'}`;
+      // For fib types with detail, use "fib · GP" format; otherwise just levelType
+      const levelTypeKey = getLevelTypeKey(level);
+      const key = `${level.timeframe || '—'} ${levelTypeKey}`;
       if (!statsMap.has(key)) {
         statsMap.set(key, {
-          levelType: level.levelType || 'Unknown',
+          levelType: levelTypeKey,
           timeframe: level.timeframe || '—',
           total: 0,
           bounced: 0,
@@ -4816,7 +3719,7 @@ export function getLevelTypeReactionStats(trades: TradeRecord[]): LevelTypeReact
  */
 export function getPairwiseOrderAnalysis(trades: TradeRecord[]): PairwiseOrderStats[] {
   const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     t.tradeTaken !== false &&
     t.levelSequence &&
     t.levelSequence.length >= 2
@@ -4840,8 +3743,11 @@ export function getPairwiseOrderAnalysis(trades: TradeRecord[]): PairwiseOrderSt
       const front = seq[i];
       const behind = seq[i + 1];
 
-      const frontKey = `${front.timeframe || ''} ${front.levelType || 'Unknown'}`.trim();
-      const behindKey = `${behind.timeframe || ''} ${behind.levelType || 'Unknown'}`.trim();
+      // Use getLevelTypeKey to include detail for fib types (e.g., "fib · GP")
+      const frontTypeKey = getLevelTypeKey(front);
+      const behindTypeKey = getLevelTypeKey(behind);
+      const frontKey = `${front.timeframe || ''} ${frontTypeKey}`.trim();
+      const behindKey = `${behind.timeframe || ''} ${behindTypeKey}`.trim();
       const pairKey = `${frontKey} → ${behindKey}`;
 
       if (!pairMap.has(pairKey)) {
@@ -4899,13 +3805,13 @@ export function getPairwiseOrderAnalysis(trades: TradeRecord[]): PairwiseOrderSt
  */
 export function getEntryDepthAnalysis(trades: TradeRecord[]): EntryVsTurnAnalysis {
   const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     t.tradeTaken !== false &&
     t.levelSequence &&
     t.levelSequence.length > 0
   );
 
-  const totalTrades = trades.filter(t => t.status === 'closed' && t.tradeTaken !== false).length;
+  const totalTrades = trades.filter(t => getCachedMetrics(t).status === 'closed' && t.tradeTaken !== false).length;
 
   if (relevantTrades.length === 0) {
     return {
@@ -4965,9 +3871,11 @@ export function getEntryDepthAnalysis(trades: TradeRecord[]): EntryVsTurnAnalysi
     if (turnPos > entryPos) {
       couldImproveCount++;
 
-      // Calculate potential adverse reduction using first-touch data
-      if (trade.firstTouchWorstPrice !== null && trade.stopDistance) {
-        const currentAdverse = Math.abs(trade.entryPrice - trade.firstTouchWorstPrice) / trade.stopDistance;
+      // Calculate potential adverse reduction using metrics
+      // TODO: firstTouchWorstPrice removed in v2 schema - use maeR from metrics instead
+      const metrics = getCachedMetrics(trade);
+      if (metrics.maeR !== undefined && metrics.maeR !== null && metrics.stopDistance) {
+        const currentAdverse = metrics.maeR;
         // Estimate reduced adverse (assume entering at turn level reduces adverse proportionally)
         const estimatedReduction = currentAdverse * ((turnPos - entryPos) / turnPos);
         totalAdverseReduction += estimatedReduction;
@@ -5030,6 +3938,33 @@ export function getLevelSequenceInsights(
     insights.push(
       `Your ${best.key} levels hold ${holdRate}% of the time (${best.bouncedCount} bounced, ${best.sweptCount} swept then bounced).`
     );
+  }
+
+  // Fib level detail insight - compare different fib ratios
+  const fibLevels = levelTypeStats.filter(l =>
+    l.levelType.toLowerCase().startsWith('fib') &&
+    l.levelType.includes('·') &&
+    l.count >= 3
+  );
+  if (fibLevels.length >= 2) {
+    // Sort by hold rate (bounced + swept)
+    const sortedFibs = fibLevels.sort((a, b) =>
+      (b.bouncedPercent + b.sweptPercent) - (a.bouncedPercent + a.sweptPercent)
+    );
+    const best = sortedFibs[0];
+    const worst = sortedFibs[sortedFibs.length - 1];
+    const bestHoldRate = (best.bouncedPercent + best.sweptPercent).toFixed(0);
+    const worstHoldRate = (worst.bouncedPercent + worst.sweptPercent).toFixed(0);
+    // Extract just the ratio part (e.g., "GP" from "fib · GP")
+    const bestRatio = best.levelType.split('·')[1]?.trim() || best.levelType;
+    const worstRatio = worst.levelType.split('·')[1]?.trim() || worst.levelType;
+
+    if (parseInt(bestHoldRate) - parseInt(worstHoldRate) >= 15) {
+      insights.push(
+        `Your ${bestRatio} taps bounce ${bestHoldRate}% (n=${best.count}) vs ${worstHoldRate}% for ${worstRatio} retraces — ` +
+        `${bestRatio} is your strongest fib level.`
+      );
+    }
   }
 
   // Pairwise insight
@@ -5144,7 +4079,7 @@ export function getZonePenetrationStats(trades: TradeRecord[]): ZonePenetrationS
           zoneType: level.levelType,
           penetration: level.penetrationPercent,
           reaction: level.reaction,
-          rMultiple: trade.rMultiple,
+          rMultiple: getCachedMetrics(trade).rMultiple ?? undefined,
         });
       }
     }
@@ -5230,7 +4165,8 @@ export function getPenetrationVsOutcome(trades: TradeRecord[]): PenetrationVsOut
   const results: PenetrationVsOutcome[] = [];
 
   for (const trade of trades) {
-    if (!trade.levelSequence || trade.rMultiple === undefined) continue;
+    const metrics = getCachedMetrics(trade);
+    if (!trade.levelSequence || metrics.rMultiple === undefined) continue;
     for (const level of trade.levelSequence) {
       if (
         ZONE_LEVEL_TYPES.includes(level.levelType as typeof ZONE_LEVEL_TYPES[number]) &&
@@ -5240,7 +4176,7 @@ export function getPenetrationVsOutcome(trades: TradeRecord[]): PenetrationVsOut
       ) {
         results.push({
           penetration: level.penetrationPercent,
-          rMultiple: trade.rMultiple,
+          rMultiple: metrics.rMultiple ?? 0,
           zoneType: level.levelType,
           reaction: level.reaction,
         });
@@ -5471,7 +4407,7 @@ export interface TFMatrixCell {
  */
 export function getConfirmationTFAnalysis(trades: TradeRecord[]): ConfirmationTFStats[] {
   const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     (t.entryConfirmation === 'structural' || t.entryConfirmation === 'partial_confirmation') &&
     t.confirmationTF
   );
@@ -5487,13 +4423,13 @@ export function getConfirmationTFAnalysis(trades: TradeRecord[]): ConfirmationTF
   const results: ConfirmationTFStats[] = [];
 
   for (const [timeframe, groupTrades] of groups) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const losses = groupTrades.filter(t => (t.rMultiple ?? 0) < 0);
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const losses = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) < 0);
 
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
 
-    const grossWins = wins.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
-    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0));
+    const grossWins = wins.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
+    const grossLosses = Math.abs(losses.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0));
     const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
 
     results.push({
@@ -5515,7 +4451,7 @@ export function getConfirmationTFAnalysis(trades: TradeRecord[]): ConfirmationTF
  */
 export function getConfirmationTFVsEntryTFMatrix(trades: TradeRecord[]): TFMatrixCell[] {
   const relevantTrades = trades.filter(t =>
-    t.status === 'closed' &&
+    getCachedMetrics(t).status === 'closed' &&
     (t.entryConfirmation === 'structural' || t.entryConfirmation === 'partial_confirmation') &&
     t.confirmationTF &&
     t.entryTF
@@ -5533,7 +4469,7 @@ export function getConfirmationTFVsEntryTFMatrix(trades: TradeRecord[]): TFMatri
 
   for (const [key, groupTrades] of groups) {
     const [confirmationTF, entryTF] = key.split('|');
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
 
     results.push({
       confirmationTF,
@@ -5583,10 +4519,11 @@ export function getEventHeatmap(trades: TradeRecord[], assetFilter?: string): Ev
   const countMap = new Map<string, number>();
 
   for (const trade of filteredTrades) {
-    if (!trade.events || trade.events.length === 0) continue;
+    if (!trade.timeline || trade.timeline.length === 0) continue;
 
-    for (const event of trade.events) {
-      const eventTime = event.time instanceof Date ? event.time : new Date(event.time);
+    for (const event of trade.timeline as TradeEvent[]) {
+      if (!event.time) continue;
+      const eventTime = typeof event.time === 'string' ? new Date(event.time) : event.time;
       const hour = eventTime.getHours();
       const key = `${hour}|${event.eventType}`;
       countMap.set(key, (countMap.get(key) || 0) + 1);
@@ -5611,16 +4548,16 @@ export function getEventHeatmap(trades: TradeRecord[], assetFilter?: string): Ev
  * For each event type, calculate the win rate and avgR of trades containing that event
  */
 export function getEventOutcomeCorrelation(trades: TradeRecord[]): EventOutcomeCorrelation[] {
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
 
   // Group trades by event types they contain
   const eventTypeToTrades = new Map<string, TradeRecord[]>();
 
   for (const trade of closedTrades) {
-    if (!trade.events || trade.events.length === 0) continue;
+    if (!trade.timeline || trade.timeline.length === 0) continue;
 
     // Get unique event types in this trade
-    const eventTypes = [...new Set(trade.events.map(e => e.eventType))];
+    const eventTypes = [...new Set(trade.timeline.map((e: TradeEvent) => e.eventType))];
 
     for (const eventType of eventTypes) {
       const existing = eventTypeToTrades.get(eventType) || [];
@@ -5632,8 +4569,8 @@ export function getEventOutcomeCorrelation(trades: TradeRecord[]): EventOutcomeC
   const results: EventOutcomeCorrelation[] = [];
 
   for (const [eventType, groupTrades] of eventTypeToTrades) {
-    const wins = groupTrades.filter(t => (t.rMultiple ?? 0) > 0);
-    const avgR = groupTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / groupTrades.length;
+    const wins = groupTrades.filter(t => (getCachedMetrics(t).rMultiple ?? 0) > 0);
+    const avgR = groupTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / groupTrades.length;
 
     results.push({
       eventType,
@@ -5657,10 +4594,11 @@ export function getRecurringEventPatterns(trades: TradeRecord[]): RecurringEvent
   const pairTotalEvents = new Map<string, number>();
 
   for (const trade of trades) {
-    if (!trade.events || trade.events.length === 0) continue;
+    if (!trade.timeline || trade.timeline.length === 0) continue;
 
-    for (const event of trade.events) {
-      const eventTime = event.time instanceof Date ? event.time : new Date(event.time);
+    for (const event of trade.timeline as TradeEvent[]) {
+      if (!event.time) continue;
+      const eventTime = typeof event.time === 'string' ? new Date(event.time) : event.time;
       const hour = eventTime.getHours();
       const key = `${event.eventType}|${trade.pair}|${hour}`;
 

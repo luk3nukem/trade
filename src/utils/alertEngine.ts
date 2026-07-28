@@ -1,8 +1,20 @@
 import type { TradeRecord, Alert, AlertSettings, AlertType } from '../types';
+import { getTradeRMetrics } from './tradeCalculations';
 
 // Helper to filter out undefined IDs
 function filterIds(ids: (string | undefined)[]): string[] {
   return ids.filter((id): id is string => id !== undefined);
+}
+
+// Cache for trade metrics to avoid recalculating
+const metricsCache = new WeakMap<TradeRecord, ReturnType<typeof getTradeRMetrics>>();
+function getCachedMetrics(trade: TradeRecord) {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
 }
 
 // Generate a unique hash for an alert to track dismissals
@@ -16,19 +28,22 @@ function checkRevengeTrades(
   windowMinutes: number
 ): Alert[] {
   const alerts: Alert[] = [];
-  const sortedTrades = [...trades]
-    .filter(t => t.status === 'closed' || t.status === 'open')
-    .sort((a, b) => new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime());
 
-  for (let i = 1; i < sortedTrades.length; i++) {
-    const currentTrade = sortedTrades[i];
-    const prevTrade = sortedTrades[i - 1];
+  // Get trades with derived status
+  const tradesWithMetrics = trades.map(t => ({ trade: t, metrics: getCachedMetrics(t) }));
+  const activeTrades = tradesWithMetrics
+    .filter(({ metrics }) => metrics.status === 'closed' || metrics.status === 'open')
+    .sort((a, b) => new Date(a.trade.entryTime).getTime() - new Date(b.trade.entryTime).getTime());
+
+  for (let i = 1; i < activeTrades.length; i++) {
+    const { trade: currentTrade } = activeTrades[i];
+    const { trade: prevTrade, metrics: prevMetrics } = activeTrades[i - 1];
 
     // Skip if previous trade is still open or wasn't a loss
-    if (prevTrade.status !== 'closed' || !prevTrade.exitTime) continue;
-    if ((prevTrade.rMultiple ?? 0) >= 0) continue;
+    if (prevMetrics.status !== 'closed' || !prevMetrics.exitTime) continue;
+    if ((prevMetrics.rMultiple ?? 0) >= 0) continue;
 
-    const prevExitTime = new Date(prevTrade.exitTime).getTime();
+    const prevExitTime = prevMetrics.exitTime.getTime();
     const currentEntryTime = new Date(currentTrade.entryTime).getTime();
     const timeDiffMinutes = (currentEntryTime - prevExitTime) / (1000 * 60);
 
@@ -108,23 +123,25 @@ function checkSizingSpike(trades: TradeRecord[]): Alert[] {
 
 // Check for edge decay (rolling 20-trade expectancy below 0)
 function checkEdgeDecay(trades: TradeRecord[]): Alert[] {
-  const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.rMultiple !== undefined)
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+  // Get closed trades with derived metrics
+  const tradesWithMetrics = trades
+    .map(t => ({ trade: t, metrics: getCachedMetrics(t) }))
+    .filter(({ metrics }) => metrics.status === 'closed' && metrics.rMultiple !== null)
+    .sort((a, b) => a.metrics.exitTime!.getTime() - b.metrics.exitTime!.getTime());
 
-  if (closedTrades.length < 20) return [];
+  if (tradesWithMetrics.length < 20) return [];
 
-  const last20 = closedTrades.slice(-20);
-  const avgR = last20.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / 20;
+  const last20 = tradesWithMetrics.slice(-20);
+  const avgR = last20.reduce((sum, { metrics }) => sum + (metrics.rMultiple ?? 0), 0) / 20;
 
   if (avgR < 0) {
     return [{
-      id: generateAlertHash('edge_decay', last20.map(t => t.id)),
+      id: generateAlertHash('edge_decay', last20.map(({ trade }) => trade.id)),
       type: 'edge_decay',
       severity: 'danger',
       title: 'Edge Decay Detected',
       message: `Your last 20 trades have negative expectancy (${avgR.toFixed(2)}R). Consider pausing to review your strategy.`,
-      relatedTradeIds: filterIds(last20.map(t => t.id)),
+      relatedTradeIds: filterIds(last20.map(({ trade }) => trade.id)),
       timestamp: new Date(),
     }];
   }
@@ -137,21 +154,23 @@ function checkDrawdown(
   trades: TradeRecord[],
   thresholdPercent: number
 ): Alert[] {
-  const closedTrades = trades
-    .filter(t => t.status === 'closed')
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+  // Get closed trades with derived metrics
+  const tradesWithMetrics = trades
+    .map(t => ({ trade: t, metrics: getCachedMetrics(t) }))
+    .filter(({ metrics }) => metrics.status === 'closed')
+    .sort((a, b) => a.metrics.exitTime!.getTime() - b.metrics.exitTime!.getTime());
 
-  if (closedTrades.length === 0) return [];
+  if (tradesWithMetrics.length === 0) return [];
 
-  // Calculate equity curve
+  // Calculate equity curve using derived pnl
   let cumulative = 0;
   let peak = 0;
   let maxDrawdownPct = 0;
   let drawdownTrades: (string | undefined)[] = [];
   let inDrawdown = false;
 
-  for (const trade of closedTrades) {
-    cumulative += (trade.netPnl ?? trade.pnl ?? 0);
+  for (const { trade, metrics } of tradesWithMetrics) {
+    cumulative += (metrics.pnl ?? 0);
 
     if (cumulative > peak) {
       peak = cumulative;
@@ -190,20 +209,22 @@ function checkDrawdown(
 
 // Check for losing streak
 function checkLosingStreak(trades: TradeRecord[]): Alert[] {
-  const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.rMultiple !== undefined)
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
+  // Get closed trades with derived metrics
+  const tradesWithMetrics = trades
+    .map(t => ({ trade: t, metrics: getCachedMetrics(t) }))
+    .filter(({ metrics }) => metrics.status === 'closed' && metrics.rMultiple !== null)
+    .sort((a, b) => a.metrics.exitTime!.getTime() - b.metrics.exitTime!.getTime());
 
-  if (closedTrades.length < 3) return [];
+  if (tradesWithMetrics.length < 3) return [];
 
   // Count consecutive losses from the end
   let streakCount = 0;
   const streakTrades: (string | undefined)[] = [];
 
-  for (let i = closedTrades.length - 1; i >= 0; i--) {
-    if ((closedTrades[i].rMultiple ?? 0) < 0) {
+  for (let i = tradesWithMetrics.length - 1; i >= 0; i--) {
+    if ((tradesWithMetrics[i].metrics.rMultiple ?? 0) < 0) {
       streakCount++;
-      streakTrades.unshift(closedTrades[i].id);
+      streakTrades.unshift(tradesWithMetrics[i].trade.id);
     } else {
       break;
     }
@@ -226,42 +247,6 @@ function checkLosingStreak(trades: TradeRecord[]): Alert[] {
       severity: 'warning',
       title: 'Losing Streak',
       message: `You have ${streakCount} consecutive losses. Consider taking a break before your next trade.`,
-      relatedTradeIds: filterIds(streakTrades),
-      timestamp: new Date(),
-    }];
-  }
-
-  return [];
-}
-
-// Check for plan deviation streak
-function checkPlanDeviationStreak(trades: TradeRecord[]): Alert[] {
-  const closedTrades = trades
-    .filter(t => t.status === 'closed' && t.followedPlan !== undefined)
-    .sort((a, b) => new Date(a.exitTime!).getTime() - new Date(b.exitTime!).getTime());
-
-  if (closedTrades.length < 3) return [];
-
-  // Count consecutive deviations from the end
-  let streakCount = 0;
-  const streakTrades: (string | undefined)[] = [];
-
-  for (let i = closedTrades.length - 1; i >= 0; i--) {
-    if (closedTrades[i].followedPlan === false) {
-      streakCount++;
-      streakTrades.unshift(closedTrades[i].id);
-    } else {
-      break;
-    }
-  }
-
-  if (streakCount >= 3) {
-    return [{
-      id: generateAlertHash('plan_deviation_streak', streakTrades),
-      type: 'plan_deviation_streak',
-      severity: 'warning',
-      title: 'Plan Deviation Streak',
-      message: `Your last ${streakCount} trades deviated from your plan. Review your trading discipline.`,
       relatedTradeIds: filterIds(streakTrades),
       timestamp: new Date(),
     }];
@@ -299,10 +284,6 @@ export function generateAlerts(
 
   if (settings.enabledAlerts.losing_streak) {
     allAlerts.push(...checkLosingStreak(trades));
-  }
-
-  if (settings.enabledAlerts.plan_deviation_streak) {
-    allAlerts.push(...checkPlanDeviationStreak(trades));
   }
 
   return allAlerts;

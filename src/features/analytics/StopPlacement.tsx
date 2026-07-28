@@ -17,6 +17,7 @@ import {
   Legend,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 import {
   getMAEDistribution,
   getStopEfficiencyData,
@@ -41,6 +42,16 @@ import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
+}
+
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
 }
 
 export function StopPlacement({ trades }: Props) {
@@ -177,9 +188,10 @@ export function StopPlacement({ trades }: Props) {
                   if (!data) return;
                   const bucket = data as { min: number; max: number; label: string };
                   const bucketTrades = trades.filter(t => {
-                    if (t.status !== 'closed' || t.maeR === undefined) return false;
-                    const maePercent = (t.maeR / 1) * 100;
-                    const isWinner = (t.rMultiple ?? 0) > 0;
+                    const metrics = getCachedMetrics(t);
+                    if (metrics.status !== 'closed' || metrics.maeR === null || metrics.maeR === undefined) return false;
+                    const maePercent = (metrics.maeR! / 1) * 100;
+                    const isWinner = (metrics.rMultiple ?? 0) > 0;
                     if (!isWinner) return false;
                     if (bucket.max === Infinity) return maePercent >= bucket.min;
                     return maePercent >= bucket.min && maePercent < bucket.max;
@@ -198,9 +210,10 @@ export function StopPlacement({ trades }: Props) {
                   if (!data) return;
                   const bucket = data as { min: number; max: number; label: string };
                   const bucketTrades = trades.filter(t => {
-                    if (t.status !== 'closed' || t.maeR === undefined) return false;
-                    const maePercent = (t.maeR / 1) * 100;
-                    const isWinner = (t.rMultiple ?? 0) > 0;
+                    const metrics = getCachedMetrics(t);
+                    if (metrics.status !== 'closed' || metrics.maeR === null || metrics.maeR === undefined) return false;
+                    const maePercent = (metrics.maeR! / 1) * 100;
+                    const isWinner = (metrics.rMultiple ?? 0) > 0;
                     if (isWinner) return false;
                     if (bucket.max === Infinity) return maePercent >= bucket.min;
                     return maePercent >= bucket.min && maePercent < bucket.max;

@@ -7,7 +7,7 @@ interface DashboardFilters {
   dateTo: string;
   accountId: string;
   strategyId: string;
-  setupTags: string[]; // Multi-select: filter trades matching ANY selected tag
+  contextTags: string[]; // Multi-select: filter trades matching ANY selected tag
 }
 
 const defaultAlertSettings: AlertSettings = {
@@ -22,7 +22,6 @@ const defaultAlertSettings: AlertSettings = {
     edge_decay: true,
     drawdown: true,
     losing_streak: true,
-    plan_deviation_streak: true,
   },
 };
 
@@ -65,7 +64,7 @@ const initialDashboardFilters: DashboardFilters = {
   dateTo: '',
   accountId: '',
   strategyId: '',
-  setupTags: [],
+  contextTags: [],
 };
 
 export const useAppStore = create<AppState>()(

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import { filterTrades } from '../../utils';
+import { deriveStatus } from '../../utils/tradeCalculations';
 import type { TradeRecord, Account, Strategy } from '../../types';
 import { PairPerformance } from './PairPerformance';
 import { SetupPerformance } from './SetupPerformance';
@@ -10,10 +11,9 @@ import { RiskDistribution } from './RiskDistribution';
 import { StopPlacement } from './StopPlacement';
 import { ExitManagement } from './ExitManagement';
 import { BehaviouralAnalysis } from './BehaviouralAnalysis';
-import { MarketContext } from './MarketContext';
 import { SelectivityAnalysis } from './SelectivityAnalysis';
 
-type AnalyticsTab = 'pairs' | 'setups' | 'time' | 'stops' | 'exits' | 'risk' | 'behavioural' | 'context' | 'selectivity';
+type AnalyticsTab = 'pairs' | 'setups' | 'time' | 'stops' | 'exits' | 'risk' | 'behavioural' | 'selectivity';
 
 const TABS: { id: AnalyticsTab; label: string }[] = [
   { id: 'pairs', label: 'Pairs' },
@@ -23,7 +23,6 @@ const TABS: { id: AnalyticsTab; label: string }[] = [
   { id: 'exits', label: 'Exit Management' },
   { id: 'risk', label: 'Risk & Distribution' },
   { id: 'behavioural', label: 'Behavioural' },
-  { id: 'context', label: 'Market Context' },
   { id: 'selectivity', label: 'Selectivity' },
 ];
 
@@ -97,8 +96,6 @@ export function AnalyticsPage() {
         return <RiskDistribution trades={filteredTrades} />;
       case 'behavioural':
         return <BehaviouralAnalysis trades={filteredTrades} />;
-      case 'context':
-        return <MarketContext trades={filteredTrades} />;
       case 'selectivity':
         return <SelectivityAnalysis trades={filteredTrades} />;
       default:
@@ -195,9 +192,9 @@ export function AnalyticsPage() {
 
       {/* Trade Count */}
       <div className="text-sm text-gray-400">
-        Analyzing {filteredTrades.filter(t => t.status === 'closed').length} closed trades
-        {filteredTrades.filter(t => t.status === 'open').length > 0 &&
-          ` (${filteredTrades.filter(t => t.status === 'open').length} open)`
+        Analyzing {filteredTrades.filter(t => deriveStatus(t) === 'closed').length} closed trades
+        {filteredTrades.filter(t => deriveStatus(t) === 'open').length > 0 &&
+          ` (${filteredTrades.filter(t => deriveStatus(t) === 'open').length} open)`
         }
       </div>
 

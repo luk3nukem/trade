@@ -3,7 +3,19 @@ import { useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import { generateAlerts, filterDismissedAlerts } from '../../utils';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 import type { TradeRecord, Alert } from '../../types';
+
+// Metrics cache
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 const SEVERITY_STYLES = {
   warning: {
@@ -25,7 +37,6 @@ const ALERT_ICONS: Record<string, string> = {
   edge_decay: 'Edge',
   drawdown: 'Drawdown',
   losing_streak: 'Streak',
-  plan_deviation_streak: 'Plan',
 };
 
 export function AlertsPanel() {
@@ -159,8 +170,8 @@ export function AlertsPanel() {
                               className="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm text-gray-300 transition-colors"
                             >
                               {trade.pair}
-                              <span className={`ml-2 ${(trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                                {(trade.rMultiple ?? 0) >= 0 ? '+' : ''}{(trade.rMultiple ?? 0).toFixed(1)}R
+                              <span className={`ml-2 ${(getCachedMetrics(trade).rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                {(getCachedMetrics(trade).rMultiple ?? 0) >= 0 ? '+' : ''}{(getCachedMetrics(trade).rMultiple ?? 0).toFixed(1)}R
                               </span>
                             </button>
                           );

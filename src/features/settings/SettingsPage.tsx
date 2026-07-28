@@ -19,7 +19,7 @@ import {
   getAccountTradeCount,
   getStrategyStats,
 } from '../../utils';
-import type { AlertType, Account, Strategy, BackupData, ImportResult } from '../../types';
+import type { AlertType, Account, Strategy, BackupData, ImportResult, TradeEvent } from '../../types';
 
 type ModalType =
   | 'loadDemo'
@@ -67,10 +67,6 @@ const ALERT_TYPE_LABELS: Record<AlertType, { name: string; description: string }
   losing_streak: {
     name: 'Losing Streak',
     description: 'Alert on 3+ consecutive losses',
-  },
-  plan_deviation_streak: {
-    name: 'Plan Deviation Streak',
-    description: 'Alert on 3+ consecutive plan deviations',
   },
 };
 
@@ -194,14 +190,14 @@ export function SettingsPage() {
     setStrategies(strategiesWithStats);
   };
 
-  // Load setup tags with trade counts
+  // Load context tags with trade counts
   const loadTags = async () => {
     const allTrades = await db.trades.toArray();
     const tagCounts = new Map<string, number>();
 
     // Count trades per tag
     for (const trade of allTrades) {
-      const tradeTags = trade.setupTags || [];
+      const tradeTags = trade.contextTags || [];
       for (const tag of tradeTags) {
         tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
       }
@@ -222,8 +218,8 @@ export function SettingsPage() {
 
     // Count trades per event type
     for (const trade of allTrades) {
-      const events = trade.events || [];
-      const uniqueTypes = new Set(events.map(e => e.eventType));
+      const timeline = trade.timeline || [];
+      const uniqueTypes = new Set(timeline.map((e: TradeEvent) => e.eventType));
       for (const eventType of uniqueTypes) {
         eventTypeCounts.set(eventType, (eventTypeCounts.get(eventType) || 0) + 1);
       }
@@ -516,13 +512,13 @@ export function SettingsPage() {
     try {
       // Update all trades that have this tag
       await db.trades
-        .filter((trade) => (trade.setupTags || []).includes(oldName))
+        .filter((trade) => (trade.contextTags || []).includes(oldName))
         .modify((trade) => {
-          const tags = trade.setupTags || [];
+          const tags = trade.contextTags || [];
           const index = tags.indexOf(oldName);
           if (index !== -1) {
             tags[index] = newName;
-            trade.setupTags = tags;
+            trade.contextTags = tags;
           }
         });
 
@@ -547,9 +543,9 @@ export function SettingsPage() {
       if (tagToDelete.tradeCount > 0) {
         // Remove tag from all trades that have it
         await db.trades
-          .filter((trade) => (trade.setupTags || []).includes(tagToDelete.name))
+          .filter((trade) => (trade.contextTags || []).includes(tagToDelete.name))
           .modify((trade) => {
-            trade.setupTags = (trade.setupTags || []).filter((t) => t !== tagToDelete.name);
+            trade.contextTags = (trade.contextTags || []).filter((t) => t !== tagToDelete.name);
           });
       }
 
@@ -580,14 +576,14 @@ export function SettingsPage() {
       // Get all trades that have any of the tags to remove
       const affectedTrades = await db.trades
         .filter((trade) => {
-          const tradeTags = trade.setupTags || [];
+          const tradeTags = trade.contextTags || [];
           return tagsToRemove.some((tag) => tradeTags.includes(tag));
         })
         .toArray();
 
       // Update each affected trade
       for (const trade of affectedTrades) {
-        const tradeTags = trade.setupTags || [];
+        const tradeTags = trade.contextTags || [];
         const newTags = new Set<string>();
 
         for (const tag of tradeTags) {
@@ -599,7 +595,7 @@ export function SettingsPage() {
           }
         }
 
-        await db.trades.update(trade.id, { setupTags: Array.from(newTags) });
+        await db.trades.update(trade.id, { contextTags: Array.from(newTags) });
       }
 
       await loadTags();
@@ -653,9 +649,9 @@ export function SettingsPage() {
     try {
       // Update all trades that have this event type
       await db.trades
-        .filter((trade) => (trade.events || []).some(e => e.eventType === oldName))
+        .filter((trade) => (trade.timeline || []).some((e: TradeEvent) => e.eventType === oldName))
         .modify((trade) => {
-          trade.events = (trade.events || []).map(e =>
+          trade.timeline = (trade.timeline || []).map((e: TradeEvent) =>
             e.eventType === oldName ? { ...e, eventType: newName } : e
           );
         });
@@ -681,9 +677,9 @@ export function SettingsPage() {
       if (eventTypeToDelete.tradeCount > 0) {
         // Remove event type from all trades that have it
         await db.trades
-          .filter((trade) => (trade.events || []).some(e => e.eventType === eventTypeToDelete.name))
+          .filter((trade) => (trade.timeline || []).some((e: TradeEvent) => e.eventType === eventTypeToDelete.name))
           .modify((trade) => {
-            trade.events = (trade.events || []).filter((e) => e.eventType !== eventTypeToDelete.name);
+            trade.timeline = (trade.timeline || []).filter((e: TradeEvent) => e.eventType !== eventTypeToDelete.name);
           });
       }
 
@@ -714,18 +710,18 @@ export function SettingsPage() {
       // Get all trades that have any of the event types to remove
       const affectedTrades = await db.trades
         .filter((trade) => {
-          const events = trade.events || [];
-          return typesToRemove.some((type) => events.some(e => e.eventType === type));
+          const timeline = trade.timeline || [];
+          return typesToRemove.some((type) => timeline.some((e: TradeEvent) => e.eventType === type));
         })
         .toArray();
 
       // Update each affected trade
       for (const trade of affectedTrades) {
-        const updatedEvents = (trade.events || []).map(e =>
+        const updatedTimeline = (trade.timeline || []).map((e: TradeEvent) =>
           typesToRemove.includes(e.eventType) ? { ...e, eventType: mergeTargetEventType } : e
         );
 
-        await db.trades.update(trade.id, { events: updatedEvents });
+        await db.trades.update(trade.id, { timeline: updatedTimeline });
       }
 
       await loadEventTypes();
@@ -794,7 +790,7 @@ export function SettingsPage() {
 
       setMessage({
         type: 'success',
-        text: `Loaded ${stats.total} demo trades (${stats.closed} closed, ${stats.open} open). Win rate: ${stats.winRate.toFixed(1)}%, Total P&L: $${stats.totalPnl.toFixed(2)}`,
+        text: `Loaded ${stats.total} demo trades (${stats.closed} closed, ${stats.open} open, ${stats.missed} missed).`,
       });
     } catch (error) {
       console.error('Failed to load demo data:', error);

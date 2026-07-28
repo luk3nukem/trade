@@ -1,5 +1,17 @@
 import { useNavigate } from 'react-router-dom';
 import type { TradeRecord } from '../types';
+import { getTradeRMetrics, type TradeRMetrics } from '../utils/tradeCalculations';
+
+// Cache for trade metrics
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 interface Props {
   title: string;
@@ -89,14 +101,21 @@ export function TradeListModal({ title, trades, onClose }: Props) {
                         {trade.direction === 'long' ? 'L' : 'S'}
                       </span>
                     </td>
-                    <td className={`py-2 px-3 text-sm text-right font-medium ${
-                      (trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {trade.rMultiple !== undefined ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R` : '—'}
-                    </td>
-                    <td className="py-2 px-3 text-sm text-right text-gray-300">
-                      {trade.maeR !== undefined ? `${trade.maeR.toFixed(2)}R` : '—'}
-                    </td>
+                    {(() => {
+                      const metrics = getCachedMetrics(trade);
+                      return (
+                        <>
+                          <td className={`py-2 px-3 text-sm text-right font-medium ${
+                            (metrics.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                          }`}>
+                            {metrics.rMultiple !== null ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple.toFixed(2)}R` : '—'}
+                          </td>
+                          <td className="py-2 px-3 text-sm text-right text-gray-300">
+                            {metrics.maeR !== null ? `${metrics.maeR.toFixed(2)}R` : '—'}
+                          </td>
+                        </>
+                      );
+                    })()}
                   </tr>
                 ))}
               </tbody>

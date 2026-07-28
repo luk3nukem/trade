@@ -15,11 +15,22 @@ import {
   ReferenceLine,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 import { getRMultipleDistribution, getPlannedVsActual, getPositionSizingData, CHART_TOOLTIP_STYLES } from '../../utils';
 import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
+}
+
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
 }
 
 export function RiskDistribution({ trades }: Props) {
@@ -77,8 +88,9 @@ export function RiskDistribution({ trades }: Props) {
                 if (!data) return;
                 const bucket = data as { min: number; max: number; label: string };
                 const bucketTrades = trades.filter(t => {
-                  if (t.status !== 'closed' || t.rMultiple === undefined) return false;
-                  const r = t.rMultiple;
+                  const metrics = getCachedMetrics(t);
+                  if (metrics.status !== 'closed' || metrics.rMultiple === null || metrics.rMultiple === undefined) return false;
+                  const r = metrics.rMultiple!;
                   if (bucket.max === Infinity) return r > bucket.min;
                   if (bucket.min === -Infinity) return r <= bucket.max;
                   // Handle zero specially (belongs to -0.5 to 0 bucket)

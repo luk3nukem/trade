@@ -18,6 +18,7 @@ import {
   Legend,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 import {
   getMFECaptureData,
   getProfitGivebackData,
@@ -50,6 +51,16 @@ import { TradeListModal } from '../../components';
 
 interface Props {
   trades: TradeRecord[];
+}
+
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
 }
 
 const STRATEGY_COLORS: Record<string, string> = {
@@ -165,10 +176,10 @@ export function ExitManagement({ trades }: Props) {
     return result;
   }, [simulations, activeStrategies, showFixedR, fixedRSimulation]);
 
-  const tradesWithMFE = trades.filter(t => t.status === 'closed' && t.mfeR !== undefined).length;
-  const totalClosed = trades.filter(t => t.status === 'closed').length;
+  const tradesWithMFE = trades.filter(t => getCachedMetrics(t).status === 'closed' && getCachedMetrics(t).mfeR !== undefined).length;
+  const totalClosed = trades.filter(t => getCachedMetrics(t).status === 'closed').length;
   const tradesWithDrawdownData = trades.filter(
-    t => t.status === 'closed' && t.exits && t.exits.length > 1 && t.exits.some(e => e.drawdownAfter != null)
+    t => getCachedMetrics(t).status === 'closed' && t.exits && t.exits.length > 1 && t.exits.some(e => e.drawdownAfter != null)
   ).length;
 
   const toggleStrategy = (strategy: SimulationStrategy) => {
@@ -337,8 +348,9 @@ export function ExitManagement({ trades }: Props) {
                     if (!data) return;
                     const bucket = data as { min: number; max: number; label: string };
                     const bucketTrades = trades.filter(t => {
-                      if (t.status !== 'closed' || (t.rMultiple ?? 0) <= 0 || t.mfeR === undefined) return false;
-                      const giveback = t.mfeR - Math.abs(t.rMultiple!);
+                      const metrics = getCachedMetrics(t);
+                      if (metrics.status !== 'closed' || (metrics.rMultiple ?? 0) <= 0 || metrics.mfeR === null || metrics.mfeR === undefined) return false;
+                      const giveback = metrics.mfeR - Math.abs(metrics.rMultiple ?? 0);
                       if (giveback < 0) return false;
                       if (bucket.max === Infinity) return giveback >= bucket.min;
                       return giveback >= bucket.min && giveback < bucket.max;

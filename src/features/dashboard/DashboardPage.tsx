@@ -28,6 +28,18 @@ import {
   isPostExitReviewComplete,
   isReviewDue,
 } from '../../utils';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
+
+// Metrics cache to avoid recalculating for the same trade
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 import { AlertsPanel } from './AlertsPanel';
 
 // Component to show trades that need post-exit review
@@ -43,40 +55,34 @@ function TradesToReviewSection({
   // Checks actual field completion, not just reviewedAt timestamp
   const tradesToReview = useMemo(() => {
     return trades.filter((t) => {
-      if (t.status !== 'closed') return false;
+      if (getCachedMetrics(t).status !== 'closed') return false;
       // Check if review is actually complete (all 4 fields filled)
-      const reviewComplete = isPostExitReviewComplete(
-        t.postExitBestPrice,
-        t.postExitWorstPrice,
-        t.reachedTargetPostExit,
-        t.postExitNotes
-      );
+      const reviewComplete = isPostExitReviewComplete(t);
       if (reviewComplete) return false;
-      if (!t.exitTime) return false;
+      const exitTime = getCachedMetrics(t).exitTime;
+      if (!exitTime) return false;
       // Use market-hours-aware calculation (skips weekends for non-crypto)
-      return isReviewDue(new Date(t.exitTime), t.assetClass);
+      return isReviewDue(t);
     }).sort((a, b) => {
       // Sort by exit time, oldest first
-      const aExit = a.exitTime ? new Date(a.exitTime).getTime() : 0;
-      const bExit = b.exitTime ? new Date(b.exitTime).getTime() : 0;
-      return aExit - bExit;
+      const aExit = getCachedMetrics(a).exitTime;
+      const bExit = getCachedMetrics(b).exitTime;
+      const aTime = aExit ? aExit.getTime() : 0;
+      const bTime = bExit ? bExit.getTime() : 0;
+      return aTime - bTime;
     }).slice(0, 5); // Show at most 5
   }, [trades]);
 
   // Total count for display
   const totalUnreviewed = useMemo(() => {
     return trades.filter((t) => {
-      if (t.status !== 'closed') return false;
-      const reviewComplete = isPostExitReviewComplete(
-        t.postExitBestPrice,
-        t.postExitWorstPrice,
-        t.reachedTargetPostExit,
-        t.postExitNotes
-      );
+      if (getCachedMetrics(t).status !== 'closed') return false;
+      const reviewComplete = isPostExitReviewComplete(t);
       if (reviewComplete) return false;
-      if (!t.exitTime) return false;
+      const exitTime = getCachedMetrics(t).exitTime;
+      if (!exitTime) return false;
       // Use market-hours-aware calculation (skips weekends for non-crypto)
-      return isReviewDue(new Date(t.exitTime), t.assetClass);
+      return isReviewDue(t);
     }).length;
   }, [trades]);
 
@@ -136,17 +142,17 @@ function TradesToReviewSection({
                 {trade.direction.charAt(0).toUpperCase()}
               </span>
               <span className="text-sm text-gray-400">
-                {trade.exitTime ? getTimeSinceClose(trade.exitTime) : 'unknown'}
+                {getCachedMetrics(trade).exitTime ? getTimeSinceClose(getCachedMetrics(trade).exitTime!) : 'unknown'}
               </span>
             </div>
             <div className="flex items-center gap-4">
               <span
                 className={`font-mono font-medium ${
-                  (trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                  (getCachedMetrics(trade).rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
                 }`}
               >
-                {trade.rMultiple !== undefined
-                  ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
+                {getCachedMetrics(trade).rMultiple !== null
+                  ? `${getCachedMetrics(trade).rMultiple! >= 0 ? '+' : ''}${getCachedMetrics(trade).rMultiple!.toFixed(2)}R`
                   : '-'}
               </span>
               <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -187,19 +193,19 @@ export function DashboardPage() {
   });
   const [showTagDropdown, setShowTagDropdown] = useState(false);
 
-  // Get available setup tags from all trades
-  const availableSetupTags = useMemo(() => {
-    const allTags = trades.flatMap((t) => t.setupTags || []);
+  // Get available context tags from all trades
+  const availableContextTags = useMemo(() => {
+    const allTags = trades.flatMap((t) => t.contextTags || []);
     return [...new Set(allTags)].filter(Boolean).sort();
   }, [trades]);
 
-  // Toggle a setup tag in the filter
-  const toggleSetupTagFilter = (tag: string) => {
-    const currentTags = dashboardFilters.setupTags;
+  // Toggle a context tag in the filter
+  const toggleContextTagFilter = (tag: string) => {
+    const currentTags = dashboardFilters.contextTags;
     const newTags = currentTags.includes(tag)
       ? currentTags.filter((t) => t !== tag)
       : [...currentTags, tag];
-    setDashboardFilters({ setupTags: newTags });
+    setDashboardFilters({ contextTags: newTags });
   };
 
   // Load data
@@ -230,7 +236,7 @@ export function DashboardPage() {
       dateTo: dashboardFilters.dateTo ? new Date(dashboardFilters.dateTo) : undefined,
       accountId: dashboardFilters.accountId || undefined,
       strategyId: dashboardFilters.strategyId || undefined,
-      setupTags: dashboardFilters.setupTags?.length > 0 ? dashboardFilters.setupTags : undefined,
+      contextTags: dashboardFilters.contextTags?.length > 0 ? dashboardFilters.contextTags : undefined,
     });
   }, [trades, dashboardFilters]);
 
@@ -271,7 +277,7 @@ export function DashboardPage() {
     dashboardFilters.dateTo !== '' ||
     dashboardFilters.accountId !== '' ||
     dashboardFilters.strategyId !== '' ||
-    dashboardFilters.setupTags.length > 0;
+    dashboardFilters.contextTags.length > 0;
 
   // Format date for display
   const formatDate = (date: Date) => {
@@ -374,35 +380,35 @@ export function DashboardPage() {
               ))}
             </select>
           </div>
-          {/* Setup Tags Multi-Select */}
+          {/* Context Tags Multi-Select */}
           <div className="relative">
-            <label className="block text-xs text-gray-400 mb-1">Setup Tags</label>
+            <label className="block text-xs text-gray-400 mb-1">Context Tags</label>
             <button
               type="button"
               onClick={() => setShowTagDropdown(!showTagDropdown)}
               onBlur={() => setTimeout(() => setShowTagDropdown(false), 200)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-left flex items-center justify-between"
             >
-              <span className={dashboardFilters.setupTags.length === 0 ? 'text-gray-400' : ''}>
-                {dashboardFilters.setupTags.length === 0
+              <span className={dashboardFilters.contextTags.length === 0 ? 'text-gray-400' : ''}>
+                {dashboardFilters.contextTags.length === 0
                   ? 'All Tags'
-                  : `${dashboardFilters.setupTags.length} selected`}
+                  : `${dashboardFilters.contextTags.length} selected`}
               </span>
               <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
-            {showTagDropdown && availableSetupTags.length > 0 && (
+            {showTagDropdown && availableContextTags.length > 0 && (
               <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                {availableSetupTags.map((tag) => (
+                {availableContextTags.map((tag) => (
                   <label
                     key={tag}
                     className="flex items-center gap-2 px-3 py-2 hover:bg-gray-600 cursor-pointer text-sm"
                   >
                     <input
                       type="checkbox"
-                      checked={dashboardFilters.setupTags.includes(tag)}
-                      onChange={() => toggleSetupTagFilter(tag)}
+                      checked={dashboardFilters.contextTags.includes(tag)}
+                      onChange={() => toggleContextTagFilter(tag)}
                       className="rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
                     />
                     <span className="text-gray-200">{tag}</span>
@@ -862,66 +868,69 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {recentTrades.map((trade) => (
-                  <tr
-                    key={trade.id}
-                    onClick={() => navigate(`/trades/${trade.id}`)}
-                    className="border-b border-gray-700 hover:bg-gray-750 cursor-pointer transition-colors"
-                  >
-                    <td className="px-3 py-2 text-xs text-gray-300">
-                      {formatDate(trade.exitTime || trade.entryTime)}
-                    </td>
-                    <td className="px-3 py-2 text-xs font-medium text-white">{trade.pair}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                          trade.direction === 'long'
-                            ? 'bg-green-500/20 text-green-400'
-                            : 'bg-red-500/20 text-red-400'
-                        }`}
-                      >
-                        {trade.direction.charAt(0).toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-xs text-gray-300 text-right font-mono">
-                      {trade.entryPrice}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-gray-300 text-right font-mono">
-                      {trade.exitPrice ?? '-'}
-                    </td>
-                    <td className={`px-3 py-2 text-xs text-right font-medium ${
-                      (trade.netPnl ?? trade.pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      ${(trade.netPnl ?? trade.pnl ?? 0).toFixed(2)}
-                    </td>
-                    <td className={`px-3 py-2 text-xs text-right font-medium ${
-                      (trade.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {trade.rMultiple !== undefined
-                        ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
-                        : '-'}
-                    </td>
-                    <td className="px-3 py-2">
-                      {trade.setupTags && trade.setupTags.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {trade.setupTags.slice(0, 2).map((tag) => (
-                            <span
-                              key={tag}
-                              className="inline-flex px-1 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[10px]"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                          {trade.setupTags.length > 2 && (
-                            <span className="text-[10px] text-gray-400">+{trade.setupTags.length - 2}</span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                {recentTrades.map((trade) => {
+                  const metrics = getCachedMetrics(trade);
+                  return (
+                    <tr
+                      key={trade.id}
+                      onClick={() => navigate(`/trades/${trade.id}`)}
+                      className="border-b border-gray-700 hover:bg-gray-750 cursor-pointer transition-colors"
+                    >
+                      <td className="px-3 py-2 text-xs text-gray-300">
+                        {formatDate(metrics.exitTime || trade.entryTime)}
+                      </td>
+                      <td className="px-3 py-2 text-xs font-medium text-white">{trade.pair}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            trade.direction === 'long'
+                              ? 'bg-green-500/20 text-green-400'
+                              : 'bg-red-500/20 text-red-400'
+                          }`}
+                        >
+                          {trade.direction.charAt(0).toUpperCase()}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-300 text-right font-mono">
+                        {trade.entryPrice}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-gray-300 text-right font-mono">
+                        {metrics.exitPrice !== null ? metrics.exitPrice.toFixed(2) : '-'}
+                      </td>
+                      <td className={`px-3 py-2 text-xs text-right font-medium ${
+                        (metrics.pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        ${(metrics.pnl ?? 0).toFixed(2)}
+                      </td>
+                      <td className={`px-3 py-2 text-xs text-right font-medium ${
+                        (metrics.rMultiple ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'
+                      }`}>
+                        {metrics.rMultiple !== null
+                          ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple.toFixed(2)}R`
+                          : '-'}
+                      </td>
+                      <td className="px-3 py-2">
+                        {trade.contextTags && trade.contextTags.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {trade.contextTags.slice(0, 2).map((tag) => (
+                              <span
+                                key={tag}
+                                className="inline-flex px-1 py-0.5 bg-blue-500/20 text-blue-400 rounded text-[10px]"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                            {trade.contextTags.length > 2 && (
+                              <span className="text-[10px] text-gray-400">+{trade.contextTags.length - 2}</span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

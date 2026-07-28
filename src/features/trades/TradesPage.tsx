@@ -3,7 +3,18 @@ import { Link, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord, TradeDirection, TradeStatus } from '../../types';
 import { formatDuration } from '../../utils';
-import { getReviewDueDate } from '../../utils/tradeCalculations';
+import { getReviewDueDate, getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
+
+// Metrics cache
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 type SortField = 'entryTime' | 'pair' | 'direction' | 'pnl' | 'rMultiple' | 'setupTags' | 'status' | 'review' | 'age' | 'holdDuration';
 
@@ -12,8 +23,10 @@ type ReviewStatus = 'reviewed' | 'due' | 'pending' | 'na';
 
 // Helper to get review status for a trade
 function getReviewStatus(trade: TradeRecord): ReviewStatus {
+  const metrics = getCachedMetrics(trade);
+
   // Not applicable for open/partial trades or missed trades
-  if (trade.status !== 'closed' || trade.tradeTaken === false) {
+  if (metrics.status !== 'closed' || trade.tradeTaken === false) {
     return 'na';
   }
 
@@ -23,8 +36,8 @@ function getReviewStatus(trade: TradeRecord): ReviewStatus {
   }
 
   // Check if review is due
-  if (trade.exitTime) {
-    const dueDate = getReviewDueDate(new Date(trade.exitTime), trade.assetClass);
+  if (metrics.exitTime) {
+    const dueDate = getReviewDueDate(metrics.exitTime);
     if (new Date() >= dueDate) {
       return 'due';
     }
@@ -68,8 +81,9 @@ function formatAge(timestamp: Date): string {
 
 // Get age timestamp for a trade (exit time for closed, entry time for open)
 function getAgeTimestamp(trade: TradeRecord): Date {
-  if (trade.status === 'closed' && trade.exitTime) {
-    return new Date(trade.exitTime);
+  const metrics = getCachedMetrics(trade);
+  if (metrics.status === 'closed' && metrics.exitTime) {
+    return new Date(metrics.exitTime);
   }
   return new Date(trade.entryTime);
 }
@@ -96,7 +110,7 @@ interface Filters {
   pair: string;
   direction: '' | TradeDirection;
   status: '' | TradeStatus;
-  setupTags: string[]; // Multi-select: show trades matching ANY selected tag
+  contextTags: string[]; // Multi-select: show trades matching ANY selected tag
   tradeTaken: TradeTakenFilter;
 }
 
@@ -106,7 +120,7 @@ const initialFilters: Filters = {
   pair: '',
   direction: '',
   status: '',
-  setupTags: [],
+  contextTags: [],
   tradeTaken: 'taken', // Default to showing only taken trades
 };
 
@@ -137,10 +151,10 @@ export function TradesPage() {
   // Get unique values for filter dropdowns
   const filterOptions = useMemo(() => {
     const pairs = [...new Set(trades.map((t) => t.pair))].filter(Boolean).sort();
-    // Collect all unique setup tags from all trades
-    const allTags = trades.flatMap((t) => t.setupTags || []);
-    const setupTags = [...new Set(allTags)].filter(Boolean).sort();
-    return { pairs, setupTags };
+    // Collect all unique context tags from all trades
+    const allTags = trades.flatMap((t) => t.contextTags || []);
+    const contextTags = [...new Set(allTags)].filter(Boolean).sort();
+    return { pairs, contextTags };
   }, [trades]);
 
   // Apply filters
@@ -164,12 +178,13 @@ export function TradesPage() {
       if (filters.direction && trade.direction !== filters.direction) return false;
 
       // Status filter
-      if (filters.status && trade.status !== filters.status) return false;
+      const metrics = getCachedMetrics(trade);
+      if (filters.status && metrics.status !== filters.status) return false;
 
-      // Setup tags filter (match ANY selected tag)
-      if (filters.setupTags.length > 0) {
-        const tradeTags = trade.setupTags || [];
-        const hasMatchingTag = filters.setupTags.some((tag) => tradeTags.includes(tag));
+      // Context tags filter (match ANY selected tag)
+      if (filters.contextTags.length > 0) {
+        const tradeTags = trade.contextTags || [];
+        const hasMatchingTag = filters.contextTags.some((tag) => tradeTags.includes(tag));
         if (!hasMatchingTag) return false;
       }
 
@@ -184,6 +199,8 @@ export function TradesPage() {
   // Sort trades
   const sortedTrades = useMemo(() => {
     const sorted = [...filteredTrades].sort((a, b) => {
+      const aMetrics = getCachedMetrics(a);
+      const bMetrics = getCachedMetrics(b);
       let aVal: unknown = a[sortField as keyof TradeRecord];
       let bVal: unknown = b[sortField as keyof TradeRecord];
 
@@ -191,6 +208,27 @@ export function TradesPage() {
       if (sortField === 'entryTime') {
         aVal = new Date(a.entryTime).getTime();
         bVal = new Date(b.entryTime).getTime();
+      }
+
+      // Handle derived fields from metrics
+      if (sortField === 'pnl') {
+        aVal = aMetrics.pnl;
+        bVal = bMetrics.pnl;
+      }
+
+      if (sortField === 'rMultiple') {
+        aVal = aMetrics.rMultiple;
+        bVal = bMetrics.rMultiple;
+      }
+
+      if (sortField === 'status') {
+        aVal = aMetrics.status;
+        bVal = bMetrics.status;
+      }
+
+      if (sortField === 'holdDuration') {
+        aVal = aMetrics.holdDuration;
+        bVal = bMetrics.holdDuration;
       }
 
       // Handle review status sorting
@@ -204,6 +242,12 @@ export function TradesPage() {
       if (sortField === 'age') {
         aVal = getAgeTimestamp(a).getTime();
         bVal = getAgeTimestamp(b).getTime();
+      }
+
+      // Handle contextTags sorting (renamed from setupTags)
+      if (sortField === 'setupTags') {
+        aVal = (a.contextTags || []).join(',');
+        bVal = (b.contextTags || []).join(',');
       }
 
       // Handle nullish values
@@ -229,13 +273,13 @@ export function TradesPage() {
 
   // Calculate summary stats
   const stats = useMemo(() => {
-    const closedTrades = filteredTrades.filter((t) => t.status === 'closed');
+    const closedTrades = filteredTrades.filter((t) => getCachedMetrics(t).status === 'closed');
     const totalTrades = filteredTrades.length;
-    const wins = closedTrades.filter((t) => (t.pnl ?? 0) > 0).length;
+    const wins = closedTrades.filter((t) => (getCachedMetrics(t).pnl ?? 0) > 0).length;
     const winRate = closedTrades.length > 0 ? (wins / closedTrades.length) * 100 : 0;
-    const totalPnl = closedTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+    const totalPnl = closedTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
     const avgRMultiple = closedTrades.length > 0
-      ? closedTrades.reduce((sum, t) => sum + (t.rMultiple ?? 0), 0) / closedTrades.length
+      ? closedTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / closedTrades.length
       : 0;
 
     return { totalTrades, winRate, totalPnl, avgRMultiple };
@@ -256,13 +300,13 @@ export function TradesPage() {
     setFilters((prev) => ({ ...prev, [field]: value }));
   };
 
-  // Toggle a setup tag in the filter
-  const toggleSetupTagFilter = (tag: string) => {
+  // Toggle a context tag in the filter
+  const toggleContextTagFilter = (tag: string) => {
     setFilters((prev) => ({
       ...prev,
-      setupTags: prev.setupTags.includes(tag)
-        ? prev.setupTags.filter((t) => t !== tag)
-        : [...prev.setupTags, tag],
+      contextTags: prev.contextTags.includes(tag)
+        ? prev.contextTags.filter((t) => t !== tag)
+        : [...prev.contextTags, tag],
     }));
   };
 
@@ -277,7 +321,7 @@ export function TradesPage() {
     filters.pair !== '' ||
     filters.direction !== '' ||
     filters.status !== '' ||
-    filters.setupTags.length > 0 ||
+    filters.contextTags.length > 0 ||
     filters.tradeTaken !== 'taken';
 
   // Format date for display
@@ -442,35 +486,35 @@ export function TradesPage() {
                 </select>
               </div>
 
-              {/* Setup Tags Multi-Select */}
+              {/* Context Tags Multi-Select */}
               <div className="relative">
-                <label className="block text-xs text-gray-400 mb-1">Setup Tags</label>
+                <label className="block text-xs text-gray-400 mb-1">Context Tags</label>
                 <button
                   type="button"
                   onClick={() => setShowTagDropdown(!showTagDropdown)}
                   onBlur={() => setTimeout(() => setShowTagDropdown(false), 200)}
                   className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-left flex items-center justify-between"
                 >
-                  <span className={filters.setupTags.length === 0 ? 'text-gray-400' : ''}>
-                    {filters.setupTags.length === 0
+                  <span className={filters.contextTags.length === 0 ? 'text-gray-400' : ''}>
+                    {filters.contextTags.length === 0
                       ? 'All Tags'
-                      : `${filters.setupTags.length} selected`}
+                      : `${filters.contextTags.length} selected`}
                   </span>
                   <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
                 </button>
-                {showTagDropdown && filterOptions.setupTags.length > 0 && (
+                {showTagDropdown && filterOptions.contextTags.length > 0 && (
                   <div className="absolute z-20 w-full mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                    {filterOptions.setupTags.map((tag) => (
+                    {filterOptions.contextTags.map((tag) => (
                       <label
                         key={tag}
                         className="flex items-center gap-2 px-3 py-2 hover:bg-gray-600 cursor-pointer text-sm"
                       >
                         <input
                           type="checkbox"
-                          checked={filters.setupTags.includes(tag)}
-                          onChange={() => toggleSetupTagFilter(tag)}
+                          checked={filters.contextTags.includes(tag)}
+                          onChange={() => toggleContextTagFilter(tag)}
                           className="rounded border-gray-500 bg-gray-600 text-blue-500 focus:ring-blue-500"
                         />
                         <span className="text-gray-200">{tag}</span>
@@ -530,6 +574,7 @@ export function TradesPage() {
               </div>
             ) : (
               sortedTrades.map((trade) => {
+                const metrics = getCachedMetrics(trade);
                 const reviewStatus = getReviewStatus(trade);
                 return (
                   <div
@@ -556,16 +601,16 @@ export function TradesPage() {
                       <div className="flex items-center gap-1">
                         <span
                           className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                            trade.status === 'open'
+                            metrics.status === 'open'
                               ? 'bg-yellow-500/20 text-yellow-400'
-                              : trade.status === 'partial'
+                              : metrics.status === 'partial'
                                 ? 'bg-orange-500/20 text-orange-400'
-                                : trade.status === 'closed'
+                                : metrics.status === 'closed'
                                   ? 'bg-blue-500/20 text-blue-400'
                                   : 'bg-gray-500/20 text-gray-400'
                           }`}
                         >
-                          {trade.status.charAt(0).toUpperCase() + trade.status.slice(1)}
+                          {metrics.status.charAt(0).toUpperCase() + metrics.status.slice(1)}
                         </span>
                         {trade.tradeTaken === false && (
                           <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-orange-500/20 text-orange-400">
@@ -579,23 +624,23 @@ export function TradesPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-4">
                         <span className={`font-medium ${
-                          trade.pnl === undefined
+                          metrics.pnl === null
                             ? 'text-gray-400'
-                            : trade.pnl >= 0
+                            : metrics.pnl >= 0
                               ? 'text-green-400'
                               : 'text-red-400'
                         }`}>
-                          {trade.pnl !== undefined ? `$${trade.pnl.toFixed(2)}` : '-'}
+                          {metrics.pnl !== null ? `$${metrics.pnl.toFixed(2)}` : '-'}
                         </span>
                         <span className={`text-sm ${
-                          trade.rMultiple === undefined
+                          metrics.rMultiple === null
                             ? 'text-gray-400'
-                            : trade.rMultiple >= 0
+                            : metrics.rMultiple >= 0
                               ? 'text-green-400'
                               : 'text-red-400'
                         }`}>
-                          {trade.rMultiple !== undefined
-                            ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
+                          {metrics.rMultiple !== null
+                            ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple.toFixed(2)}R`
                             : '-'}
                         </span>
                       </div>
@@ -624,20 +669,20 @@ export function TradesPage() {
                       <span>{formatDate(trade.entryTime)}</span>
                       <div className="flex items-center gap-3">
                         <span title={formatDateTimeFull(getAgeTimestamp(trade))}>
-                          {trade.status === 'open' || trade.status === 'partial' ? (
+                          {metrics.status === 'open' || metrics.status === 'partial' ? (
                             <span className="text-yellow-400">open {formatAge(new Date(trade.entryTime))}</span>
                           ) : (
                             formatAge(getAgeTimestamp(trade))
                           )}
                         </span>
-                        <span>{formatDuration(trade.holdDuration)}</span>
+                        <span>{formatDuration(metrics.holdDuration ?? undefined)}</span>
                       </div>
                     </div>
 
                     {/* Row 4: Tags (if any) */}
-                    {trade.setupTags && trade.setupTags.length > 0 && (
+                    {trade.contextTags && trade.contextTags.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-gray-700">
-                        {trade.setupTags.slice(0, 3).map((tag) => (
+                        {trade.contextTags.slice(0, 3).map((tag) => (
                           <span
                             key={tag}
                             className="inline-flex px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
@@ -645,9 +690,9 @@ export function TradesPage() {
                             {tag}
                           </span>
                         ))}
-                        {trade.setupTags.length > 3 && (
+                        {trade.contextTags.length > 3 && (
                           <span className="inline-flex px-1.5 py-0.5 bg-gray-600 text-gray-300 rounded text-xs">
-                            +{trade.setupTags.length - 3}
+                            +{trade.contextTags.length - 3}
                           </span>
                         )}
                       </div>
@@ -714,7 +759,7 @@ export function TradesPage() {
                         onClick={() => handleSort('setupTags')}
                         className="flex items-center gap-1 text-sm font-medium text-gray-400 hover:text-white"
                       >
-                        Setup Tags
+                        Context Tags
                         <SortIndicator field="setupTags" />
                       </button>
                     </th>
@@ -764,145 +809,148 @@ export function TradesPage() {
                       </td>
                     </tr>
                   ) : (
-                    sortedTrades.map((trade) => (
-                      <tr
-                        key={trade.id}
-                        onClick={() => navigate(`/trades/${trade.id}`)}
-                        className={`border-b border-gray-700 hover:bg-gray-750 cursor-pointer transition-colors ${
-                          trade.tradeTaken === false ? 'opacity-60' : ''
-                        }`}
-                      >
-                        <td className="px-4 py-3 text-sm text-gray-200">
-                          {formatDate(trade.entryTime)}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-medium text-white">
-                          {trade.pair}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                              trade.direction === 'long'
-                                ? 'bg-green-500/20 text-green-400'
-                                : 'bg-red-500/20 text-red-400'
-                            }`}
-                          >
-                            {trade.direction.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className={`px-4 py-3 text-sm text-right font-medium ${
-                          trade.pnl === undefined
-                            ? 'text-gray-400'
-                            : trade.pnl >= 0
-                              ? 'text-green-400'
-                              : 'text-red-400'
-                        }`}>
-                          {trade.pnl !== undefined ? `$${trade.pnl.toFixed(2)}` : '-'}
-                        </td>
-                        <td className={`px-4 py-3 text-sm text-right font-medium ${
-                          trade.rMultiple === undefined
-                            ? 'text-gray-400'
-                            : trade.rMultiple >= 0
-                              ? 'text-green-400'
-                              : 'text-red-400'
-                        }`}>
-                          {trade.rMultiple !== undefined
-                            ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple.toFixed(2)}R`
-                            : '-'}
-                        </td>
-                        <td className="px-4 py-3">
-                          {trade.setupTags && trade.setupTags.length > 0 ? (
-                            <div className="flex flex-wrap gap-1">
-                              {trade.setupTags.slice(0, 2).map((tag) => (
-                                <span
-                                  key={tag}
-                                  className="inline-flex px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
-                                >
-                                  {tag}
-                                </span>
-                              ))}
-                              {trade.setupTags.length > 2 && (
-                                <span className="inline-flex px-1.5 py-0.5 bg-gray-600 text-gray-300 rounded text-xs">
-                                  +{trade.setupTags.length - 2}
+                    sortedTrades.map((trade) => {
+                      const metrics = getCachedMetrics(trade);
+                      return (
+                        <tr
+                          key={trade.id}
+                          onClick={() => navigate(`/trades/${trade.id}`)}
+                          className={`border-b border-gray-700 hover:bg-gray-750 cursor-pointer transition-colors ${
+                            trade.tradeTaken === false ? 'opacity-60' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-3 text-sm text-gray-200">
+                            {formatDate(trade.entryTime)}
+                          </td>
+                          <td className="px-4 py-3 text-sm font-medium text-white">
+                            {trade.pair}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span
+                              className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                                trade.direction === 'long'
+                                  ? 'bg-green-500/20 text-green-400'
+                                  : 'bg-red-500/20 text-red-400'
+                              }`}
+                            >
+                              {trade.direction.toUpperCase()}
+                            </span>
+                          </td>
+                          <td className={`px-4 py-3 text-sm text-right font-medium ${
+                            metrics.pnl === null
+                              ? 'text-gray-400'
+                              : metrics.pnl >= 0
+                                ? 'text-green-400'
+                                : 'text-red-400'
+                          }`}>
+                            {metrics.pnl !== null ? `$${metrics.pnl.toFixed(2)}` : '-'}
+                          </td>
+                          <td className={`px-4 py-3 text-sm text-right font-medium ${
+                            metrics.rMultiple === null
+                              ? 'text-gray-400'
+                              : metrics.rMultiple >= 0
+                                ? 'text-green-400'
+                                : 'text-red-400'
+                          }`}>
+                            {metrics.rMultiple !== null
+                              ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple.toFixed(2)}R`
+                              : '-'}
+                          </td>
+                          <td className="px-4 py-3">
+                            {trade.contextTags && trade.contextTags.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {trade.contextTags.slice(0, 2).map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="inline-flex px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded text-xs"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {trade.contextTags.length > 2 && (
+                                  <span className="inline-flex px-1.5 py-0.5 bg-gray-600 text-gray-300 rounded text-xs">
+                                    +{trade.contextTags.length - 2}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-sm text-gray-400">-</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-1">
+                              <span
+                                className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                                  metrics.status === 'open'
+                                    ? 'bg-yellow-500/20 text-yellow-400'
+                                    : metrics.status === 'partial'
+                                      ? 'bg-orange-500/20 text-orange-400'
+                                      : metrics.status === 'closed'
+                                        ? 'bg-blue-500/20 text-blue-400'
+                                        : 'bg-gray-500/20 text-gray-400'
+                                }`}
+                              >
+                                {metrics.status.charAt(0).toUpperCase() + metrics.status.slice(1)}
+                              </span>
+                              {trade.tradeTaken === false && (
+                                <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-orange-500/20 text-orange-400">
+                                  Missed
                                 </span>
                               )}
                             </div>
-                          ) : (
-                            <span className="text-sm text-gray-400">-</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1">
-                            <span
-                              className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                                trade.status === 'open'
-                                  ? 'bg-yellow-500/20 text-yellow-400'
-                                  : trade.status === 'partial'
-                                    ? 'bg-orange-500/20 text-orange-400'
-                                    : trade.status === 'closed'
-                                      ? 'bg-blue-500/20 text-blue-400'
-                                      : 'bg-gray-500/20 text-gray-400'
-                              }`}
-                            >
-                              {trade.status.charAt(0).toUpperCase() + trade.status.slice(1)}
-                            </span>
-                            {trade.tradeTaken === false && (
-                              <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-orange-500/20 text-orange-400">
-                                Missed
-                              </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            {(() => {
+                              const reviewStatus = getReviewStatus(trade);
+                              if (reviewStatus === 'reviewed') {
+                                return (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                    </svg>
+                                    Reviewed
+                                  </span>
+                                );
+                              }
+                              if (reviewStatus === 'due') {
+                                return (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      navigate(`/trades/${trade.id}`);
+                                    }}
+                                    className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors"
+                                  >
+                                    Due
+                                  </button>
+                                );
+                              }
+                              if (reviewStatus === 'pending') {
+                                return (
+                                  <span className="text-xs text-gray-500">
+                                    Pending
+                                  </span>
+                                );
+                              }
+                              return <span className="text-sm text-gray-500">-</span>;
+                            })()}
+                          </td>
+                          <td
+                            className="px-4 py-3 text-sm text-gray-200 text-right"
+                            title={formatDateTimeFull(getAgeTimestamp(trade))}
+                          >
+                            {metrics.status === 'open' || metrics.status === 'partial' ? (
+                              <span className="text-yellow-400">open {formatAge(new Date(trade.entryTime))}</span>
+                            ) : (
+                              formatAge(getAgeTimestamp(trade))
                             )}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          {(() => {
-                            const reviewStatus = getReviewStatus(trade);
-                            if (reviewStatus === 'reviewed') {
-                              return (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-green-500/20 text-green-400">
-                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                  </svg>
-                                  Reviewed
-                                </span>
-                              );
-                            }
-                            if (reviewStatus === 'due') {
-                              return (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigate(`/trades/${trade.id}`);
-                                  }}
-                                  className="inline-flex px-2 py-0.5 rounded text-xs font-medium bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 transition-colors"
-                                >
-                                  Due
-                                </button>
-                              );
-                            }
-                            if (reviewStatus === 'pending') {
-                              return (
-                                <span className="text-xs text-gray-500">
-                                  Pending
-                                </span>
-                              );
-                            }
-                            return <span className="text-sm text-gray-500">—</span>;
-                          })()}
-                        </td>
-                        <td
-                          className="px-4 py-3 text-sm text-gray-200 text-right"
-                          title={formatDateTimeFull(getAgeTimestamp(trade))}
-                        >
-                          {trade.status === 'open' || trade.status === 'partial' ? (
-                            <span className="text-yellow-400">open {formatAge(new Date(trade.entryTime))}</span>
-                          ) : (
-                            formatAge(getAgeTimestamp(trade))
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-200 text-right">
-                          {formatDuration(trade.holdDuration)}
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-200 text-right">
+                            {formatDuration(metrics.holdDuration ?? undefined)}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

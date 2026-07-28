@@ -1,9 +1,21 @@
 import { db } from '../db';
 import type { TradeRecord, Account, Strategy, DailyJournal } from '../types';
+import { getTradeRMetrics, type TradeRMetrics } from './tradeCalculations';
+
+// Metrics cache
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 // Backup version for migration compatibility
-// Version 2: URL-based screenshots (no more blob/data)
-const BACKUP_VERSION = 2;
+// Version 3: v2 schema - unified timeline, no psychology/market context
+const BACKUP_VERSION = 3;
 
 // Backup data structure
 export interface BackupData {
@@ -107,6 +119,11 @@ export function validateBackup(data: unknown): { valid: boolean; error?: string;
     return { valid: false, error: 'Invalid backup file: missing version' };
   }
 
+  // Reject old backups from before v2 schema
+  if (backup.version < 3) {
+    return { valid: false, error: 'Backup predates schema v2 and cannot be imported. Please use an export from the current version.' };
+  }
+
   if (!backup.data || typeof backup.data !== 'object') {
     return { valid: false, error: 'Invalid backup file: missing data section' };
   }
@@ -182,35 +199,20 @@ export async function importBackup(backup: BackupData): Promise<ImportResult> {
         result.skipped.trades++;
       } else {
         try {
-          // Convert date strings back to Date objects
-          // Also migrate old blob/data screenshots to URL format (they'll be empty)
-          // Migrate old analysisTF (single) to analysisTFs (array)
-          let analysisTFs: string[] = [];
-          if (trade.analysisTFs && Array.isArray(trade.analysisTFs)) {
-            analysisTFs = trade.analysisTFs;
-          } else if ((trade as unknown as Record<string, unknown>).analysisTF) {
-            const oldTF = (trade as unknown as Record<string, unknown>).analysisTF as string;
-            if (oldTF && oldTF.trim()) {
-              analysisTFs = [oldTF];
-            }
-          }
+          // Convert date strings back to Date objects for v2 schema
           const tradeWithDates: TradeRecord = {
             ...trade,
-            analysisTFs,
             entryTime: new Date(trade.entryTime),
-            exitTime: trade.exitTime ? new Date(trade.exitTime) : undefined,
             createdAt: new Date(trade.createdAt),
             updatedAt: new Date(trade.updatedAt),
             exits: trade.exits?.map((e) => ({
               ...e,
               time: new Date(e.time),
             })) ?? [],
-            stopAdjustments: trade.stopAdjustments?.map((s) => ({
-              ...s,
-              time: new Date(s.time),
-            })) ?? [],
-            // Screenshots are now URL-based - filter out old blob/data entries
-            screenshots: trade.screenshots?.filter((s: { url?: string }) => s.url)?.map((s: { id: string; url: string; caption: string; createdAt: string | Date }) => ({
+            timeline: trade.timeline ?? [],
+            levelSequence: trade.levelSequence ?? [],
+            contextTags: trade.contextTags ?? [],
+            screenshots: trade.screenshots?.map((s: { id: string; url: string; caption: string; createdAt: string | Date }) => ({
               id: s.id,
               url: s.url,
               caption: s.caption,
@@ -267,7 +269,7 @@ export async function exportTradesCSV(accountId?: string, strategyId?: string): 
   // Sort by entry time
   trades.sort((a, b) => new Date(a.entryTime).getTime() - new Date(b.entryTime).getTime());
 
-  // Define CSV columns (excluding screenshots and partials as blob/object)
+  // Define CSV columns for v2 schema
   const columns = [
     'id',
     'accountId',
@@ -276,47 +278,26 @@ export async function exportTradesCSV(accountId?: string, strategyId?: string): 
     'assetClass',
     'direction',
     'entryTime',
-    'exitTime',
-    'status',
     'entryPrice',
     'stopLoss',
-    'takeProfit1',
-    'takeProfit2',
-    'takeProfit3',
-    'exitPrice',
+    'targetPrice',
     'positionSize',
     'riskAmount',
     'riskPercent',
-    'exitType',
-    'setupTags',
-    'timeframe',
-    'htfBias',
-    'marketCondition',
-    'emotionalState',
-    'confidenceLevel',
-    'followedPlan',
-    'planDeviation',
-    'isRevengeTrade',
-    'isOverTrade',
+    'tradeTaken',
+    'notTakenReason',
+    'contextTags',
+    'entryTF',
+    'entryConfirmation',
+    'confirmationTF',
     'entryNotes',
     'closeNotes',
-    'tags',
-    'session',
-    'analysisTFs',
-    'plannedRR',
-    'actualRR',
-    'rMultiple',
-    'stopDistance',
-    'pnl',
-    'commissions',
-    'swap',
-    'netPnl',
-    'holdDuration',
-    'mae',
-    'mfe',
-    'maeR',
-    'mfeR',
-    'partials',
+    'postExitNotes',
+    'reachedTargetPostExit',
+    'reviewedAt',
+    'timeline',
+    'exits',
+    'levelSequence',
     'createdAt',
     'updatedAt',
   ];
@@ -339,11 +320,11 @@ export async function exportTradesCSV(accountId?: string, strategyId?: string): 
         }
 
         if (Array.isArray(value)) {
-          // For analysisTFs, use pipe-separated format
-          if (col === 'analysisTFs') {
+          // For contextTags, use pipe-separated format
+          if (col === 'contextTags') {
             return `"${value.join('|')}"`;
           }
-          // For other arrays (tags, partials), serialize as JSON
+          // For complex arrays (timeline, exits, levelSequence), serialize as JSON
           return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
         }
 
@@ -438,9 +419,9 @@ export async function calculateAccountBalance(accountId: string | undefined): Pr
   if (!account) return 0;
 
   const trades = await db.trades.where('accountId').equals(accountId).toArray();
-  const closedTrades = trades.filter((t) => t.status === 'closed');
+  const closedTrades = trades.filter((t) => getCachedMetrics(t).status === 'closed');
 
-  const totalPnl = closedTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+  const totalPnl = closedTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
   return account.startingBalance + totalPnl;
 }
@@ -465,14 +446,14 @@ export async function getStrategyStats(strategyId: string | undefined): Promise<
 }> {
   if (!strategyId) return { tradeCount: 0, winRate: 0, totalPnl: 0 };
   const trades = await db.trades.where('strategyId').equals(strategyId).toArray();
-  const closedTrades = trades.filter((t) => t.status === 'closed');
+  const closedTrades = trades.filter((t) => getCachedMetrics(t).status === 'closed');
 
   if (closedTrades.length === 0) {
     return { tradeCount: 0, winRate: 0, totalPnl: 0 };
   }
 
-  const wins = closedTrades.filter((t) => (t.rMultiple ?? 0) > 0).length;
-  const totalPnl = closedTrades.reduce((sum, t) => sum + (t.netPnl ?? t.pnl ?? 0), 0);
+  const wins = closedTrades.filter((t) => (getCachedMetrics(t).rMultiple ?? 0) > 0).length;
+  const totalPnl = closedTrades.reduce((sum, t) => sum + (getCachedMetrics(t).pnl ?? 0), 0);
 
   return {
     tradeCount: trades.length,

@@ -1,7 +1,7 @@
 // Trade direction
 export type TradeDirection = 'long' | 'short';
 
-// Trade status
+// Trade status (derived from exits)
 export type TradeStatus = 'open' | 'partial' | 'closed' | 'cancelled';
 
 // Trading session (auto-derived from entry time)
@@ -16,15 +16,6 @@ export type AssetClass = 'forex' | 'crypto' | 'stocks' | 'futures' | 'options' |
 // Timeframe (letter-first notation: M=minutes, H=hours, D=days, W=weeks, MN=monthly)
 export type Timeframe = 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H4' | 'D1' | 'W1' | 'MN';
 
-// HTF Bias (Higher Timeframe Bias)
-export type HTFBias = 'bullish' | 'bearish' | 'neutral' | 'ranging';
-
-// Market condition
-export type MarketCondition = 'trending' | 'ranging' | 'volatile' | 'choppy' | 'breakout' | 'reversal';
-
-// Confidence level
-export type ConfidenceLevel = 'low' | 'medium' | 'high';
-
 // Exit type for individual exits
 export type ExitType =
   | 'tp_hit'
@@ -33,9 +24,6 @@ export type ExitType =
   | 'trail_stop_hit'
   | 'be_stop_hit'
   | 'time_exit';
-
-// Emotional state (1-5 scale)
-export type EmotionalState = 1 | 2 | 3 | 4 | 5;
 
 // Trade exit record (unified exit system)
 export interface TradeExit {
@@ -48,34 +36,20 @@ export interface TradeExit {
   drawdownAfter?: number | null; // worst price against trade direction after this exit (before next exit)
 }
 
-// Legacy partial exit record (for migration compatibility)
-export interface PartialExit {
-  id: string;
-  price: number;
-  size: number;
-  time: Date;
-  reason: string;
-}
-
-// Stop adjustment record
-export interface StopAdjustment {
-  id: string;
-  time: Date;
-  newStop: number;
-  reason: string;
-  trigger?: string;
-}
-
 // Level reaction type
 export type LevelReaction = 'bounced' | 'front_run' | 'swept_then_bounced' | 'broken' | null;
 
 // Zone-type levels (have two edges: near and far)
 export const ZONE_LEVEL_TYPES = ['HOB', 'LOB', 'DHOB', 'DLOB', 'OB', 'FVG', 'BB', 'IMB'] as const;
 
+// Level types that show a detail field (e.g., fib ratio)
+export const DETAIL_LEVEL_TYPES = ['fib'] as const;
+
 // Level entry in a sequence (ordered shallowest to deepest)
 export interface LevelEntry {
   id: string;
   levelType: string;      // "LCPB", "HOB", "fib", "S/R", ... autocomplete, user-extendable
+  levelDetail: string;    // specific variant, e.g. fib ratio: "0.5", "0.705", "GP"
   timeframe: string;      // "H1", "H4", "D1", "W1", "MTF", ""
   price: number;          // for zones: the near edge (where price enters)
   priceFar: number | null; // for zones: the far edge. null = single-line level
@@ -92,23 +66,51 @@ export interface Screenshot {
   createdAt: Date;
 }
 
-// In-trade event record
+// Unified timeline event (replaces events, stopAdjustments, and postExitSequence)
 export interface TradeEvent {
   id: string;
-  time: Date;
-  eventType: string;
-  description?: string;
+  order: number;          // authoritative sequence (1, 2, 3...)
+  time: string | null;    // optional ISO string
+  eventType: string;      // preset + custom event types
+  price: number | null;   // price level for this event
+  description: string;    // note or reason
 }
 
-// Post-exit milestone for price sequence tracking
-export type PostExitMilestoneKind = 'favourable_extreme' | 'adverse_extreme' | 'leg';
+// Event type presets
+export const EVENT_TYPE_PRESETS = [
+  'worst_price',
+  'best_price',
+  'stop_moved',
+  'liquidity_sweep',
+  'spike_up',
+  'spike_down',
+  'dump',
+  'pump',
+  'stall_consolidation',
+  'reversal',
+  'news_reaction',
+  'session_open_move',
+  'retest',
+  'favourable_extreme',
+  'adverse_extreme',
+  'leg',
+] as const;
 
-export interface PostExitMilestone {
-  id: string;
-  price: number;
-  kind: PostExitMilestoneKind;
-  note?: string;
-}
+export type EventTypePreset = typeof EVENT_TYPE_PRESETS[number];
+
+// Not taken reason presets
+export const NOT_TAKEN_REASON_PRESETS = [
+  'doubted_setup',
+  'broker_cancelled',
+  'weekend_approaching',
+  'missed_entry_window',
+  'away_from_desk',
+  'already_in_trade',
+  'risk_too_high',
+  'news_pending',
+] as const;
+
+export type NotTakenReasonPreset = typeof NOT_TAKEN_REASON_PRESETS[number];
 
 // Account entity
 export interface Account {
@@ -134,12 +136,6 @@ export interface Strategy {
   updatedAt?: Date;
 }
 
-// Tag definition for glossary (deprecated - use GlossaryTerm instead)
-export interface TagDefinition {
-  tag: string; // Primary key - the tag name
-  description: string;
-}
-
 // Glossary term for trading terminology
 export interface GlossaryTerm {
   id?: string; // Optional - Dexie Cloud generates with @id
@@ -155,9 +151,11 @@ export interface LevelTypePref {
   isZone: boolean; // true = zone (has near/far edge), false = line (single price)
 }
 
-// Trade record entity - full spec
+// Trade record entity - v2 simplified schema
 export interface TradeRecord {
   id?: string; // Optional - Dexie Cloud generates with @id
+  createdAt: Date;
+  updatedAt: Date;
   accountId: string;
   strategyId: string;
 
@@ -166,16 +164,11 @@ export interface TradeRecord {
   assetClass: AssetClass;
   direction: TradeDirection;
 
-  // === Entry & Exit ===
+  // === Entry ===
   entryTime: Date;
-  exitTime?: Date;
-  status: TradeStatus; // auto-derived: no exitTime = open
-
-  // === Price Levels ===
   entryPrice: number;
   stopLoss: number;
   targetPrice?: number;  // Primary profit target for planned R:R
-  exitPrice?: number;    // Auto-derived: weighted average of all exits
 
   // === Position Sizing ===
   positionSize: number;
@@ -183,117 +176,45 @@ export interface TradeRecord {
   riskPercent?: number;
 
   // === Exits ===
-  exits: TradeExit[];           // Unified exit records
-  stopAdjustments: StopAdjustment[];
-  exitType?: ExitType;          // Auto-derived: single exit type or undefined for multiple
+  exits: TradeExit[];
 
-  // === Setup & Market Context ===
-  setupTags: string[]; // Multi-tag confluence system
-  analysisTFs: string[]; // Timeframes used to identify the setup (e.g. W1, D1, H4)
-  entryTF?: Timeframe; // Timeframe used to execute entry (e.g. 15m, 1H)
-  entryConfirmation?: string; // How the entry was executed (blind_limit, blind_market, structural, partial_confirmation)
-  confirmationTF?: string; // Timeframe the confirmation was observed on (only for structural/partial_confirmation)
-  htfBias?: HTFBias;
-  marketCondition?: MarketCondition;
+  // === Unified Timeline ===
+  timeline: TradeEvent[];  // All events: worst/best price, stop moves, post-exit milestones
+
+  // === Setup ===
   levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
+  contextTags: string[];       // Replaces setupTags - describes trade context
+  entryTF?: Timeframe;         // Timeframe used to execute entry
+  entryConfirmation?: string;  // How the entry was executed
+  confirmationTF?: string;     // Timeframe the confirmation was observed on
 
   // === Trade Taken / Missed ===
-  tradeTaken: boolean; // false = missed/paper trade, excluded from live stats
-  notTakenReason?: string; // reason for not taking trade (only relevant when tradeTaken is false)
+  tradeTaken: boolean;         // false = missed/paper trade, excluded from live stats
+  notTakenReason: string;      // REQUIRED when tradeTaken === false
 
-  // === Psychology ===
-  emotionalState?: EmotionalState;
-  confidenceLevel?: ConfidenceLevel;
-  followedPlan?: boolean;
-  planDeviation?: string; // shown only if followedPlan is false
-  isRevengeTrade?: boolean;
-  isOverTrade?: boolean;
+  // === Notes ===
+  entryNotes?: string;         // Thesis and plan as you execute
+  closeNotes?: string;         // Immediate review as the trade closes
+  postExitNotes?: string;      // Post-exit reflection
 
-  // === Notes & Screenshots ===
-  entryNotes?: string;    // Thesis and plan as you execute
-  closeNotes?: string;    // Immediate review as the trade closes
-  screenshots: Screenshot[];
-  tags: string[];
-
-  // === In-Trade Events ===
-  events: TradeEvent[]; // Events that occurred during the trade
-
-  // === MAE/MFE (for stop/exit analysis) ===
-  maePrice: number | null; // Maximum Adverse Excursion - worst price reached during trade
-  mfePrice: number | null; // Maximum Favorable Excursion - best price reached during trade
-  maeR?: number; // MAE expressed in R-multiples (derived from maePrice)
-  mfeR?: number; // MFE expressed in R-multiples (derived from mfePrice)
-  firstTouchWorstPrice: number | null; // Worst price before initial move in trader's favour (pre-reaction extreme)
-
-  // === Post-Exit Tracking ===
-  postExitSequence: PostExitMilestone[]; // Ordered chronologically, first element = first move after exit
-  postExitBestPrice: number | null; // Best price in your favour after full exit (derived from sequence favourable_extreme)
-  postExitWorstPrice: number | null; // Worst price against your direction after exit (derived from sequence adverse_extreme)
+  // === Post-Exit Review ===
   reachedTargetPostExit: boolean | null; // Did price hit targetPrice after you exited?
-  postExitNotes: string; // Reflection on what happened after exit
-  reviewedAt: string | null; // Timestamp of when the trade was reviewed post-exit
+  reviewedAt: string | null;   // Timestamp of when the trade was reviewed post-exit
 
-  // === Auto-calculated fields ===
-  session: TradingSession; // derived from entryTime
-  plannedRR?: number; // |entryPrice - targetPrice| / |entryPrice - stopLoss|
-  actualRR?: number; // |exitPrice - entryPrice| / |entryPrice - stopLoss|
-  rMultiple?: number; // signed actualRR (positive for winners)
-  stopDistance?: number; // |entryPrice - stopLoss|
-  pnl?: number; // R-multiple × riskAmount (derived from exits)
-  commissions?: number;
-  swap?: number;
-  netPnl?: number; // pnl - commissions - swap
-  holdDuration?: number; // exitTime - entryTime in minutes
-  originalStopLoss?: number; // set on first save, never overwritten
-
-  // === Metadata ===
-  createdAt: Date;
-  updatedAt: Date;
+  // === Screenshots ===
+  screenshots: Screenshot[];
 }
 
-// Daily journal entry
+// Daily journal entry - v2 simplified
 export interface DailyJournal {
   id?: string; // Optional - Dexie Cloud generates with @id
   date: Date;
   accountId: string;
 
-  // Pre-market preparation
+  // Notes
   preMarketNotes?: string;
-  marketBias?: string;
-  keyLevels?: string;
-  newsEvents?: string;
-
-  // Daily plan
-  tradingPlan?: string;
-  maxTrades?: number;
-  maxLoss?: number;
-
-  // End of day review
   endOfDayNotes?: string;
   lessonsLearned?: string;
-
-  // Performance summary (calculated from trades)
-  totalTrades?: number;
-  winningTrades?: number;
-  losingTrades?: number;
-  totalPnl?: number;
-
-  // Mental/emotional state
-  mentalState?: string;
-  energyLevel?: number; // 1-10 scale
-  focusLevel?: number; // 1-10 scale
-  emotionalScore?: number; // 1-5 scale (same as trade form)
-
-  // Execution quality
-  grade?: 'A' | 'B' | 'C' | 'D' | 'F';
-
-  // Rule adherence
-  followedPlan?: boolean;
-  rulesViolated?: string[];
-
-  // Goals
-  dailyGoal?: string;
-  goalAchieved?: boolean;
 
   // Weekly review (for Friday entries with isWeeklyReview flag)
   isWeeklyReview?: boolean;
@@ -315,8 +236,7 @@ export type AlertType =
   | 'sizing_spike'
   | 'edge_decay'
   | 'drawdown'
-  | 'losing_streak'
-  | 'plan_deviation_streak';
+  | 'losing_streak';
 
 export interface Alert {
   id: string;
@@ -381,17 +301,11 @@ export interface TradeFormData {
   assetClass: AssetClass;
   direction: TradeDirection;
 
-  // Entry & Exit
+  // Entry
   entryTime: string; // ISO string for datetime-local input
-  exitTime: string;
-
-  // Price Levels
   entryPrice: string;
   stopLoss: string;
-  targetPrice: string;   // Primary profit target
-  maePrice: string;      // Worst price reached during trade (price level)
-  mfePrice: string;      // Best price reached during trade (price level)
-  firstTouchWorstPrice: string; // Worst price before initial move in trader's favour
+  targetPrice: string;
 
   // Position Sizing
   positionSize: string;
@@ -400,53 +314,35 @@ export interface TradeFormData {
 
   // Exits
   exits: TradeExit[];
-  stopAdjustments: StopAdjustment[];
 
-  // Setup & Market Context
-  setupTags: string[];
-  analysisTFs: string[];
+  // Timeline
+  timeline: TradeEvent[];
+
+  // Setup
+  levelSequence: LevelEntry[];
+  contextTags: string[];
   entryTF: Timeframe | '';
-  entryConfirmation: string; // blind_limit, blind_market, structural, partial_confirmation, or ''
-  confirmationTF: string; // TF the confirmation was observed on (only for structural/partial_confirmation)
-  htfBias: HTFBias | '';
-  marketCondition: MarketCondition | '';
-  levelSequence: LevelEntry[]; // Levels in zone, ordered shallowest to deepest
+  entryConfirmation: string;
+  confirmationTF: string;
 
   // Trade Taken / Missed
   tradeTaken: boolean;
   notTakenReason: string;
 
-  // Psychology
-  emotionalState: EmotionalState | null;
-  confidenceLevel: ConfidenceLevel | '';
-  followedPlan: boolean;
-  planDeviation: string;
-  isRevengeTrade: boolean;
-  isOverTrade: boolean;
-
-  // Notes & Screenshots
+  // Notes
   entryNotes: string;
   closeNotes: string;
+  postExitNotes: string;
+
+  // Screenshots
   screenshots: Screenshot[];
-  tags: string[];
-
-  // In-Trade Events
-  events: TradeEvent[];
-
-  // Fees
-  commissions: string;
-  swap: string;
 
   // Account/Strategy selection
   accountId: string;
   strategyId: string;
 
   // Post-Exit Review
-  postExitSequence: PostExitMilestone[];
-  postExitBestPrice: string;
-  postExitWorstPrice: string;
   reachedTargetPostExit: boolean | null;
-  postExitNotes: string;
 }
 
 // Type for creating new records (without id and timestamps)

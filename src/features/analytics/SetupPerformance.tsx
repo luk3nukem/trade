@@ -12,6 +12,7 @@ import {
   LabelList,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
+import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 import { db } from '../../db';
 import {
   groupPerformanceByTag,
@@ -36,6 +37,16 @@ interface Props {
 
 type SortField = 'tag' | 'count' | 'winRate' | 'avgR' | 'profitFactor' | 'totalPnl';
 type SortDirection = 'asc' | 'desc';
+
+const metricsCache = new WeakMap<TradeRecord, TradeRMetrics>();
+function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
+  let metrics = metricsCache.get(trade);
+  if (!metrics) {
+    metrics = getTradeRMetrics(trade);
+    metricsCache.set(trade, metrics);
+  }
+  return metrics;
+}
 
 export function SetupPerformance({ trades }: Props) {
   const [sortField, setSortField] = useState<SortField>('totalPnl');
@@ -313,8 +324,8 @@ export function SetupPerformance({ trades }: Props) {
                     const bucket = data as { label: string };
                     const targetCount = bucket.label === '4+' ? 4 : parseInt(bucket.label);
                     const bucketTrades = trades.filter(t => {
-                      if (t.status !== 'closed') return false;
-                      const tagCount = (t.setupTags || []).length;
+                      if (getCachedMetrics(t).status !== 'closed') return false;
+                      const tagCount = (t.contextTags || []).length;
                       if (bucket.label === '4+') return tagCount >= 4;
                       return tagCount === targetCount;
                     });
@@ -674,7 +685,7 @@ export function SetupPerformance({ trades }: Props) {
                     className="flex-1 flex flex-col items-center cursor-pointer hover:opacity-80 transition-opacity"
                     onClick={() => {
                       const bucketTrades = trades.filter(t => {
-                        if (t.status !== 'closed' || !t.levelSequence) return false;
+                        if (getCachedMetrics(t).status !== 'closed' || !t.levelSequence) return false;
                         return t.levelSequence.some(level =>
                           level.penetrationPercent !== null &&
                           level.penetrationPercent !== undefined &&

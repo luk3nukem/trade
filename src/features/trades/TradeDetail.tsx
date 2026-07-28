@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
-import type { TradeRecord, PostExitMilestone } from '../../types';
+import type { TradeRecord, TradeEvent } from '../../types';
 import { ZONE_LEVEL_TYPES } from '../../types';
 import { formatDuration } from '../../utils';
 
@@ -9,35 +9,26 @@ import { formatDuration } from '../../utils';
 const isZoneLevelType = (levelType: string): boolean => {
   return ZONE_LEVEL_TYPES.includes(levelType as typeof ZONE_LEVEL_TYPES[number]);
 };
-import { derivePostExitMetrics, getReviewDueDate, isReviewDue } from '../../utils/tradeCalculations';
-import { useAppStore } from '../../stores/appStore';
 
-// Emotional state emoji map
-const EMOTIONAL_EMOJIS: Record<number, { emoji: string; label: string }> = {
-  1: { emoji: '😰', label: 'Very Anxious' },
-  2: { emoji: '😟', label: 'Anxious' },
-  3: { emoji: '😐', label: 'Neutral' },
-  4: { emoji: '😊', label: 'Confident' },
-  5: { emoji: '🤩', label: 'Very Confident' },
-};
+import {
+  getTradeRMetrics,
+  getPreExitEvents,
+  getPostExitEvents,
+  derivePostExitMetrics,
+  getReviewDueDate,
+  isReviewDue,
+  isPostExitReviewComplete,
+  isPostExitReviewPartial,
+} from '../../utils/tradeCalculations';
+import { useAppStore } from '../../stores/appStore';
 
 // Component for displaying post-exit review data
 function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
   const { alertSettings } = useAppStore();
   const minRThreshold = alertSettings.minRThreshold ?? 1.0;
 
-  const postExitMetrics = useMemo(() => {
-    if (!trade.postExitBestPrice) return null;
-    return derivePostExitMetrics(
-      trade.entryPrice,
-      trade.exitPrice,
-      trade.postExitBestPrice,
-      trade.stopDistance,
-      trade.direction,
-      trade.rMultiple,
-      trade.exitType
-    );
-  }, [trade]);
+  const postExitMetrics = useMemo(() => derivePostExitMetrics(trade), [trade]);
+  const postExitEvents = useMemo(() => getPostExitEvents(trade), [trade]);
 
   const formatReviewDate = (dateStr: string) => {
     return new Date(dateStr).toLocaleDateString('en-US', {
@@ -51,20 +42,22 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
 
   // Determine stopout insight message
   const getStopoutInsight = () => {
-    if (!postExitMetrics?.isStopout || postExitMetrics.postStopMoveR === undefined) {
+    // Check if this was a stopout (sl_hit in exits)
+    const isStopout = trade.exits.some(e => e.type === 'sl_hit');
+    if (!isStopout || !postExitMetrics.wouldHaveR) {
       return null;
     }
 
-    const moveR = postExitMetrics.postStopMoveR;
+    const moveR = postExitMetrics.wouldHaveR;
     if (moveR >= minRThreshold) {
       return {
         type: 'thesis_correct' as const,
-        message: `Post-stop move: +${moveR.toFixed(1)}R — thesis was correct, stop placement was the issue`,
+        message: `Post-stop move: +${moveR.toFixed(1)}R - thesis was correct, stop placement was the issue`,
       };
     } else if (moveR > 0) {
       return {
         type: 'below_threshold' as const,
-        message: `Post-stop move: +${moveR.toFixed(1)}R — below your ${minRThreshold}R threshold, thesis not validated`,
+        message: `Post-stop move: +${moveR.toFixed(1)}R - below your ${minRThreshold}R threshold, thesis not validated`,
       };
     }
     return null;
@@ -72,32 +65,20 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
 
   const stopoutInsight = getStopoutInsight();
 
-  // Helper to render price sequence path
+  // Helper to render post-exit sequence path
   const renderSequencePath = () => {
-    const sequence = trade.postExitSequence;
-    if (!sequence || sequence.length === 0) return null;
+    if (postExitEvents.length === 0) return null;
 
     const direction = trade.direction;
-    const originalStop = trade.originalStopLoss ?? trade.stopLoss;
     const entryPrice = trade.entryPrice;
 
-    // Check if a milestone breaches the original stop
-    const breachesStop = (milestone: PostExitMilestone): boolean => {
-      // For longs: adverse is below entry, stop is below entry
-      // A milestone breaches stop if it's at or past the stop in adverse direction
-      if (direction === 'long') {
-        return milestone.price <= originalStop;
-      } else {
-        return milestone.price >= originalStop;
-      }
-    };
-
     // Check if milestone is above or below entry
-    const getArrow = (milestone: PostExitMilestone): string => {
+    const getArrow = (event: TradeEvent): string => {
+      if (event.price === null) return '';
       if (direction === 'long') {
-        return milestone.price >= entryPrice ? '↑' : '↓';
+        return event.price >= entryPrice ? '^' : 'v';
       } else {
-        return milestone.price <= entryPrice ? '↑' : '↓';
+        return event.price <= entryPrice ? '^' : 'v';
       }
     };
 
@@ -105,29 +86,28 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
       <div className="bg-gray-750 rounded-lg p-4">
         <h4 className="text-sm font-medium text-gray-400 mb-3">After exit:</h4>
         <div className="flex flex-wrap items-center gap-2">
-          {sequence.map((milestone, index) => {
-            const arrow = getArrow(milestone);
-            const stoppedThrough = breachesStop(milestone);
-            const kindColor = milestone.kind === 'favourable_extreme'
+          {postExitEvents.map((event, index) => {
+            const arrow = getArrow(event);
+            const kindColor = event.eventType === 'favourable_extreme'
               ? 'text-green-400'
-              : milestone.kind === 'adverse_extreme'
+              : event.eventType === 'adverse_extreme'
                 ? 'text-red-400'
-                : 'text-gray-300';
+                : event.eventType === 'leg'
+                  ? 'text-blue-400'
+                  : 'text-gray-300';
 
             return (
-              <span key={milestone.id} className="flex items-center gap-1">
-                {index > 0 && <span className="text-gray-500 mx-1">→</span>}
+              <span key={event.id} className="flex items-center gap-1">
+                {index > 0 && <span className="text-gray-500 mx-1">-&gt;</span>}
                 <span className={kindColor}>
-                  {arrow}{milestone.price.toFixed(5)}
+                  {arrow}{event.price !== null ? event.price.toFixed(5) : '-'}
                 </span>
-                {stoppedThrough && (
-                  <span className="text-xs text-amber-400 ml-1">
-                    — through original SL
-                  </span>
-                )}
-                {milestone.note && (
+                <span className="text-xs text-gray-500">
+                  ({event.eventType.replace(/_/g, ' ')})
+                </span>
+                {event.description && (
                   <span className="text-xs text-gray-500 ml-1">
-                    ({milestone.note})
+                    - {event.description}
                   </span>
                 )}
               </span>
@@ -175,7 +155,7 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
         <div className="bg-gray-750 rounded-lg p-4">
           <span className="text-xs text-gray-400">Best Price After Exit</span>
           <p className="font-mono text-lg text-green-400">
-            {trade.postExitBestPrice !== null ? trade.postExitBestPrice.toFixed(5) : '-'}
+            {postExitMetrics.postExitBestPrice !== null ? postExitMetrics.postExitBestPrice.toFixed(5) : '-'}
           </p>
         </div>
 
@@ -183,33 +163,29 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
         <div className="bg-gray-750 rounded-lg p-4">
           <span className="text-xs text-gray-400">Worst Price After Exit</span>
           <p className="font-mono text-lg text-red-400">
-            {trade.postExitWorstPrice !== null ? trade.postExitWorstPrice.toFixed(5) : '-'}
+            {postExitMetrics.postExitWorstPrice !== null ? postExitMetrics.postExitWorstPrice.toFixed(5) : '-'}
           </p>
         </div>
 
-        {/* Post-Stop Move R or Missed R */}
+        {/* Missed R */}
         <div className="bg-gray-750 rounded-lg p-4">
-          <span className="text-xs text-gray-400">
-            {postExitMetrics?.isStopout ? 'Post-Stop Move' : 'Missed R'}
-          </span>
+          <span className="text-xs text-gray-400">Missed R</span>
           <p className={`font-mono text-lg ${
-            postExitMetrics?.missedR && postExitMetrics.missedR > 0
+            postExitMetrics.missedR && postExitMetrics.missedR > 0
               ? 'text-yellow-400'
               : 'text-gray-200'
           }`}>
-            {postExitMetrics?.missedR !== undefined
+            {postExitMetrics.missedR !== undefined
               ? `+${postExitMetrics.missedR.toFixed(2)}R`
               : '-'}
           </p>
-          <span className="text-xs text-gray-500">
-            {postExitMetrics?.isStopout ? 'Move in your favour after stop' : 'Additional R available'}
-          </span>
+          <span className="text-xs text-gray-500">Additional R available</span>
         </div>
 
-        {/* Exit Efficiency - hide for stopouts since it doesn't make sense */}
+        {/* Exit Efficiency */}
         <div className="bg-gray-750 rounded-lg p-4">
           <span className="text-xs text-gray-400">Exit Efficiency</span>
-          {postExitMetrics?.isStopout ? (
+          {trade.exits.some(e => e.type === 'sl_hit') ? (
             <>
               <p className="font-mono text-lg text-gray-500">N/A</p>
               <span className="text-xs text-gray-500">Not applicable for stopouts</span>
@@ -217,7 +193,7 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
           ) : (
             <>
               <p className={`font-mono text-lg ${
-                postExitMetrics?.exitEfficiency !== undefined
+                postExitMetrics.exitEfficiency !== undefined
                   ? postExitMetrics.exitEfficiency >= 80
                     ? 'text-green-400'
                     : postExitMetrics.exitEfficiency >= 50
@@ -225,7 +201,7 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
                       : 'text-red-400'
                   : 'text-gray-200'
               }`}>
-                {postExitMetrics?.exitEfficiency !== undefined
+                {postExitMetrics.exitEfficiency !== undefined
                   ? `${postExitMetrics.exitEfficiency.toFixed(0)}%`
                   : '-'}
               </p>
@@ -280,6 +256,90 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
   );
 }
 
+// Component for unified timeline display
+function TimelineDisplay({ trade }: { trade: TradeRecord }) {
+  const preExitEvents = useMemo(() => getPreExitEvents(trade), [trade]);
+  const postExitEvents = useMemo(() => getPostExitEvents(trade), [trade]);
+  const hasExits = trade.exits.length > 0;
+
+  // Color-code by event type category
+  const getEventColor = (type: string) => {
+    if (type === 'best_price' || type === 'favourable_extreme') return 'bg-green-500';
+    if (type === 'worst_price' || type === 'adverse_extreme') return 'bg-red-500';
+    if (type === 'stop_moved') return 'bg-yellow-500';
+    if (type.includes('spike') || type === 'pump') return 'bg-green-500';
+    if (type === 'dump') return 'bg-red-500';
+    if (type === 'liquidity_sweep' || type === 'retest') return 'bg-yellow-500';
+    if (type === 'reversal') return 'bg-purple-500';
+    if (type === 'news_reaction' || type === 'session_open_move') return 'bg-orange-500';
+    if (type === 'stall_consolidation') return 'bg-gray-500';
+    if (type === 'leg') return 'bg-blue-500';
+    return 'bg-blue-500';
+  };
+
+  const renderEvent = (event: TradeEvent) => (
+    <div key={event.id} className="relative flex items-start gap-4 pl-6">
+      {/* Timeline dot */}
+      <div className={`absolute left-0 w-4 h-4 rounded-full ${getEventColor(event.eventType)} ring-4 ring-gray-800`} />
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          {event.time && (
+            <span className="text-xs text-gray-400">
+              {new Date(event.time).toLocaleString()}
+            </span>
+          )}
+          <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+            getEventColor(event.eventType).replace('bg-', 'bg-').replace('500', '500/20')
+          } ${getEventColor(event.eventType).replace('bg-', 'text-').replace('500', '400')}`}>
+            {event.eventType.replace(/_/g, ' ')}
+          </span>
+          {event.price !== null && (
+            <span className="text-xs text-gray-400 font-mono">
+              @ {event.price.toFixed(5)}
+            </span>
+          )}
+        </div>
+        {event.description && (
+          <p className="text-sm text-gray-300 mt-1">{event.description}</p>
+        )}
+      </div>
+    </div>
+  );
+
+  if (preExitEvents.length === 0 && postExitEvents.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
+      <h3 className="text-lg font-medium text-white mb-4">Timeline</h3>
+      <div className="relative">
+        {/* Vertical timeline line */}
+        <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gray-700" />
+
+        <div className="space-y-4">
+          {/* Pre-exit events */}
+          {preExitEvents.map(renderEvent)}
+
+          {/* Exit divider */}
+          {hasExits && (preExitEvents.length > 0 || postExitEvents.length > 0) && (
+            <div className="relative flex items-center gap-4 pl-6 py-2">
+              <div className="absolute left-0 w-4 h-4 rounded-full bg-purple-500 ring-4 ring-gray-800" />
+              <div className="flex-1 border-t border-purple-500/50" />
+              <span className="text-sm font-medium text-purple-400 px-2">EXIT</span>
+              <div className="flex-1 border-t border-purple-500/50" />
+            </div>
+          )}
+
+          {/* Post-exit events */}
+          {postExitEvents.map(renderEvent)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TradeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -312,6 +372,12 @@ export function TradeDetail() {
     };
     loadTrade();
   }, [id]);
+
+  // Get derived metrics
+  const metrics = useMemo(() => {
+    if (!trade) return null;
+    return getTradeRMetrics(trade);
+  }, [trade]);
 
   // Handle delete
   const handleDelete = async () => {
@@ -353,7 +419,7 @@ export function TradeDetail() {
     );
   }
 
-  if (!trade) {
+  if (!trade || !metrics) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-medium text-white">Trade not found</h2>
@@ -380,7 +446,7 @@ export function TradeDetail() {
             <div>
               <p className="text-orange-400 font-medium">This trade was not taken</p>
               <p className="text-orange-400/80 text-sm">
-                Logged for analysis only — excluded from live stats.
+                Logged for analysis only - excluded from live stats.
                 {trade.notTakenReason && (
                   <span className="block mt-1">
                     <span className="font-medium">Reason:</span> {trade.notTakenReason}
@@ -408,16 +474,16 @@ export function TradeDetail() {
             </span>
             <span
               className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                trade.status === 'open'
+                metrics.status === 'open'
                   ? 'bg-yellow-500/20 text-yellow-400'
-                  : trade.status === 'partial'
+                  : metrics.status === 'partial'
                     ? 'bg-orange-500/20 text-orange-400'
-                    : trade.status === 'closed'
+                    : metrics.status === 'closed'
                       ? 'bg-blue-500/20 text-blue-400'
                       : 'bg-gray-500/20 text-gray-400'
               }`}
             >
-              {trade.status.charAt(0).toUpperCase() + trade.status.slice(1)}
+              {metrics.status.charAt(0).toUpperCase() + metrics.status.slice(1)}
             </span>
           </div>
           <p className="mt-1 text-gray-400">{formatDate(trade.entryTime)}</p>
@@ -446,9 +512,66 @@ export function TradeDetail() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Price Summary Card */}
+        {/* Key Metrics Card */}
         <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-white mb-4">Price Levels</h3>
+          <h3 className="text-lg font-medium text-white mb-4">Key Metrics</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <span className="text-xs text-gray-400">R-Multiple</span>
+              <p className={`font-mono text-lg font-medium ${
+                metrics.rMultiple === null
+                  ? 'text-gray-200'
+                  : metrics.rMultiple >= 0
+                    ? 'text-green-400'
+                    : 'text-red-400'
+              }`}>
+                {metrics.rMultiple !== null
+                  ? `${metrics.rMultiple >= 0 ? '+' : ''}${metrics.rMultiple}R`
+                  : '-'}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400">P&L</span>
+              <p className={`font-mono text-lg font-medium ${
+                metrics.pnl === null
+                  ? 'text-gray-200'
+                  : metrics.pnl >= 0
+                    ? 'text-green-400'
+                    : 'text-red-400'
+              }`}>
+                {metrics.pnl !== null ? `$${metrics.pnl.toFixed(2)}` : '-'}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400">Session</span>
+              <p className="text-gray-200">
+                {metrics.session.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400">Hold Duration</span>
+              <p className="font-mono text-gray-200">{formatDuration(metrics.holdDuration ?? undefined)}</p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400">MAE (Worst)</span>
+              <p className="font-mono text-red-400">
+                {metrics.maePrice !== null ? metrics.maePrice.toFixed(5) : '-'}
+                {metrics.maeR !== null && ` (${metrics.maeR.toFixed(2)}R)`}
+              </p>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400">MFE (Best)</span>
+              <p className="font-mono text-green-400">
+                {metrics.mfePrice !== null ? metrics.mfePrice.toFixed(5) : '-'}
+                {metrics.mfeR !== null && ` (${metrics.mfeR.toFixed(2)}R)`}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Entry Details Card */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h3 className="text-lg font-medium text-white mb-4">Entry Details</h3>
           <div className="space-y-4">
             {/* Visual price ladder */}
             <div className="relative">
@@ -462,10 +585,10 @@ export function TradeDetail() {
                 <span className="text-sm font-medium text-blue-400">Entry Price</span>
                 <span className="font-mono font-medium text-blue-400">{trade.entryPrice}</span>
               </div>
-              {trade.exitPrice && (
+              {metrics.exitPrice && (
                 <div className="flex justify-between items-center py-2 border-b border-gray-700 bg-purple-500/10 -mx-2 px-2">
                   <span className="text-sm font-medium text-purple-400">Avg Exit Price</span>
-                  <span className="font-mono font-medium text-purple-400">{trade.exitPrice.toFixed(5)}</span>
+                  <span className="font-mono font-medium text-purple-400">{metrics.exitPrice.toFixed(5)}</span>
                 </div>
               )}
               <div className="flex justify-between items-center py-2 bg-red-500/10 -mx-2 px-2 rounded-b">
@@ -478,90 +601,12 @@ export function TradeDetail() {
             <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-700">
               <div>
                 <span className="text-xs text-gray-400">Stop Distance</span>
-                <p className="font-mono text-gray-200">{trade.stopDistance?.toFixed(5) ?? '-'}</p>
+                <p className="font-mono text-gray-200">{metrics.stopDistance.toFixed(5)}</p>
               </div>
               <div>
                 <span className="text-xs text-gray-400">Planned R:R</span>
-                <p className="font-mono text-gray-200">{trade.plannedRR ?? '-'}</p>
+                <p className="font-mono text-gray-200">{metrics.plannedRR ?? '-'}</p>
               </div>
-              <div>
-                <span className="text-xs text-gray-400">Actual R:R</span>
-                <p className="font-mono text-gray-200">{trade.actualRR ?? '-'}</p>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">R-Multiple</span>
-                <p className={`font-mono font-medium ${
-                  trade.rMultiple === undefined
-                    ? 'text-gray-200'
-                    : trade.rMultiple >= 0
-                      ? 'text-green-400'
-                      : 'text-red-400'
-                }`}>
-                  {trade.rMultiple !== undefined
-                    ? `${trade.rMultiple >= 0 ? '+' : ''}${trade.rMultiple}R`
-                    : '-'}
-                </p>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">Worst Price</span>
-                <p className="font-mono text-red-400">
-                  {trade.maePrice !== null ? trade.maePrice.toFixed(5) : '-'}
-                  {trade.maeR !== undefined && ` (${trade.maeR.toFixed(2)}R)`}
-                </p>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">Best Price</span>
-                <p className="font-mono text-green-400">
-                  {trade.mfePrice !== null ? trade.mfePrice.toFixed(5) : '-'}
-                  {trade.mfeR !== undefined && ` (${trade.mfeR.toFixed(2)}R)`}
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* P&L Card */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-white mb-4">Profit & Loss</h3>
-          <div className="space-y-4">
-            <div className="flex justify-between items-center py-2 border-b border-gray-700">
-              <span className="text-sm text-gray-400">Gross P&L</span>
-              <span className={`font-mono font-medium ${
-                trade.pnl === undefined
-                  ? 'text-gray-200'
-                  : trade.pnl >= 0
-                    ? 'text-green-400'
-                    : 'text-red-400'
-              }`}>
-                {trade.pnl !== undefined ? `$${trade.pnl.toFixed(2)}` : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-2 border-b border-gray-700">
-              <span className="text-sm text-gray-400">Commissions</span>
-              <span className="font-mono text-gray-200">
-                {trade.commissions !== undefined ? `-$${trade.commissions.toFixed(2)}` : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-2 border-b border-gray-700">
-              <span className="text-sm text-gray-400">Swap</span>
-              <span className="font-mono text-gray-200">
-                {trade.swap !== undefined ? `$${trade.swap.toFixed(2)}` : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between items-center py-3 bg-gray-750 -mx-2 px-2 rounded">
-              <span className="text-sm font-medium text-white">Net P&L</span>
-              <span className={`font-mono text-lg font-bold ${
-                trade.netPnl === undefined
-                  ? 'text-gray-200'
-                  : trade.netPnl >= 0
-                    ? 'text-green-400'
-                    : 'text-red-400'
-              }`}>
-                {trade.netPnl !== undefined ? `$${trade.netPnl.toFixed(2)}` : '-'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-700">
               <div>
                 <span className="text-xs text-gray-400">Position Size</span>
                 <p className="font-mono text-gray-200">{trade.positionSize}</p>
@@ -572,77 +617,145 @@ export function TradeDetail() {
                   {trade.riskAmount !== undefined ? `$${trade.riskAmount.toFixed(2)}` : '-'}
                 </p>
               </div>
-              <div>
-                <span className="text-xs text-gray-400">Risk %</span>
-                <p className="font-mono text-gray-200">
-                  {trade.riskPercent !== undefined ? `${trade.riskPercent}%` : '-'}
-                </p>
-              </div>
-              <div>
-                <span className="text-xs text-gray-400">Hold Duration</span>
-                <p className="font-mono text-gray-200">{formatDuration(trade.holdDuration)}</p>
-              </div>
             </div>
           </div>
         </div>
 
-        {/* Stop Management Timeline */}
-        {trade.stopAdjustments && trade.stopAdjustments.length > 0 && (
+        {/* Level Sequence Card */}
+        {trade.levelSequence && trade.levelSequence.length > 0 && (
           <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
-            <h3 className="text-lg font-medium text-white mb-4">Stop Management</h3>
-            <div className="flex items-center gap-2 overflow-x-auto pb-2">
-              {/* Original Stop */}
-              <div className="flex flex-col items-center min-w-[100px]">
-                <div className="w-3 h-3 rounded-full bg-blue-500 mb-1" />
-                <span className="text-xs text-gray-400">Original</span>
-                <span className="text-sm font-mono text-white">{trade.originalStopLoss ?? trade.stopLoss}</span>
-              </div>
+            <h3 className="text-lg font-medium text-white mb-4">Level Sequence</h3>
+            <div className="space-y-1">
+              {trade.levelSequence.map((level, index) => {
+                const isZone = isZoneLevelType(level.levelType) && level.priceFar;
+                const penetration = level.penetrationPercent;
 
-              {/* Adjustments */}
-              {trade.stopAdjustments.map((adj, idx) => (
-                <div key={adj.id} className="flex items-center">
-                  {/* Arrow */}
-                  <div className="w-8 h-0.5 bg-gray-600" />
-                  <svg className="w-4 h-4 text-gray-600 -ml-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clipRule="evenodd" />
-                  </svg>
+                return (
+                  <div
+                    key={level.id}
+                    className="py-1.5 px-2 bg-gray-750 rounded"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 w-4">{index + 1}</span>
+                      <span className="text-sm text-gray-200 font-medium">
+                        {level.levelType || '-'}
+                        {level.levelDetail && (
+                          <span className="text-blue-400 ml-1">{level.levelDetail}</span>
+                        )}
+                      </span>
+                      {level.timeframe && (
+                        <span className="text-xs text-gray-500">({level.timeframe})</span>
+                      )}
+                      {isZone ? (
+                        <span className="text-xs text-gray-400 font-mono">
+                          {level.price} to {level.priceFar}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400 font-mono">@ {level.price || '-'}</span>
+                      )}
+                      <span className="flex-1" />
+                      {level.reaction && (
+                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                          level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400' :
+                          level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400' :
+                          level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400' :
+                          'bg-red-500/20 text-red-400'
+                        }`}>
+                          {level.reaction === 'bounced' ? 'Bounced' :
+                           level.reaction === 'front_run' ? 'Front-run' :
+                           level.reaction === 'swept_then_bounced' ? 'SFP' :
+                           'Broken'}
+                        </span>
+                      )}
+                      {!level.reaction && (
+                        <span className="text-xs text-gray-600">-</span>
+                      )}
+                    </div>
 
-                  {/* Adjustment */}
-                  <div className="flex flex-col items-center min-w-[100px] ml-2">
-                    <div className={`w-3 h-3 rounded-full mb-1 ${
-                      adj.reason.toLowerCase().includes('be') ? 'bg-yellow-500' : 'bg-green-500'
-                    }`} />
-                    <span className="text-xs text-gray-400">{adj.reason || `Adj ${idx + 1}`}</span>
-                    <span className="text-sm font-mono text-white">{adj.newStop}</span>
-                    {adj.trigger && (
-                      <span className="text-xs text-gray-500">{adj.trigger}</span>
+                    {/* Zone penetration bar */}
+                    {isZone && penetration !== null && penetration !== undefined && (
+                      <div className="mt-1.5 ml-6">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                penetration >= 75 ? 'bg-red-500' :
+                                penetration >= 50 ? 'bg-orange-500' :
+                                penetration >= 25 ? 'bg-yellow-500' :
+                                'bg-green-500'
+                              }`}
+                              style={{ width: `${Math.min(100, penetration)}%` }}
+                            />
+                          </div>
+                          <span className={`text-xs ${
+                            penetration >= 75 ? 'text-red-400' :
+                            penetration >= 50 ? 'text-orange-400' :
+                            penetration >= 25 ? 'text-yellow-400' :
+                            'text-green-400'
+                          }`}>
+                            {penetration}%
+                          </span>
+                        </div>
+                      </div>
                     )}
-                    <span className="text-xs text-gray-500">
-                      {adj.time instanceof Date ? formatShortDate(adj.time) : ''}
-                    </span>
                   </div>
-                </div>
-              ))}
-
-              {/* Final Exit */}
-              {trade.exitPrice && (
-                <>
-                  <div className="w-8 h-0.5 bg-gray-600" />
-                  <svg className="w-4 h-4 text-gray-600 -ml-1" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clipRule="evenodd" />
-                  </svg>
-                  <div className="flex flex-col items-center min-w-[100px] ml-2">
-                    <div className={`w-3 h-3 rounded-full mb-1 ${
-                      (trade.rMultiple ?? 0) >= 0 ? 'bg-green-500' : 'bg-red-500'
-                    }`} />
-                    <span className="text-xs text-gray-400">Exit</span>
-                    <span className="text-sm font-mono text-white">{trade.exitPrice}</span>
-                  </div>
-                </>
-              )}
+                );
+              })}
             </div>
           </div>
         )}
+
+        {/* Context Tags Card */}
+        {trade.contextTags && trade.contextTags.length > 0 && (
+          <div className="bg-gray-800 rounded-lg p-6">
+            <h3 className="text-lg font-medium text-white mb-4">Context Tags</h3>
+            <div className="flex flex-wrap gap-1.5">
+              {trade.contextTags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm cursor-help"
+                  title={tagDescriptions[tag] || undefined}
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Entry Configuration Card */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h3 className="text-lg font-medium text-white mb-4">Entry Configuration</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between">
+              <span className="text-sm text-gray-400">Entry TF</span>
+              <span className="text-gray-200">{trade.entryTF || '-'}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-gray-400">Entry Confirmation</span>
+              <span className="text-gray-200">
+                {trade.entryConfirmation
+                  ? (() => {
+                      const label = {
+                        blind_limit: 'Blind - limit order',
+                        blind_market: 'Blind - market order',
+                        structural: 'Structural confirmation',
+                        partial_confirmation: 'Partial confirmation',
+                      }[trade.entryConfirmation] || trade.entryConfirmation;
+                      // Append confirmationTF for structural/partial
+                      if ((trade.entryConfirmation === 'structural' || trade.entryConfirmation === 'partial_confirmation') && trade.confirmationTF) {
+                        return `${label} (${trade.confirmationTF})`;
+                      }
+                      return label;
+                    })()
+                  : '-'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Unified Timeline Display */}
+        <TimelineDisplay trade={trade} />
 
         {/* Exits Section */}
         {trade.exits && trade.exits.length > 0 && (
@@ -692,298 +805,6 @@ export function TradeDetail() {
             </div>
           </div>
         )}
-
-        {/* In-Trade Events Timeline */}
-        {trade.events && trade.events.length > 0 && (
-          <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
-            <h3 className="text-lg font-medium text-white mb-4">In-Trade Events</h3>
-            <div className="relative">
-              {/* Vertical timeline line */}
-              <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-gray-700" />
-
-              <div className="space-y-4">
-                {[...trade.events]
-                  .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime())
-                  .map((event) => {
-                    // Color-code by event type category
-                    const getEventColor = (type: string) => {
-                      if (type.includes('spike') || type === 'pump') return 'bg-green-500';
-                      if (type === 'dump') return 'bg-red-500';
-                      if (type === 'liquidity_sweep' || type === 'retest') return 'bg-yellow-500';
-                      if (type === 'reversal') return 'bg-purple-500';
-                      if (type === 'news_reaction' || type === 'session_open_move') return 'bg-orange-500';
-                      if (type === 'stall_consolidation') return 'bg-gray-500';
-                      return 'bg-blue-500';
-                    };
-
-                    return (
-                      <div key={event.id} className="relative flex items-start gap-4 pl-6">
-                        {/* Timeline dot */}
-                        <div className={`absolute left-0 w-4 h-4 rounded-full ${getEventColor(event.eventType)} ring-4 ring-gray-800`} />
-
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-xs text-gray-400">
-                              {event.time instanceof Date
-                                ? event.time.toLocaleString()
-                                : new Date(event.time).toLocaleString()}
-                            </span>
-                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                              getEventColor(event.eventType).replace('bg-', 'bg-').replace('500', '500/20')
-                            } ${getEventColor(event.eventType).replace('bg-', 'text-').replace('500', '400')}`}>
-                              {event.eventType.replace(/_/g, ' ')}
-                            </span>
-                          </div>
-                          {event.description && (
-                            <p className="text-sm text-gray-300 mt-1">{event.description}</p>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Setup & Context Card */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-white mb-4">Setup & Context</h3>
-          <div className="space-y-3">
-            {/* Setup Tags as pills */}
-            <div>
-              <span className="text-sm text-gray-400">Setup Tags</span>
-              {trade.setupTags && trade.setupTags.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 mt-1">
-                  {trade.setupTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm cursor-help"
-                      title={tagDescriptions[tag] || undefined}
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-gray-200">-</p>
-              )}
-            </div>
-            <div className="flex justify-between items-start">
-              <span className="text-sm text-gray-400">Analysis TFs</span>
-              <div className="flex flex-wrap gap-1 justify-end">
-                {trade.analysisTFs && trade.analysisTFs.length > 0 ? (
-                  trade.analysisTFs.map((tf) => (
-                    <span
-                      key={tf}
-                      className="px-2 py-0.5 bg-blue-500/20 text-blue-400 rounded text-sm"
-                    >
-                      {tf}
-                    </span>
-                  ))
-                ) : (
-                  <span className="text-gray-200">-</span>
-                )}
-              </div>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Entry TF</span>
-              <span className="text-gray-200">{trade.entryTF || '-'}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Entry Confirmation</span>
-              <span className="text-gray-200">
-                {trade.entryConfirmation
-                  ? (() => {
-                      const label = {
-                        blind_limit: 'Blind — limit order',
-                        blind_market: 'Blind — market order',
-                        structural: 'Structural confirmation',
-                        partial_confirmation: 'Partial confirmation',
-                      }[trade.entryConfirmation] || trade.entryConfirmation;
-                      // Append confirmationTF for structural/partial
-                      if ((trade.entryConfirmation === 'structural' || trade.entryConfirmation === 'partial_confirmation') && trade.confirmationTF) {
-                        return `${label} (${trade.confirmationTF})`;
-                      }
-                      return label;
-                    })()
-                  : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">HTF Bias</span>
-              <span className={`${
-                trade.htfBias === 'bullish'
-                  ? 'text-green-400'
-                  : trade.htfBias === 'bearish'
-                    ? 'text-red-400'
-                    : 'text-gray-200'
-              }`}>
-                {trade.htfBias ? trade.htfBias.charAt(0).toUpperCase() + trade.htfBias.slice(1) : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">HTF Market Condition</span>
-              <span className="text-gray-200">
-                {trade.marketCondition
-                  ? trade.marketCondition.charAt(0).toUpperCase() + trade.marketCondition.slice(1)
-                  : '-'}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Session</span>
-              <span className="text-gray-200">
-                {trade.session.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase())}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Exit Type</span>
-              <span className="text-gray-200">
-                {trade.exitType
-                  ? trade.exitType.replace('_', ' ').replace(/\b\w/g, (l) => l.toUpperCase())
-                  : '-'}
-              </span>
-            </div>
-
-            {/* Level Sequence Mini-Ladder */}
-            {trade.levelSequence && trade.levelSequence.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-gray-700">
-                <span className="text-sm text-gray-400">Level Sequence</span>
-                <div className="mt-2 space-y-1">
-                  {trade.levelSequence.map((level, index) => {
-                    const isZone = isZoneLevelType(level.levelType) && level.priceFar;
-                    const penetration = level.penetrationPercent;
-
-                    return (
-                      <div
-                        key={level.id}
-                        className="py-1.5 px-2 bg-gray-750 rounded"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500 w-4">{index + 1}</span>
-                          <span className="text-sm text-gray-200 font-medium">{level.levelType || '—'}</span>
-                          {level.timeframe && (
-                            <span className="text-xs text-gray-500">({level.timeframe})</span>
-                          )}
-                          {isZone ? (
-                            <span className="text-xs text-gray-400 font-mono">
-                              {level.price} → {level.priceFar}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-400 font-mono">@ {level.price || '—'}</span>
-                          )}
-                          <span className="flex-1" />
-                          {level.reaction && (
-                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                              level.reaction === 'bounced' ? 'bg-green-500/20 text-green-400' :
-                              level.reaction === 'front_run' ? 'bg-blue-500/20 text-blue-400' :
-                              level.reaction === 'swept_then_bounced' ? 'bg-amber-500/20 text-amber-400' :
-                              'bg-red-500/20 text-red-400'
-                            }`}>
-                              {level.reaction === 'bounced' ? 'Bounced' :
-                               level.reaction === 'front_run' ? 'Front-run' :
-                               level.reaction === 'swept_then_bounced' ? 'SFP' :
-                               'Broken'}
-                            </span>
-                          )}
-                          {!level.reaction && (
-                            <span className="text-xs text-gray-600">—</span>
-                          )}
-                        </div>
-
-                        {/* Zone penetration bar */}
-                        {isZone && penetration !== null && penetration !== undefined && (
-                          <div className="mt-1.5 ml-6">
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full ${
-                                    penetration >= 75 ? 'bg-red-500' :
-                                    penetration >= 50 ? 'bg-orange-500' :
-                                    penetration >= 25 ? 'bg-yellow-500' :
-                                    'bg-green-500'
-                                  }`}
-                                  style={{ width: `${Math.min(100, penetration)}%` }}
-                                />
-                              </div>
-                              <span className={`text-xs ${
-                                penetration >= 75 ? 'text-red-400' :
-                                penetration >= 50 ? 'text-orange-400' :
-                                penetration >= 25 ? 'text-yellow-400' :
-                                'text-green-400'
-                              }`}>
-                                {penetration}%
-                              </span>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Psychology Card */}
-        <div className="bg-gray-800 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-white mb-4">Psychology</h3>
-          <div className="space-y-4">
-            {/* Emotional State */}
-            {trade.emotionalState && (
-              <div className="flex items-center gap-3">
-                <span className="text-2xl">{EMOTIONAL_EMOJIS[trade.emotionalState]?.emoji}</span>
-                <div>
-                  <span className="text-sm text-gray-400">Emotional State</span>
-                  <p className="text-gray-200">{EMOTIONAL_EMOJIS[trade.emotionalState]?.label}</p>
-                </div>
-              </div>
-            )}
-
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Confidence Level</span>
-              <span className="text-gray-200">
-                {trade.confidenceLevel
-                  ? trade.confidenceLevel.charAt(0).toUpperCase() + trade.confidenceLevel.slice(1)
-                  : '-'}
-              </span>
-            </div>
-
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Followed Plan</span>
-              <span className={trade.followedPlan ? 'text-green-400' : 'text-red-400'}>
-                {trade.followedPlan ? 'Yes' : 'No'}
-              </span>
-            </div>
-
-            {!trade.followedPlan && trade.planDeviation && (
-              <div className="bg-red-500/10 rounded p-3">
-                <span className="text-xs text-red-400">Plan Deviation</span>
-                <p className="text-gray-200 mt-1">{trade.planDeviation}</p>
-              </div>
-            )}
-
-            <div className="flex gap-4">
-              {trade.isRevengeTrade && (
-                <span className="inline-flex items-center gap-1 px-2 py-1 bg-red-500/20 text-red-400 rounded text-xs">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                  Revenge Trade
-                </span>
-              )}
-              {trade.isOverTrade && (
-                <span className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-500/20 text-yellow-400 rounded text-xs">
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Over Trade
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
 
         {/* Notes Section */}
         {(trade.entryNotes || trade.closeNotes) && (
@@ -1060,45 +881,14 @@ export function TradeDetail() {
           </div>
         )}
 
-        {/* Tags */}
-        {trade.tags && trade.tags.length > 0 && (
-          <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
-            <h3 className="text-lg font-medium text-white mb-4">Tags</h3>
-            <div className="flex flex-wrap gap-2">
-              {trade.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex px-3 py-1 bg-gray-700 rounded-full text-sm text-gray-200"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Post-Exit Review Section - Only for closed trades */}
-        {trade.status === 'closed' && (() => {
-          // Check if sequence has required extremes
-          const hasFavourable = trade.postExitSequence?.some(m => m.kind === 'favourable_extreme') ?? false;
-          const hasAdverse = trade.postExitSequence?.some(m => m.kind === 'adverse_extreme') ?? false;
-          const hasSequence = hasFavourable && hasAdverse;
-
-          // Review is complete with either sequence or legacy prices
-          const hasLegacyPrices = trade.postExitBestPrice !== null && trade.postExitWorstPrice !== null;
-          const hasPriceData = hasSequence || hasLegacyPrices;
-          const hasReachedTarget = trade.reachedTargetPostExit !== null;
-          const hasNotes = trade.postExitNotes && trade.postExitNotes.trim() !== '';
-
-          const isReviewComplete = hasPriceData && hasReachedTarget && hasNotes;
-
-          // Partial review: some data but not all
-          const hasAnyData = (trade.postExitSequence?.length ?? 0) > 0 || hasLegacyPrices || hasReachedTarget || hasNotes;
-          const isPartialReview = hasAnyData && !isReviewComplete;
-          const exitTime = trade.exitTime ? new Date(trade.exitTime) : null;
-          // Use market-hours-aware calculation (skips weekends for non-crypto)
-          const reviewDue = exitTime ? isReviewDue(exitTime, trade.assetClass) : false;
-          const reviewDueDate = exitTime ? getReviewDueDate(exitTime, trade.assetClass) : null;
+        {metrics.status === 'closed' && (() => {
+          const isReviewComplete = isPostExitReviewComplete(trade);
+          const isPartialReview = isPostExitReviewPartial(trade);
+          const exitTime = metrics.exitTime;
+          // Use market-hours-aware calculation
+          const reviewDue = isReviewDue(trade);
+          const reviewDueDate = exitTime ? getReviewDueDate(exitTime) : null;
 
           const formatExitDateTime = (date: Date) => {
             return date.toLocaleDateString('en-US', {
@@ -1172,7 +962,7 @@ export function TradeDetail() {
                       </h4>
                       <p className="text-gray-400 mb-4">
                         {isPartialReview ? (
-                          <>Fill in all fields to complete your review — post-exit price sequence (with favourable and adverse extremes), reached target, and notes.</>
+                          <>Fill in all fields to complete your review - post-exit price sequence (with favourable and adverse extremes), reached target, and notes.</>
                         ) : reviewDue ? (
                           <>Record what happened after your exit to improve your exit strategy.</>
                         ) : exitTime && reviewDueDate ? (
