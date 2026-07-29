@@ -198,7 +198,8 @@ function generateTimeline(
   let order = 1;
   const stopDistance = Math.abs(entryPrice - stopLoss);
 
-  // Generate worst_price event (MAE) ~60% of trades
+  // Generate trade_low/trade_high event (MAE) ~60% of trades
+  // MAE = trade_low for longs, trade_high for shorts
   if (Math.random() < 0.6) {
     let maePrice: number;
     if (isWinner) {
@@ -219,13 +220,14 @@ function generateTimeline(
       id: uuidv4(),
       order: order++,
       time: null,
-      eventType: 'worst_price',
+      eventType: direction === 'long' ? 'trade_low' : 'trade_high',
       price: maePrice,
       description: direction === 'long' ? 'Lowest reached' : 'Highest reached',
     });
   }
 
-  // Generate best_price event (MFE) ~60% of trades
+  // Generate trade_high/trade_low event (MFE) ~60% of trades
+  // MFE = trade_high for longs, trade_low for shorts
   if (Math.random() < 0.6) {
     let mfePrice: number;
     if (isWinner) {
@@ -247,7 +249,7 @@ function generateTimeline(
       id: uuidv4(),
       order: order++,
       time: null,
-      eventType: 'best_price',
+      eventType: direction === 'long' ? 'trade_high' : 'trade_low',
       price: mfePrice,
       description: direction === 'long' ? 'Highest reached' : 'Lowest reached',
     });
@@ -287,7 +289,8 @@ function generateTimeline(
   const daysSinceExit = (now.getTime() - exitTime.getTime()) / (1000 * 60 * 60 * 24);
 
   if (daysSinceExit > 1 && Math.random() < 0.6) {
-    // Favourable extreme (post-exit best price)
+    // Post-exit high/low (favourable extreme for direction)
+    // Favourable = post_exit_high for longs, post_exit_low for shorts
     let postExitBestPrice: number;
     if (isWinner && Math.random() < 0.4) {
       const additionalMove = stopDistance * randomBetween(0.5, 2);
@@ -305,12 +308,13 @@ function generateTimeline(
       id: uuidv4(),
       order: order++,
       time: null,
-      eventType: 'favourable_extreme',
+      eventType: direction === 'long' ? 'post_exit_high' : 'post_exit_low',
       price: postExitBestPrice,
-      description: 'Post-exit best price',
+      description: 'Post-exit favourable extreme',
     });
 
-    // Adverse extreme (post-exit worst price)
+    // Post-exit low/high (adverse extreme for direction)
+    // Adverse = post_exit_low for longs, post_exit_high for shorts
     const adverseMove = stopDistance * randomBetween(0.2, 1.2);
     const postExitWorstPrice = direction === 'long'
       ? roundToDecimals(exitPrice - adverseMove, priceDecimals)
@@ -320,9 +324,9 @@ function generateTimeline(
       id: uuidv4(),
       order: order++,
       time: null,
-      eventType: 'adverse_extreme',
+      eventType: direction === 'long' ? 'post_exit_low' : 'post_exit_high',
       price: postExitWorstPrice,
-      description: 'Post-exit worst price',
+      description: 'Post-exit adverse extreme',
     });
 
     // Add leg event ~30% of trades with post-exit data

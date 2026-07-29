@@ -1035,15 +1035,8 @@ export function TradeForm() {
     }));
   };
 
-  // Direction-aware labels for timeline events
-  const getDirectionAwareLabel = (eventType: string): string => {
-    const dir = formData.direction;
-    if (eventType === 'worst_price') {
-      return dir === 'long' ? 'Worst Price (lowest)' : 'Worst Price (highest)';
-    }
-    if (eventType === 'best_price') {
-      return dir === 'long' ? 'Best Price (highest)' : 'Best Price (lowest)';
-    }
+  // Format event type for display (simple underscore replacement)
+  const formatEventTypeLabel = (eventType: string): string => {
     return eventType.replace(/_/g, ' ');
   };
 
@@ -2018,28 +2011,28 @@ export function TradeForm() {
             Unified timeline for price events during the trade: worst/best price, stop moves, liquidity sweeps, etc.
           </p>
 
-          {/* Quick-add buttons for worst/best price */}
+          {/* Quick-add buttons for timeline events */}
           <div className="flex flex-wrap gap-2">
             <span className="text-xs text-gray-500 self-center">Quick add:</span>
             <button
               type="button"
               onClick={() => {
-                setNewEventType('worst_price');
+                setNewEventType('trade_low');
                 setEventTypeInput('');
               }}
               className="px-2 py-1 text-xs bg-red-500/20 text-red-400 hover:bg-red-500/30 rounded"
             >
-              Worst Price
+              Trade Low
             </button>
             <button
               type="button"
               onClick={() => {
-                setNewEventType('best_price');
+                setNewEventType('trade_high');
                 setEventTypeInput('');
               }}
               className="px-2 py-1 text-xs bg-green-500/20 text-green-400 hover:bg-green-500/30 rounded"
             >
-              Best Price
+              Trade High
             </button>
             <button
               type="button"
@@ -2122,7 +2115,7 @@ export function TradeForm() {
                               }}
                               className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
                             >
-                              {getDirectionAwareLabel(et)}
+                              {formatEventTypeLabel(et)}
                             </button>
                           ))}
                         </div>
@@ -2133,14 +2126,14 @@ export function TradeForm() {
                       type="button"
                       onClick={() => startEditingEventType(event.id, event.eventType)}
                       className={`px-2 py-0.5 text-xs rounded cursor-pointer hover:ring-1 hover:ring-blue-400 transition-all ${
-                        event.eventType === 'worst_price' ? 'bg-red-500/20 text-red-400' :
-                        event.eventType === 'best_price' ? 'bg-green-500/20 text-green-400' :
+                        event.eventType === 'trade_low' || event.eventType === 'post_exit_low' ? 'bg-red-500/20 text-red-400' :
+                        event.eventType === 'trade_high' || event.eventType === 'post_exit_high' ? 'bg-green-500/20 text-green-400' :
                         event.eventType === 'stop_moved' ? 'bg-blue-500/20 text-blue-400' :
                         'bg-gray-600 text-gray-300'
                       }`}
                       title="Click to edit event type"
                     >
-                      {getDirectionAwareLabel(event.eventType)}
+                      {formatEventTypeLabel(event.eventType)}
                     </button>
                   )}
 

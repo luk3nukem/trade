@@ -94,9 +94,9 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
         <div className="flex flex-wrap items-center gap-2">
           {postExitEvents.map((event, index) => {
             const arrow = getArrow(event);
-            const kindColor = event.eventType === 'favourable_extreme'
+            const kindColor = event.eventType === 'post_exit_high'
               ? 'text-green-400'
-              : event.eventType === 'adverse_extreme'
+              : event.eventType === 'post_exit_low'
                 ? 'text-red-400'
                 : event.eventType === 'leg'
                   ? 'text-blue-400'
@@ -343,8 +343,8 @@ function TimelineDisplay({ trade }: { trade: TradeRecord }) {
 
   // Color-code by event type category
   const getEventColor = (type: string) => {
-    if (type === 'best_price' || type === 'favourable_extreme') return 'bg-green-500';
-    if (type === 'worst_price' || type === 'adverse_extreme') return 'bg-red-500';
+    if (type === 'trade_high' || type === 'post_exit_high') return 'bg-green-500';
+    if (type === 'trade_low' || type === 'post_exit_low') return 'bg-red-500';
     if (type === 'stop_moved') return 'bg-amber-500';
     if (type.includes('spike') || type === 'pump') return 'bg-green-500';
     if (type === 'dump') return 'bg-red-500';

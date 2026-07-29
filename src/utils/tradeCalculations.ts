@@ -269,6 +269,62 @@ export function getCurrentDateTimeString(): string {
 // ============================================
 
 /**
+ * Normalize legacy event types to new direction-neutral names.
+ * - worst_price/best_price → trade_high/trade_low based on price vs entry
+ * - favourable_extreme/adverse_extreme → post_exit_high/post_exit_low based on price vs exit
+ *
+ * This is a migration helper for existing v2 trades.
+ */
+export function normalizeEventTypes(trade: TradeRecord): TradeEvent[] {
+  const avgExitPrice = deriveExitPrice(trade);
+
+  return trade.timeline.map(event => {
+    const price = event.price;
+
+    // worst_price → trade_low or trade_high based on actual price vs entry
+    if (event.eventType === 'worst_price') {
+      if (price === null) return event; // Can't determine without price
+      // worst_price was direction-dependent: for long it was low, for short it was high
+      // Map based on actual price: below entry = trade_low, above entry = trade_high
+      const newType = price < trade.entryPrice ? 'trade_low' : 'trade_high';
+      return { ...event, eventType: newType };
+    }
+
+    // best_price → trade_high or trade_low based on actual price vs entry
+    if (event.eventType === 'best_price') {
+      if (price === null) return event;
+      // best_price was direction-dependent: for long it was high, for short it was low
+      const newType = price > trade.entryPrice ? 'trade_high' : 'trade_low';
+      return { ...event, eventType: newType };
+    }
+
+    // favourable_extreme → post_exit_high or post_exit_low based on price vs exit
+    if (event.eventType === 'favourable_extreme') {
+      if (price === null || avgExitPrice === null) return event;
+      const newType = price > avgExitPrice ? 'post_exit_high' : 'post_exit_low';
+      return { ...event, eventType: newType };
+    }
+
+    // adverse_extreme → post_exit_high or post_exit_low based on price vs exit
+    if (event.eventType === 'adverse_extreme') {
+      if (price === null || avgExitPrice === null) return event;
+      const newType = price > avgExitPrice ? 'post_exit_high' : 'post_exit_low';
+      return { ...event, eventType: newType };
+    }
+
+    return event;
+  });
+}
+
+/**
+ * Check if a trade has legacy event types that need normalization
+ */
+export function hasLegacyEventTypes(trade: TradeRecord): boolean {
+  const legacyTypes = ['worst_price', 'best_price', 'favourable_extreme', 'adverse_extreme'];
+  return trade.timeline.some(e => legacyTypes.includes(e.eventType));
+}
+
+/**
  * Get timeline events sorted by order
  */
 export function getSortedTimeline(trade: TradeRecord): TradeEvent[] {
@@ -282,15 +338,9 @@ export function getSortedTimeline(trade: TradeRecord): TradeEvent[] {
 export function getFirstExitOrder(trade: TradeRecord): number {
   if (trade.exits.length === 0) return Infinity;
 
-  // Find the lowest order of any worst_price or best_price event that appears after entry
-  // Actually, we need to determine exit point differently
-  // The exits array has times, so we can compare timeline events to exit times
-  // For simplicity, use a heuristic: post-exit events are favourable_extreme, adverse_extreme, leg
-  // and pre-exit events are worst_price, best_price, stop_moved, etc.
-
-  // Better approach: look for first favourable_extreme or adverse_extreme after exit
+  // Look for first post-exit event (post_exit_high, post_exit_low, or leg)
   const sortedTimeline = getSortedTimeline(trade);
-  const postExitTypes = ['favourable_extreme', 'adverse_extreme', 'leg'];
+  const postExitTypes = ['post_exit_high', 'post_exit_low', 'leg'];
 
   for (const event of sortedTimeline) {
     if (postExitTypes.includes(event.eventType)) {
@@ -305,19 +355,19 @@ export function getFirstExitOrder(trade: TradeRecord): number {
  * Check if an event is a post-exit event
  */
 export function isPostExitEvent(event: TradeEvent, _trade: TradeRecord): boolean {
-  const postExitTypes = ['favourable_extreme', 'adverse_extreme', 'leg'];
+  const postExitTypes = ['post_exit_high', 'post_exit_low', 'leg'];
   return postExitTypes.includes(event.eventType);
 }
 
 /**
- * Get pre-exit timeline events (worst_price, best_price, stop_moved, etc.)
+ * Get pre-exit timeline events (trade_high, trade_low, stop_moved, etc.)
  */
 export function getPreExitEvents(trade: TradeRecord): TradeEvent[] {
   return getSortedTimeline(trade).filter(e => !isPostExitEvent(e, trade));
 }
 
 /**
- * Get post-exit timeline events (favourable_extreme, adverse_extreme, leg)
+ * Get post-exit timeline events (post_exit_high, post_exit_low, leg)
  */
 export function getPostExitEvents(trade: TradeRecord): TradeEvent[] {
   return getSortedTimeline(trade).filter(e => isPostExitEvent(e, trade));
@@ -374,12 +424,14 @@ export function getEffectiveStopAt(trade: TradeRecord, time: Date): number {
 
 /**
  * Get the favourable extreme from post-exit milestones (direction-aware)
- * For longs: highest price after exit
- * For shorts: lowest price after exit
+ * For longs: post_exit_high (highest price after exit)
+ * For shorts: post_exit_low (lowest price after exit)
  */
 export function getFavourableExtreme(trade: TradeRecord): { price: number; r: number } | null {
   const postExitEvents = getPostExitMilestones(trade);
-  const favourableEvent = postExitEvents.find(e => e.eventType === 'favourable_extreme');
+  // Favourable for longs = high, for shorts = low
+  const targetType = trade.direction === 'long' ? 'post_exit_high' : 'post_exit_low';
+  const favourableEvent = postExitEvents.find(e => e.eventType === targetType);
 
   if (!favourableEvent || favourableEvent.price === null) {
     return null;
@@ -397,12 +449,14 @@ export function getFavourableExtreme(trade: TradeRecord): { price: number; r: nu
 
 /**
  * Get the adverse extreme from post-exit milestones (direction-aware)
- * For longs: lowest price after exit
- * For shorts: highest price after exit
+ * For longs: post_exit_low (lowest price after exit)
+ * For shorts: post_exit_high (highest price after exit)
  */
 export function getAdverseExtreme(trade: TradeRecord): { price: number; r: number } | null {
   const postExitEvents = getPostExitMilestones(trade);
-  const adverseEvent = postExitEvents.find(e => e.eventType === 'adverse_extreme');
+  // Adverse for longs = low, for shorts = high
+  const targetType = trade.direction === 'long' ? 'post_exit_low' : 'post_exit_high';
+  const adverseEvent = postExitEvents.find(e => e.eventType === targetType);
 
   if (!adverseEvent || adverseEvent.price === null) {
     return null;
@@ -441,18 +495,19 @@ export function getEffectiveStop(trade: TradeRecord, asOfOrder?: number): number
 
 /**
  * Derive MAE (Maximum Adverse Excursion) price from pre-exit timeline events.
- * Looks for worst_price event or calculates from adverse events.
+ * MAE = trade_low for longs, trade_high for shorts
  */
 export function deriveMAE(trade: TradeRecord): number | null {
   const preExitEvents = getPreExitEvents(trade);
 
-  // Look for explicit worst_price event
-  const worstPriceEvent = preExitEvents.find(e => e.eventType === 'worst_price' && e.price !== null);
-  if (worstPriceEvent) {
-    return worstPriceEvent.price;
+  // MAE for longs = trade_low (most adverse), for shorts = trade_high
+  const targetType = trade.direction === 'long' ? 'trade_low' : 'trade_high';
+  const maeEvent = preExitEvents.find(e => e.eventType === targetType && e.price !== null);
+  if (maeEvent) {
+    return maeEvent.price;
   }
 
-  // If no explicit worst_price, find the most adverse price from any event
+  // Fallback: find the most adverse price from any event
   // For longs: lowest price; for shorts: highest price
   const pricesWithValues = preExitEvents
     .filter(e => e.price !== null)
@@ -471,18 +526,19 @@ export function deriveMAE(trade: TradeRecord): number | null {
 
 /**
  * Derive MFE (Maximum Favorable Excursion) price from pre-exit timeline events.
- * Looks for best_price event or calculates from favorable events.
+ * MFE = trade_high for longs, trade_low for shorts
  */
 export function deriveMFE(trade: TradeRecord): number | null {
   const preExitEvents = getPreExitEvents(trade);
 
-  // Look for explicit best_price event
-  const bestPriceEvent = preExitEvents.find(e => e.eventType === 'best_price' && e.price !== null);
-  if (bestPriceEvent) {
-    return bestPriceEvent.price;
+  // MFE for longs = trade_high (most favorable), for shorts = trade_low
+  const targetType = trade.direction === 'long' ? 'trade_high' : 'trade_low';
+  const mfeEvent = preExitEvents.find(e => e.eventType === targetType && e.price !== null);
+  if (mfeEvent) {
+    return mfeEvent.price;
   }
 
-  // If no explicit best_price, find the most favorable price from any event
+  // Fallback: find the most favorable price from any event
   // For longs: highest price; for shorts: lowest price
   const pricesWithValues = preExitEvents
     .filter(e => e.price !== null)
@@ -774,9 +830,13 @@ export function derivePostExitMetrics(
   const postExitEvents = getPostExitEvents(trade);
   const metrics = getTradeRMetrics(trade);
 
-  // Find favourable and adverse extremes from post-exit events
-  const favourableExtreme = postExitEvents.find(e => e.eventType === 'favourable_extreme');
-  const adverseExtreme = postExitEvents.find(e => e.eventType === 'adverse_extreme');
+  // Find favourable and adverse extremes from post-exit events (direction-aware)
+  // Favourable for longs = post_exit_high, for shorts = post_exit_low
+  const favourableType = trade.direction === 'long' ? 'post_exit_high' : 'post_exit_low';
+  const adverseType = trade.direction === 'long' ? 'post_exit_low' : 'post_exit_high';
+
+  const favourableExtreme = postExitEvents.find(e => e.eventType === favourableType);
+  const adverseExtreme = postExitEvents.find(e => e.eventType === adverseType);
 
   const postExitBestPrice = favourableExtreme?.price ?? null;
   const postExitWorstPrice = adverseExtreme?.price ?? null;
@@ -808,16 +868,16 @@ export function derivePostExitMetrics(
 
 /**
  * Check if a post-exit review is complete.
- * Requires: ≥1 favourable_extreme AND ≥1 adverse_extreme in timeline,
+ * Requires: both post_exit_high AND post_exit_low in timeline,
  * reachedTargetPostExit set, postExitNotes non-empty
  */
 export function isPostExitReviewComplete(trade: TradeRecord): boolean {
   const postExitEvents = getPostExitEvents(trade);
 
-  const hasFavourableExtreme = postExitEvents.some(e => e.eventType === 'favourable_extreme');
-  const hasAdverseExtreme = postExitEvents.some(e => e.eventType === 'adverse_extreme');
+  const hasPostExitHigh = postExitEvents.some(e => e.eventType === 'post_exit_high');
+  const hasPostExitLow = postExitEvents.some(e => e.eventType === 'post_exit_low');
 
-  if (!hasFavourableExtreme || !hasAdverseExtreme) {
+  if (!hasPostExitHigh || !hasPostExitLow) {
     return false;
   }
 
@@ -838,12 +898,12 @@ export function isPostExitReviewComplete(trade: TradeRecord): boolean {
 export function isPostExitReviewPartial(trade: TradeRecord): boolean {
   const postExitEvents = getPostExitEvents(trade);
 
-  const hasFavourableExtreme = postExitEvents.some(e => e.eventType === 'favourable_extreme');
-  const hasAdverseExtreme = postExitEvents.some(e => e.eventType === 'adverse_extreme');
+  const hasPostExitHigh = postExitEvents.some(e => e.eventType === 'post_exit_high');
+  const hasPostExitLow = postExitEvents.some(e => e.eventType === 'post_exit_low');
   const hasReachedTarget = trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined;
   const hasNotes = trade.postExitNotes !== undefined && trade.postExitNotes.trim() !== '';
 
-  const filledCount = [hasFavourableExtreme, hasAdverseExtreme, hasReachedTarget, hasNotes].filter(Boolean).length;
+  const filledCount = [hasPostExitHigh, hasPostExitLow, hasReachedTarget, hasNotes].filter(Boolean).length;
 
   return filledCount > 0 && filledCount < 4;
 }
@@ -900,7 +960,9 @@ export function replayHold(trade: TradeRecord, stopLevel: number): HoldReplayOut
     return { type: 'no_sequence' };
   }
 
-  const favourableExtreme = postExitEvents.find(e => e.eventType === 'favourable_extreme');
+  // Favourable for longs = post_exit_high, for shorts = post_exit_low
+  const favourableType = trade.direction === 'long' ? 'post_exit_high' : 'post_exit_low';
+  const favourableExtreme = postExitEvents.find(e => e.eventType === favourableType);
   if (!favourableExtreme || favourableExtreme.price === null) {
     return { type: 'no_sequence' };
   }
@@ -956,9 +1018,10 @@ export interface HoldReplayAnalysis {
  */
 export function getHoldReplayAnalysis(trade: TradeRecord): HoldReplayAnalysis {
   const postExitEvents = getPostExitEvents(trade);
+  // Requires both post_exit_high AND post_exit_low for a valid sequence
   const hasSequence = postExitEvents.length >= 2 &&
-    postExitEvents.some(e => e.eventType === 'favourable_extreme') &&
-    postExitEvents.some(e => e.eventType === 'adverse_extreme');
+    postExitEvents.some(e => e.eventType === 'post_exit_high') &&
+    postExitEvents.some(e => e.eventType === 'post_exit_low');
 
   const originalStopOutcome = replayHold(trade, trade.stopLoss);
 

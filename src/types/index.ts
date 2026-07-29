@@ -78,9 +78,11 @@ export interface TradeEvent {
 }
 
 // Event type presets
+// Note: trade_high/trade_low are direction-neutral (just high/low price during trade)
+// post_exit_high/post_exit_low are direction-neutral (just high/low price after exit)
 export const EVENT_TYPE_PRESETS = [
-  'worst_price',
-  'best_price',
+  'trade_high',
+  'trade_low',
   'stop_moved',
   'liquidity_sweep',
   'spike_up',
@@ -92,10 +94,18 @@ export const EVENT_TYPE_PRESETS = [
   'news_reaction',
   'session_open_move',
   'retest',
-  'favourable_extreme',
-  'adverse_extreme',
+  'post_exit_high',
+  'post_exit_low',
   'leg',
 ] as const;
+
+// Legacy event type mappings for migration
+export const LEGACY_EVENT_TYPE_MAP: Record<string, string> = {
+  'worst_price': 'trade_low',    // Will be remapped based on actual price
+  'best_price': 'trade_high',    // Will be remapped based on actual price
+  'favourable_extreme': 'post_exit_high', // Will be remapped based on actual price
+  'adverse_extreme': 'post_exit_low',     // Will be remapped based on actual price
+};
 
 export type EventTypePreset = typeof EVENT_TYPE_PRESETS[number];
 
