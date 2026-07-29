@@ -2,7 +2,12 @@ import { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord, TradeDirection, TradeStatus } from '../../types';
-import { formatDuration } from '../../utils';
+import {
+  formatDuration,
+  exportMultipleTrades,
+  downloadTradeExport,
+  getMultiTradeFilename,
+} from '../../utils';
 import { getReviewDueDate, getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 
 // Metrics cache
@@ -132,6 +137,41 @@ export function TradesPage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [filters, setFilters] = useState<Filters>(initialFilters);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
+  const [selectedTradeIds, setSelectedTradeIds] = useState<Set<string>>(new Set());
+
+  // Selection handlers
+  const toggleTradeSelection = (tradeId: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setSelectedTradeIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(tradeId)) {
+        newSet.delete(tradeId);
+      } else {
+        newSet.add(tradeId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedTradeIds.size === sortedTrades.length) {
+      setSelectedTradeIds(new Set());
+    } else {
+      setSelectedTradeIds(new Set(sortedTrades.map(t => t.id!)));
+    }
+  };
+
+  const handleExportSelected = () => {
+    const selectedTrades = sortedTrades.filter(t => selectedTradeIds.has(t.id!));
+    if (selectedTrades.length === 0) return;
+
+    const exportData = exportMultipleTrades(selectedTrades);
+    const filename = getMultiTradeFilename(selectedTrades.length);
+    downloadTradeExport(exportData, filename);
+
+    // Clear selection after export
+    setSelectedTradeIds(new Set());
+  };
 
   // Load trades from database
   useEffect(() => {
@@ -372,15 +412,28 @@ export function TradesPage() {
           <h1 className="text-2xl font-bold text-white">Trade Log</h1>
           <p className="mt-1 text-gray-400">View and manage your trade history</p>
         </div>
-        <Link
-          to="/trades/new"
-          className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors"
-        >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          New Trade
-        </Link>
+        <div className="flex items-center gap-2">
+          {selectedTradeIds.size > 0 && (
+            <button
+              onClick={handleExportSelected}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white font-medium transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Export Selected ({selectedTradeIds.size})
+            </button>
+          )}
+          <Link
+            to="/trades/new"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white font-medium transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            New Trade
+          </Link>
+        </div>
       </div>
 
       {trades.length === 0 ? (
@@ -709,6 +762,15 @@ export function TradesPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-gray-700">
+                    <th className="px-2 py-3 w-10">
+                      <input
+                        type="checkbox"
+                        checked={sortedTrades.length > 0 && selectedTradeIds.size === sortedTrades.length}
+                        onChange={toggleSelectAll}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                        title={selectedTradeIds.size === sortedTrades.length ? 'Deselect all' : 'Select all'}
+                      />
+                    </th>
                     <th className="px-4 py-3 text-left">
                       <button
                         onClick={() => handleSort('entryTime')}
@@ -804,7 +866,7 @@ export function TradesPage() {
                 <tbody>
                   {sortedTrades.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
+                      <td colSpan={11} className="px-4 py-8 text-center text-gray-400">
                         No trades match your filters
                       </td>
                     </tr>
@@ -817,8 +879,17 @@ export function TradesPage() {
                           onClick={() => navigate(`/trades/${trade.id}`)}
                           className={`border-b border-gray-700 hover:bg-gray-750 cursor-pointer transition-colors ${
                             trade.tradeTaken === false ? 'opacity-60' : ''
-                          }`}
+                          } ${selectedTradeIds.has(trade.id!) ? 'bg-blue-500/10' : ''}`}
                         >
+                          <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              checked={selectedTradeIds.has(trade.id!)}
+                              onChange={(e) => toggleTradeSelection(trade.id!, e as unknown as React.MouseEvent)}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-800"
+                            />
+                          </td>
                           <td className="px-4 py-3 text-sm text-gray-200">
                             {formatDate(trade.entryTime)}
                           </td>

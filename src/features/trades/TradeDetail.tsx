@@ -3,7 +3,13 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { db } from '../../db';
 import type { TradeRecord, TradeEvent } from '../../types';
 import { ZONE_LEVEL_TYPES } from '../../types';
-import { formatDuration } from '../../utils';
+import {
+  formatDuration,
+  exportSingleTrade,
+  downloadTradeExport,
+  getSingleTradeFilename,
+  copyTradeExportToClipboard,
+} from '../../utils';
 
 // Helper to check if a level type is a zone
 const isZoneLevelType = (levelType: string): boolean => {
@@ -501,6 +507,24 @@ export function TradeDetail() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
+  const [copyFeedback, setCopyFeedback] = useState<'idle' | 'copied' | 'failed'>('idle');
+
+  // Export trade as JSON file
+  const handleExportTrade = () => {
+    if (!trade) return;
+    const exportData = exportSingleTrade(trade);
+    const filename = getSingleTradeFilename(trade);
+    downloadTradeExport(exportData, filename);
+  };
+
+  // Copy trade JSON to clipboard
+  const handleCopyTradeJson = async () => {
+    if (!trade) return;
+    const exportData = exportSingleTrade(trade);
+    const success = await copyTradeExportToClipboard(exportData);
+    setCopyFeedback(success ? 'copied' : 'failed');
+    setTimeout(() => setCopyFeedback('idle'), 2000);
+  };
 
   // Load trade from database
   useEffect(() => {
@@ -643,6 +667,38 @@ export function TradeDetail() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Export button */}
+          <button
+            onClick={handleExportTrade}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
+            title="Download trade as JSON"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Export
+          </button>
+          {/* Copy JSON button */}
+          <button
+            onClick={handleCopyTradeJson}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+              copyFeedback === 'copied'
+                ? 'bg-green-600 text-white'
+                : copyFeedback === 'failed'
+                  ? 'bg-red-600 text-white'
+                  : 'bg-gray-700 hover:bg-gray-600 text-white'
+            }`}
+            title="Copy trade JSON to clipboard"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {copyFeedback === 'copied' ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+              )}
+            </svg>
+            {copyFeedback === 'copied' ? 'Copied!' : copyFeedback === 'failed' ? 'Failed' : 'Copy JSON'}
+          </button>
           <Link
             to={`/trades/${trade.id}/edit`}
             className="inline-flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"

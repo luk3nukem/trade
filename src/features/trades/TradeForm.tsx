@@ -271,6 +271,10 @@ export function TradeForm() {
   const [newEventType, setNewEventType] = useState('');
   const [newEventPrice, setNewEventPrice] = useState('');
   const [newEventDescription, setNewEventDescription] = useState('');
+  // Inline event type editing state
+  const [editingEventTypeId, setEditingEventTypeId] = useState<string | null>(null);
+  const [inlineEventTypeInput, setInlineEventTypeInput] = useState('');
+  const [showInlineEventTypeSuggestions, setShowInlineEventTypeSuggestions] = useState(false);
 
   // Load existing trade data for edit mode
   useEffect(() => {
@@ -921,6 +925,39 @@ export function TradeForm() {
     return allEventTypes
       .filter(et => et.toLowerCase().includes(inputValue.toLowerCase()))
       .slice(0, 10);
+  };
+
+  // Filtered event types for inline editing
+  const getInlineFilteredEventTypes = (currentType: string): string[] => {
+    const inputValue = inlineEventTypeInput || currentType;
+    if (!inputValue) return allEventTypes;
+    return allEventTypes
+      .filter(et => et.toLowerCase().includes(inputValue.toLowerCase()))
+      .slice(0, 10);
+  };
+
+  // Start inline editing of an event type
+  const startEditingEventType = (eventId: string, currentType: string) => {
+    setEditingEventTypeId(eventId);
+    setInlineEventTypeInput(currentType);
+    setShowInlineEventTypeSuggestions(true);
+  };
+
+  // Finish inline editing and save the new event type
+  const finishEditingEventType = (eventId: string, newType: string) => {
+    if (newType.trim()) {
+      updateTimelineEvent(eventId, 'eventType', newType.trim());
+    }
+    setEditingEventTypeId(null);
+    setInlineEventTypeInput('');
+    setShowInlineEventTypeSuggestions(false);
+  };
+
+  // Cancel inline editing
+  const cancelEditingEventType = () => {
+    setEditingEventTypeId(null);
+    setInlineEventTypeInput('');
+    setShowInlineEventTypeSuggestions(false);
   };
 
   const saveLevelTypeZonePref = async (levelType: string, isZone: boolean) => {
@@ -2021,15 +2058,65 @@ export function TradeForm() {
 
                   <span className="text-xs text-gray-500 w-4">{event.order}</span>
 
-                  {/* Event type badge */}
-                  <span className={`px-2 py-0.5 text-xs rounded ${
-                    event.eventType === 'worst_price' ? 'bg-red-500/20 text-red-400' :
-                    event.eventType === 'best_price' ? 'bg-green-500/20 text-green-400' :
-                    event.eventType === 'stop_moved' ? 'bg-blue-500/20 text-blue-400' :
-                    'bg-gray-600 text-gray-300'
-                  }`}>
-                    {getDirectionAwareLabel(event.eventType)}
-                  </span>
+                  {/* Event type badge - clickable for inline editing */}
+                  {editingEventTypeId === event.id ? (
+                    <div className="relative w-32">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={inlineEventTypeInput}
+                        onChange={(e) => {
+                          setInlineEventTypeInput(e.target.value);
+                          setShowInlineEventTypeSuggestions(true);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            finishEditingEventType(event.id, inlineEventTypeInput);
+                          } else if (e.key === 'Escape') {
+                            cancelEditingEventType();
+                          }
+                        }}
+                        onBlur={() => setTimeout(() => {
+                          if (editingEventTypeId === event.id) {
+                            finishEditingEventType(event.id, inlineEventTypeInput);
+                          }
+                        }, 200)}
+                        className="w-full px-2 py-0.5 bg-gray-700 border border-blue-500 rounded text-white text-xs"
+                      />
+                      {showInlineEventTypeSuggestions && getInlineFilteredEventTypes(event.eventType).length > 0 && (
+                        <div className="absolute z-30 w-48 mt-1 bg-gray-700 border border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          {getInlineFilteredEventTypes(event.eventType).map((et) => (
+                            <button
+                              key={et}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                finishEditingEventType(event.id, et);
+                              }}
+                              className="w-full px-3 py-2 text-left text-gray-200 hover:bg-gray-600 text-sm"
+                            >
+                              {getDirectionAwareLabel(et)}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => startEditingEventType(event.id, event.eventType)}
+                      className={`px-2 py-0.5 text-xs rounded cursor-pointer hover:ring-1 hover:ring-blue-400 transition-all ${
+                        event.eventType === 'worst_price' ? 'bg-red-500/20 text-red-400' :
+                        event.eventType === 'best_price' ? 'bg-green-500/20 text-green-400' :
+                        event.eventType === 'stop_moved' ? 'bg-blue-500/20 text-blue-400' :
+                        'bg-gray-600 text-gray-300'
+                      }`}
+                      title="Click to edit event type"
+                    >
+                      {getDirectionAwareLabel(event.eventType)}
+                    </button>
+                  )}
 
                   {/* Price */}
                   <input

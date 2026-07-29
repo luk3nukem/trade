@@ -17,10 +17,14 @@ function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
 // Version 3: v2 schema - unified timeline, no psychology/market context
 const BACKUP_VERSION = 3;
 
+// Export type discriminator
+export type ExportType = 'full_backup' | 'single_trade' | 'multi_trade';
+
 // Backup data structure
 export interface BackupData {
   version: number;
   exportedAt: string;
+  exportType?: ExportType;
   data: {
     trades: TradeRecord[];
     accounts: Account[];
@@ -32,6 +36,21 @@ export interface BackupData {
     accountCount: number;
     strategyCount: number;
     journalCount: number;
+    hasScreenshots: boolean;
+    screenshotCount: number;
+  };
+}
+
+// Single/multi trade export structure (minimal, trades-only)
+export interface TradeExportData {
+  version: number;
+  exportedAt: string;
+  exportType: 'single_trade' | 'multi_trade';
+  data: {
+    trades: TradeRecord[];
+  };
+  metadata: {
+    tradeCount: number;
     hasScreenshots: boolean;
     screenshotCount: number;
   };
@@ -107,7 +126,93 @@ export function downloadBackup(backup: BackupData): void {
   URL.revokeObjectURL(url);
 }
 
-// Validate backup structure
+// Export a single trade
+export function exportSingleTrade(trade: TradeRecord): TradeExportData {
+  let screenshotCount = 0;
+  if (trade.screenshots) {
+    screenshotCount = trade.screenshots.filter(s => s.url).length;
+  }
+
+  return {
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    exportType: 'single_trade',
+    data: {
+      trades: [trade],
+    },
+    metadata: {
+      tradeCount: 1,
+      hasScreenshots: screenshotCount > 0,
+      screenshotCount,
+    },
+  };
+}
+
+// Export multiple trades
+export function exportMultipleTrades(trades: TradeRecord[]): TradeExportData {
+  let screenshotCount = 0;
+  for (const trade of trades) {
+    if (trade.screenshots) {
+      screenshotCount += trade.screenshots.filter(s => s.url).length;
+    }
+  }
+
+  return {
+    version: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    exportType: 'multi_trade',
+    data: {
+      trades,
+    },
+    metadata: {
+      tradeCount: trades.length,
+      hasScreenshots: screenshotCount > 0,
+      screenshotCount,
+    },
+  };
+}
+
+// Generate filename for single trade export
+export function getSingleTradeFilename(trade: TradeRecord): string {
+  const pair = trade.pair.replace(/[/\\]/g, ''); // Remove slashes
+  const entryDate = new Date(trade.entryTime).toISOString().split('T')[0];
+  const shortId = trade.id?.slice(0, 7) || 'unknown';
+  return `trade-${pair}-${entryDate}-${shortId}.json`;
+}
+
+// Generate filename for multi-trade export
+export function getMultiTradeFilename(tradeCount: number): string {
+  const date = new Date().toISOString().split('T')[0];
+  return `trades-export-${date}-${tradeCount}trades.json`;
+}
+
+// Download trade export as JSON file
+export function downloadTradeExport(exportData: TradeExportData, filename: string): void {
+  const json = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// Copy trade export to clipboard
+export async function copyTradeExportToClipboard(exportData: TradeExportData): Promise<boolean> {
+  try {
+    const json = JSON.stringify(exportData, null, 2);
+    await navigator.clipboard.writeText(json);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Validate backup structure (accepts full backups and single/multi trade exports)
 export function validateBackup(data: unknown): { valid: boolean; error?: string; backup?: BackupData } {
   if (!data || typeof data !== 'object') {
     return { valid: false, error: 'Invalid backup file: not a valid JSON object' };
@@ -134,6 +239,35 @@ export function validateBackup(data: unknown): { valid: boolean; error?: string;
     return { valid: false, error: 'Invalid backup file: trades must be an array' };
   }
 
+  // Check export type - single_trade and multi_trade exports don't have accounts/strategies/journals
+  const exportType = backup.exportType as string | undefined;
+  const isTradeOnlyExport = exportType === 'single_trade' || exportType === 'multi_trade';
+
+  if (isTradeOnlyExport) {
+    // For trade-only exports, convert to full BackupData format with empty arrays
+    const fullBackup: BackupData = {
+      version: backup.version as number,
+      exportedAt: backup.exportedAt as string,
+      exportType: exportType as ExportType,
+      data: {
+        trades: dataSection.trades as TradeRecord[],
+        accounts: [],
+        strategies: [],
+        dailyJournals: [],
+      },
+      metadata: backup.metadata as BackupData['metadata'] || {
+        tradeCount: (dataSection.trades as TradeRecord[]).length,
+        accountCount: 0,
+        strategyCount: 0,
+        journalCount: 0,
+        hasScreenshots: false,
+        screenshotCount: 0,
+      },
+    };
+    return { valid: true, backup: fullBackup };
+  }
+
+  // Full backup validation
   if (!Array.isArray(dataSection.accounts)) {
     return { valid: false, error: 'Invalid backup file: accounts must be an array' };
   }
