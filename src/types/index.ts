@@ -40,7 +40,11 @@ export interface TradeExit {
 export type LevelReaction = 'bounced' | 'front_run' | 'swept_then_bounced' | 'broken' | null;
 
 // Zone-type levels (have two edges: near and far)
-export const ZONE_LEVEL_TYPES = ['HOB', 'LOB', 'DHOB', 'DLOB', 'OB', 'FVG', 'BB', 'IMB'] as const;
+export const ZONE_LEVEL_TYPES = ['HOB', 'LOB', 'DHOB', 'DLOB', 'OB', 'FVG', 'BB', 'IMB', 'ATR_Range'] as const;
+
+// High/Low zone types: symmetric range types where edges are labeled High/Low instead of Near/Far
+// For these types, price = high edge, priceFar = low edge (by magnitude, not approach direction)
+export const HIGH_LOW_ZONE_TYPES = ['ATR_Range'] as const;
 
 // Level types that show a detail field (e.g., fib ratio)
 export const DETAIL_LEVEL_TYPES = ['fib'] as const;
@@ -51,10 +55,11 @@ export interface LevelEntry {
   levelType: string;      // "LCPB", "HOB", "fib", "S/R", ... autocomplete, user-extendable
   levelDetail: string;    // specific variant, e.g. fib ratio: "0.5", "0.705", "GP"
   timeframe: string;      // "H1", "H4", "D1", "W1", "MTF", ""
-  price: number;          // for zones: the near edge (where price enters)
-  priceFar: number | null; // for zones: the far edge. null = single-line level
+  price: number;          // for near_far zones: near edge; for high_low zones: high edge
+  priceFar: number | null; // for near_far zones: far edge; for high_low zones: low edge; null = line level
   deepestPrice?: number | null; // zones only: extreme price reached inside zone before turn
-  penetrationPercent?: number | null; // derived, zones only: |deepestPrice - nearEdge| / |farEdge - nearEdge| × 100
+  penetrationPercent?: number | null; // near_far zones: |deepestPrice - nearEdge| / |farEdge - nearEdge| × 100
+                                       // high_low zones: rangeConsumedPercent (derived from traversal direction)
   turnPrice?: number | null; // where reaction actually began (front_run: short of level; swept_then_bounced on lines: beyond level)
   reaction: LevelReaction; // "bounced" | "front_run" | "swept_then_bounced" | "broken" | null (unresolved)
 }

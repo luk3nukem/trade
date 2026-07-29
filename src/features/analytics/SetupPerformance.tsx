@@ -15,7 +15,8 @@ import {
   ZAxis,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
-import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
+import { HIGH_LOW_ZONE_TYPES } from '../../types';
+import { getTradeRMetrics, type TradeRMetrics, isHighLowZoneType } from '../../utils/tradeCalculations';
 import { db } from '../../db';
 import {
   groupPerformanceByTag,
@@ -786,6 +787,11 @@ export function SetupPerformance({ trades }: Props) {
             <p className="text-sm text-gray-400">
               How deep does price penetrate into your zones before turning?
             </p>
+            {zonePenetrationStats.byType.some(zt => isHighLowZoneType(zt.zoneType)) && (
+              <p className="text-xs text-gray-500 mt-1">
+                Note: For symmetric range types ({HIGH_LOW_ZONE_TYPES.join(', ')}), "penetration" shows range consumed.
+              </p>
+            )}
           </div>
 
           {/* Zone Penetration Distribution */}
@@ -849,30 +855,39 @@ export function SetupPerformance({ trades }: Props) {
                     </tr>
                   </thead>
                   <tbody>
-                    {zonePenetrationStats.byType.slice(0, 8).map((zt) => (
-                      <tr
-                        key={zt.zoneType}
-                        className={`border-b border-gray-700 hover:bg-gray-750 ${zt.count < 5 ? 'opacity-50' : ''}`}
-                      >
-                        <td className="px-4 py-2 text-sm font-medium text-white">{zt.zoneType}</td>
-                        <td className="px-4 py-2 text-sm text-gray-300 text-right">
-                          {zt.count}
-                          {zt.count < 5 && <span className="text-gray-500 ml-1">*</span>}
-                        </td>
-                        <td className="px-4 py-2 text-sm text-right">
-                          <span className={`${
-                            zt.avgPenetration >= 75 ? 'text-red-400' :
-                            zt.avgPenetration >= 50 ? 'text-orange-400' :
-                            zt.avgPenetration >= 25 ? 'text-yellow-400' :
-                            'text-green-400'
-                          }`}>
-                            {zt.avgPenetration}%
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-sm text-green-400 text-right">{zt.heldCount}</td>
-                        <td className="px-4 py-2 text-sm text-red-400 text-right">{zt.brokenCount}</td>
-                      </tr>
-                    ))}
+                    {zonePenetrationStats.byType.slice(0, 8).map((zt) => {
+                      const isHighLow = isHighLowZoneType(zt.zoneType);
+                      return (
+                        <tr
+                          key={zt.zoneType}
+                          className={`border-b border-gray-700 hover:bg-gray-750 ${zt.count < 5 ? 'opacity-50' : ''}`}
+                        >
+                          <td className="px-4 py-2 text-sm font-medium text-white">
+                            {zt.zoneType}
+                            {isHighLow && <span className="text-xs text-gray-500 ml-1">(H/L)</span>}
+                          </td>
+                          <td className="px-4 py-2 text-sm text-gray-300 text-right">
+                            {zt.count}
+                            {zt.count < 5 && <span className="text-gray-500 ml-1">*</span>}
+                          </td>
+                          <td
+                            className="px-4 py-2 text-sm text-right cursor-help"
+                            title={isHighLow ? 'Avg range consumed' : 'Avg penetration'}
+                          >
+                            <span className={`${
+                              zt.avgPenetration >= 75 ? 'text-red-400' :
+                              zt.avgPenetration >= 50 ? 'text-orange-400' :
+                              zt.avgPenetration >= 25 ? 'text-yellow-400' :
+                              'text-green-400'
+                            }`}>
+                              {zt.avgPenetration}%
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-sm text-green-400 text-right">{zt.heldCount}</td>
+                          <td className="px-4 py-2 text-sm text-red-400 text-right">{zt.brokenCount}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

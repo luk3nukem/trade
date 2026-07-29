@@ -1,4 +1,5 @@
 import type { TradingSession, TradeDirection, TradeStatus, ExitType, TradeRecord, TradeEvent, LevelEntry } from '../types';
+import { HIGH_LOW_ZONE_TYPES } from '../types';
 
 /**
  * Maximum plausible R-multiple value.
@@ -613,6 +614,84 @@ export function getEntryDepthPercent(
 
   // Clamp to 0-100 (entries slightly outside zone are common)
   return Math.max(0, Math.min(100, Number(depth.toFixed(1))));
+}
+
+/**
+ * Check if a level type uses high/low edge semantics (symmetric range types)
+ * vs near/far edge semantics (approach-dependent zones).
+ */
+export function isHighLowZoneType(levelType: string): boolean {
+  return HIGH_LOW_ZONE_TYPES.includes(levelType as typeof HIGH_LOW_ZONE_TYPES[number]);
+}
+
+/**
+ * Calculate range consumed percent for high_low zone types.
+ * Measures how much of the zone's range was traversed before the turn,
+ * with direction inferred from where deepest price sits relative to edges.
+ *
+ * - If deepest is nearer the low: consumption = (high − deepest) / (high − low) × 100
+ * - If deepest is nearer the high: consumption = (deepest − low) / (high − low) × 100
+ *
+ * Returns null for line levels, non-high_low zones, or missing deepest price.
+ */
+export function getRangeConsumedPercent(level: LevelEntry): number | null {
+  // Only for high_low zone types
+  if (!isHighLowZoneType(level.levelType)) {
+    return null;
+  }
+
+  // Need both edges and deepest price
+  if (level.priceFar === null || level.deepestPrice === null || level.deepestPrice === undefined) {
+    return null;
+  }
+
+  // For high_low types: price = high, priceFar = low
+  const highEdge = Math.max(level.price, level.priceFar);
+  const lowEdge = Math.min(level.price, level.priceFar);
+  const zoneWidth = highEdge - lowEdge;
+
+  if (zoneWidth === 0) {
+    return null;
+  }
+
+  const deepest = level.deepestPrice;
+
+  // Infer traversal direction from where deepest sits
+  const distanceToLow = Math.abs(deepest - lowEdge);
+  const distanceToHigh = Math.abs(deepest - highEdge);
+
+  let consumed: number;
+  if (distanceToLow <= distanceToHigh) {
+    // Deepest is nearer the low — price came from high, consumed from top
+    consumed = ((highEdge - deepest) / zoneWidth) * 100;
+  } else {
+    // Deepest is nearer the high — price came from low, consumed from bottom
+    consumed = ((deepest - lowEdge) / zoneWidth) * 100;
+  }
+
+  return Math.max(0, Math.min(100, Number(consumed.toFixed(1))));
+}
+
+/**
+ * Normalize a high_low zone level's edges to ensure price = high, priceFar = low.
+ * Returns a new level object with edges swapped if necessary.
+ */
+export function normalizeHighLowZoneEdges(level: LevelEntry): LevelEntry {
+  if (!isHighLowZoneType(level.levelType) || level.priceFar === null) {
+    return level;
+  }
+
+  // If already correct (price >= priceFar), return as-is
+  if (level.price >= level.priceFar) {
+    return level;
+  }
+
+  // Swap edges: price should be high, priceFar should be low
+  return {
+    ...level,
+    price: level.priceFar,
+    priceFar: level.price,
+  };
 }
 
 /**

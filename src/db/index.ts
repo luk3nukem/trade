@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie';
 import dexieCloud from 'dexie-cloud-addon';
 import type { TradeRecord, Account, Strategy, DailyJournal, GlossaryTerm, LevelTypePref } from '../types';
+import { normalizeHighLowZoneEdges, isHighLowZoneType } from '../utils/tradeCalculations';
 
 // Database class extending Dexie with cloud sync
 class TradingDiaryDB extends Dexie {
@@ -73,6 +74,9 @@ export async function initializeSeedData(): Promise<void> {
     await db.strategies.add(DEFAULT_STRATEGY as Strategy);
     console.log('Default strategy created');
   }
+
+  // Run data migrations
+  await migrateHighLowZoneEdges();
 }
 
 // Helper to get the default account
@@ -83,6 +87,37 @@ export async function getDefaultAccount(): Promise<Account | undefined> {
 // Helper to get the default strategy
 export async function getDefaultStrategy(): Promise<Strategy | undefined> {
   return db.strategies.filter(s => s.isDefault === true).first();
+}
+
+// Migration: normalize high_low zone edges (ensure price = high, priceFar = low)
+export async function migrateHighLowZoneEdges(): Promise<number> {
+  let migratedCount = 0;
+  const allTrades = await db.trades.toArray();
+
+  for (const trade of allTrades) {
+    if (!trade.levelSequence || trade.levelSequence.length === 0) continue;
+
+    let needsUpdate = false;
+    const updatedLevels = trade.levelSequence.map((level) => {
+      if (!isHighLowZoneType(level.levelType) || level.priceFar === null) return level;
+      // Check if edges need swapping (price should be high, priceFar should be low)
+      if (level.price < level.priceFar) {
+        needsUpdate = true;
+        return normalizeHighLowZoneEdges(level);
+      }
+      return level;
+    });
+
+    if (needsUpdate && trade.id) {
+      await db.trades.update(trade.id, { levelSequence: updatedLevels });
+      migratedCount++;
+    }
+  }
+
+  if (migratedCount > 0) {
+    console.log(`Migrated ${migratedCount} trade(s) with high_low zone edge normalization`);
+  }
+  return migratedCount;
 }
 
 export default db;

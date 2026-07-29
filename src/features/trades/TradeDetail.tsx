@@ -26,6 +26,7 @@ import {
   isPostExitReviewComplete,
   isPostExitReviewPartial,
   getEntryDepthPercent,
+  isHighLowZoneType,
 } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
@@ -859,7 +860,11 @@ export function TradeDetail() {
                       )}
                       {isZone ? (
                         <span className="text-xs text-gray-400 font-mono">
-                          {level.price} to {level.priceFar}
+                          {isHighLowZoneType(level.levelType) ? (
+                            <>{level.price} <span className="text-gray-500">(H)</span> to {level.priceFar} <span className="text-gray-500">(L)</span></>
+                          ) : (
+                            <>{level.price} to {level.priceFar}</>
+                          )}
                         </span>
                       ) : (
                         <span className="text-xs text-gray-400 font-mono">@ {level.price || '-'}</span>
@@ -914,13 +919,18 @@ export function TradeDetail() {
                             </span>
                           </div>
                         )}
-                        {/* Penetration */}
+                        {/* Penetration / Range consumed */}
                         {penetration !== null && penetration !== undefined && (
                           <div
                             className="flex items-center gap-2 cursor-help"
-                            title="Penetration: how deep price went into the zone before turning"
+                            title={isHighLowZoneType(level.levelType)
+                              ? "Range consumed: how much of the zone was traversed before turning"
+                              : "Penetration: how deep price went into the zone before turning"
+                            }
                           >
-                            <span className="text-xs text-gray-500">Penetration:</span>
+                            <span className="text-xs text-gray-500">
+                              {isHighLowZoneType(level.levelType) ? 'Consumed:' : 'Penetration:'}
+                            </span>
                             <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
                               <div
                                 className={`h-full rounded-full ${

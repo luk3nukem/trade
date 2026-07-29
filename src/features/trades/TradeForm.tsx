@@ -33,6 +33,8 @@ import {
   parseLocalDateTime,
   getCurrentDateTimeString,
   toLocalDateTimeString,
+  isHighLowZoneType,
+  getRangeConsumedPercent,
 } from '../../utils';
 
 // Preset level types - zones have two edges, lines are single price
@@ -1701,39 +1703,73 @@ export function TradeForm() {
                         <div className="flex items-center gap-2 ml-7 md:ml-0">
                           {isZone ? (
                             <>
-                              <input
-                                type="number"
-                                step="any"
-                                value={level.price || ''}
-                                onChange={(e) => {
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
-                                    ),
-                                  }));
-                                }}
-                                placeholder="Near"
-                                title="Near edge"
-                                className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              />
-                              <span className="text-gray-500 text-xs shrink-0">-</span>
-                              <input
-                                type="number"
-                                step="any"
-                                value={level.priceFar || ''}
-                                onChange={(e) => {
-                                  setFormData((prev) => ({
-                                    ...prev,
-                                    levelSequence: prev.levelSequence.map((l, i) =>
-                                      i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
-                                    ),
-                                  }));
-                                }}
-                                placeholder="Far"
-                                title="Far edge"
-                                className="flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                              />
+                              {/* For high_low zones (ATR_Range): price = High, priceFar = Low */}
+                              {/* For near_far zones: price = Near, priceFar = Far */}
+                              {(() => {
+                                const isHighLow = isHighLowZoneType(level.levelType);
+                                const edgeLabels = isHighLow
+                                  ? { first: 'High', second: 'Low', firstTitle: 'High edge', secondTitle: 'Low edge' }
+                                  : { first: 'Near', second: 'Far', firstTitle: 'Near edge', secondTitle: 'Far edge' };
+                                const edgesReversed = isHighLow && level.price > 0 && level.priceFar !== null && level.priceFar > 0 && level.price < level.priceFar;
+                                return (
+                                  <>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={level.price || ''}
+                                      onChange={(e) => {
+                                        setFormData((prev) => ({
+                                          ...prev,
+                                          levelSequence: prev.levelSequence.map((l, i) =>
+                                            i === index ? { ...l, price: parseFloat(e.target.value) || 0 } : l
+                                          ),
+                                        }));
+                                      }}
+                                      placeholder={edgeLabels.first}
+                                      title={edgeLabels.firstTitle}
+                                      className={`flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border rounded text-white text-sm ${
+                                        edgesReversed ? 'border-amber-500' : 'border-gray-600'
+                                      }`}
+                                    />
+                                    <span className="text-gray-500 text-xs shrink-0">-</span>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      value={level.priceFar || ''}
+                                      onChange={(e) => {
+                                        setFormData((prev) => ({
+                                          ...prev,
+                                          levelSequence: prev.levelSequence.map((l, i) =>
+                                            i === index ? { ...l, priceFar: parseFloat(e.target.value) || null } : l
+                                          ),
+                                        }));
+                                      }}
+                                      placeholder={edgeLabels.second}
+                                      title={edgeLabels.secondTitle}
+                                      className={`flex-1 md:flex-none md:w-24 px-2 py-1.5 md:py-1 bg-gray-700 border rounded text-white text-sm ${
+                                        edgesReversed ? 'border-amber-500' : 'border-gray-600'
+                                      }`}
+                                    />
+                                    {edgesReversed && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setFormData((prev) => ({
+                                            ...prev,
+                                            levelSequence: prev.levelSequence.map((l, i) =>
+                                              i === index ? { ...l, price: l.priceFar!, priceFar: l.price } : l
+                                            ),
+                                          }));
+                                        }}
+                                        className="text-xs text-amber-400 hover:text-amber-300 shrink-0"
+                                        title="High should be greater than Low - click to swap"
+                                      >
+                                        ↔ swap
+                                      </button>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </>
                           ) : (
                             <input
@@ -1785,7 +1821,11 @@ export function TradeForm() {
                             value={level.deepestPrice || ''}
                             onChange={(e) => {
                               const deepest = parseFloat(e.target.value) || null;
-                              const newPenetration = calculatePenetrationPercent(level.price, level.priceFar!, deepest);
+                              // For high_low zones, use rangeConsumedPercent; for near_far zones, use penetrationPercent
+                              const updatedLevel = { ...level, deepestPrice: deepest };
+                              const newPenetration = isHighLowZoneType(level.levelType)
+                                ? getRangeConsumedPercent(updatedLevel)
+                                : calculatePenetrationPercent(level.price, level.priceFar!, deepest);
                               setFormData((prev) => ({
                                 ...prev,
                                 levelSequence: prev.levelSequence.map((l, i) =>
@@ -1807,7 +1847,7 @@ export function TradeForm() {
                               penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
                               'bg-green-500/20 text-green-400'
                             }`}>
-                              {penetration}% penetrated
+                              {penetration}% {isHighLowZoneType(level.levelType) ? 'consumed' : 'penetrated'}
                             </span>
                           )}
                         </div>
