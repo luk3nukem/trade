@@ -1,4 +1,4 @@
-import type { TradingSession, TradeDirection, TradeStatus, ExitType, TradeRecord, TradeEvent } from '../types';
+import type { TradingSession, TradeDirection, TradeStatus, ExitType, TradeRecord, TradeEvent, LevelEntry } from '../types';
 
 /**
  * Maximum plausible R-multiple value.
@@ -566,6 +566,53 @@ export function deriveAnalysisTFs(trade: TradeRecord): string[] {
     }
   }
   return Array.from(tfs);
+}
+
+/**
+ * Calculate entry depth percent for a zone level.
+ * Measures where the entry price sits within the zone, direction-relative:
+ * - 0% = premium edge for the trade's direction (least favorable entry)
+ * - 100% = full discount (most favorable entry within the zone)
+ *
+ * For longs: depth = (highEdge − entryPrice) / (highEdge − lowEdge) × 100
+ * For shorts: depth = (entryPrice − lowEdge) / (highEdge − lowEdge) × 100
+ *
+ * Returns null for line levels (no priceFar) or if edges are equal.
+ */
+export function getEntryDepthPercent(
+  trade: TradeRecord,
+  level: LevelEntry
+): number | null {
+  // Line levels have no depth concept
+  if (level.priceFar === null) {
+    return null;
+  }
+
+  // Determine high and low edges (ignore near/far semantics)
+  const highEdge = Math.max(level.price, level.priceFar);
+  const lowEdge = Math.min(level.price, level.priceFar);
+  const zoneWidth = highEdge - lowEdge;
+
+  // Guard against zero-width zones
+  if (zoneWidth === 0) {
+    return null;
+  }
+
+  const entryPrice = trade.entryPrice;
+  let depth: number;
+
+  if (trade.direction === 'long') {
+    // For longs: entering at the low edge is 100% depth (full discount)
+    // entering at the high edge is 0% depth (premium)
+    depth = ((highEdge - entryPrice) / zoneWidth) * 100;
+  } else {
+    // For shorts: entering at the high edge is 100% depth (full discount)
+    // entering at the low edge is 0% depth (premium)
+    depth = ((entryPrice - lowEdge) / zoneWidth) * 100;
+  }
+
+  // Clamp to 0-100 (entries slightly outside zone are common)
+  return Math.max(0, Math.min(100, Number(depth.toFixed(1))));
 }
 
 /**

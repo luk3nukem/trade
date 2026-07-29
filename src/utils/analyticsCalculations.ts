@@ -5044,6 +5044,224 @@ export function getZonePenetrationInsights(
   return insights;
 }
 
+// ============================================================================
+// Zone Entry Depth vs Outcome Analysis
+// ============================================================================
+
+import { getEntryDepthPercent } from './tradeCalculations';
+
+export interface ZoneEntryDepthBucket {
+  bucket: string;
+  bucketMin: number;
+  bucketMax: number;
+  count: number;
+  wins: number;
+  losses: number;
+  winRate: number;
+  avgR: number;
+  tradeIds: string[];
+}
+
+export interface ZoneEntryDepthScatterPoint {
+  entryDepth: number;
+  rMultiple: number;
+  direction: 'long' | 'short';
+  zoneType: string;
+  tradeId: string;
+}
+
+export interface ZoneEntryDepthAnalysis {
+  histogram: ZoneEntryDepthBucket[];
+  scatter: ZoneEntryDepthScatterPoint[];
+  byZoneType: Map<string, ZoneEntryDepthBucket[]>;
+  tradesWithData: number;
+  totalTrades: number;
+  zoneTypesPresent: string[];
+}
+
+/**
+ * Analyze zone entry depth vs trade outcome.
+ * Entry depth measures where entry price sits within the zone, direction-relative:
+ * - 0% = premium edge (least favorable entry)
+ * - 100% = full discount (most favorable entry)
+ */
+export function getZoneEntryDepthVsOutcome(trades: TradeRecord[]): ZoneEntryDepthAnalysis {
+  const buckets = [
+    { label: '0-25%', min: 0, max: 25 },
+    { label: '25-50%', min: 25, max: 50 },
+    { label: '50-75%', min: 50, max: 75 },
+    { label: '75-90%', min: 75, max: 90 },
+    { label: '90-100%', min: 90, max: 100 },
+  ];
+
+  const closedTrades = trades.filter(t => getCachedMetrics(t).status === 'closed');
+  const scatter: ZoneEntryDepthScatterPoint[] = [];
+  const byZoneType = new Map<string, Array<{ depth: number; r: number; isWin: boolean; tradeId: string }>>();
+  const zoneTypesSet = new Set<string>();
+  let tradesWithData = 0;
+
+  for (const trade of closedTrades) {
+    if (!trade.levelSequence) continue;
+    const metrics = getCachedMetrics(trade);
+    const rMultiple = metrics.rMultiple;
+    if (rMultiple === null || rMultiple === undefined) continue;
+
+    // Find zone levels in this trade
+    for (const level of trade.levelSequence) {
+      if (
+        ZONE_LEVEL_TYPES.includes(level.levelType as typeof ZONE_LEVEL_TYPES[number]) &&
+        level.priceFar !== null
+      ) {
+        const entryDepth = getEntryDepthPercent(trade, level);
+        if (entryDepth === null) continue;
+
+        tradesWithData++;
+        zoneTypesSet.add(level.levelType);
+
+        // Add to scatter data
+        scatter.push({
+          entryDepth,
+          rMultiple,
+          direction: trade.direction,
+          zoneType: level.levelType,
+          tradeId: trade.id || '',
+        });
+
+        // Group by zone type
+        if (!byZoneType.has(level.levelType)) {
+          byZoneType.set(level.levelType, []);
+        }
+        byZoneType.get(level.levelType)!.push({
+          depth: entryDepth,
+          r: rMultiple,
+          isWin: rMultiple > 0,
+          tradeId: trade.id || '',
+        });
+      }
+    }
+  }
+
+  // Build overall histogram
+  const histogram: ZoneEntryDepthBucket[] = buckets.map(b => {
+    const inBucket = scatter.filter(s =>
+      s.entryDepth >= b.min && s.entryDepth < (b.max === 100 ? 101 : b.max)
+    );
+    const wins = inBucket.filter(s => s.rMultiple > 0).length;
+    const losses = inBucket.filter(s => s.rMultiple < 0).length;
+    const avgR = inBucket.length > 0
+      ? inBucket.reduce((sum, s) => sum + s.rMultiple, 0) / inBucket.length
+      : 0;
+
+    return {
+      bucket: b.label,
+      bucketMin: b.min,
+      bucketMax: b.max,
+      count: inBucket.length,
+      wins,
+      losses,
+      winRate: inBucket.length > 0 ? (wins / inBucket.length) * 100 : 0,
+      avgR: Number(avgR.toFixed(2)),
+      tradeIds: inBucket.map(s => s.tradeId),
+    };
+  });
+
+  // Build per-zone-type histograms
+  const byZoneTypeHistograms = new Map<string, ZoneEntryDepthBucket[]>();
+  for (const [zoneType, data] of byZoneType.entries()) {
+    const typeHistogram: ZoneEntryDepthBucket[] = buckets.map(b => {
+      const inBucket = data.filter(d =>
+        d.depth >= b.min && d.depth < (b.max === 100 ? 101 : b.max)
+      );
+      const wins = inBucket.filter(d => d.isWin).length;
+      const losses = inBucket.filter(d => !d.isWin && d.r < 0).length;
+      const avgR = inBucket.length > 0
+        ? inBucket.reduce((sum, d) => sum + d.r, 0) / inBucket.length
+        : 0;
+
+      return {
+        bucket: b.label,
+        bucketMin: b.min,
+        bucketMax: b.max,
+        count: inBucket.length,
+        wins,
+        losses,
+        winRate: inBucket.length > 0 ? (wins / inBucket.length) * 100 : 0,
+        avgR: Number(avgR.toFixed(2)),
+        tradeIds: inBucket.map(d => d.tradeId),
+      };
+    });
+    byZoneTypeHistograms.set(zoneType, typeHistogram);
+  }
+
+  return {
+    histogram,
+    scatter,
+    byZoneType: byZoneTypeHistograms,
+    tradesWithData,
+    totalTrades: closedTrades.length,
+    zoneTypesPresent: Array.from(zoneTypesSet).sort(),
+  };
+}
+
+/**
+ * Generate insights about zone entry depth vs outcome
+ */
+export function getZoneEntryDepthInsights(
+  analysis: ZoneEntryDepthAnalysis,
+  selectedZoneType?: string
+): string[] {
+  const insights: string[] = [];
+
+  // Use selected zone type data if specified, otherwise use overall
+  const histogram = selectedZoneType && analysis.byZoneType.has(selectedZoneType)
+    ? analysis.byZoneType.get(selectedZoneType)!
+    : analysis.histogram;
+
+  if (histogram.reduce((sum, b) => sum + b.count, 0) < 5) {
+    return insights;
+  }
+
+  // Compare high depth (90%+) vs low depth (<75%)
+  const highDepthBucket = histogram.find(b => b.bucketMin === 90);
+  const lowDepthBuckets = histogram.filter(b => b.bucketMax <= 75);
+  const lowDepthCount = lowDepthBuckets.reduce((sum, b) => sum + b.count, 0);
+  const lowDepthWins = lowDepthBuckets.reduce((sum, b) => sum + b.wins, 0);
+  const lowDepthWinRate = lowDepthCount > 0 ? (lowDepthWins / lowDepthCount) * 100 : 0;
+
+  if (highDepthBucket && highDepthBucket.count >= 3 && lowDepthCount >= 3) {
+    const zoneLabel = selectedZoneType || 'zone';
+    const depthIsPredictive = Math.abs(highDepthBucket.winRate - lowDepthWinRate) > 10;
+    const betterAtHigh = highDepthBucket.winRate > lowDepthWinRate;
+
+    insights.push(
+      `Your ${zoneLabel} ${selectedZoneType ? '' : 'entries at '}90%+ entry depth win ${highDepthBucket.winRate.toFixed(0)}% (n=${highDepthBucket.count}) vs ${lowDepthWinRate.toFixed(0)}% for entries under 75% depth (n=${lowDepthCount}). Depth ${depthIsPredictive ? (betterAtHigh ? 'is predictive — deeper entries perform better' : 'is predictive — shallower entries perform better') : 'isn\'t clearly predictive so far'}.`
+    );
+  }
+
+  // Direction-specific insight
+  const longScatter = analysis.scatter.filter(s => s.direction === 'long');
+  const shortScatter = analysis.scatter.filter(s => s.direction === 'short');
+
+  if (longScatter.length >= 5 && shortScatter.length >= 5) {
+    const longHighDepth = longScatter.filter(s => s.entryDepth >= 75);
+    const shortHighDepth = shortScatter.filter(s => s.entryDepth >= 75);
+
+    if (longHighDepth.length >= 3 && shortHighDepth.length >= 3) {
+      const longHighWinRate = (longHighDepth.filter(s => s.rMultiple > 0).length / longHighDepth.length) * 100;
+      const shortHighWinRate = (shortHighDepth.filter(s => s.rMultiple > 0).length / shortHighDepth.length) * 100;
+
+      if (Math.abs(longHighWinRate - shortHighWinRate) > 15) {
+        const better = longHighWinRate > shortHighWinRate ? 'longs' : 'shorts';
+        insights.push(
+          `High-depth entries (75%+) perform better for ${better}: ${better === 'longs' ? longHighWinRate.toFixed(0) : shortHighWinRate.toFixed(0)}% win rate vs ${better === 'longs' ? shortHighWinRate.toFixed(0) : longHighWinRate.toFixed(0)}% for ${better === 'longs' ? 'shorts' : 'longs'}.`
+        );
+      }
+    }
+  }
+
+  return insights;
+}
+
 // ==========================================
 // CONFIRMATION TIMEFRAME ANALYSIS
 // ==========================================

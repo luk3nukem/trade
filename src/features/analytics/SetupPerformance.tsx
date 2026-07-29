@@ -10,6 +10,9 @@ import {
   Cell,
   ReferenceLine,
   LabelList,
+  ScatterChart,
+  Scatter,
+  ZAxis,
 } from 'recharts';
 import type { TradeRecord } from '../../types';
 import { getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
@@ -29,6 +32,8 @@ import {
   getZoneEntryPlacementInsights,
   getLevelsInsideZonesAnalysis,
   getZonePenetrationInsights,
+  getZoneEntryDepthVsOutcome,
+  getZoneEntryDepthInsights,
   CHART_TOOLTIP_STYLES,
 } from '../../utils';
 import { TradeListModal } from '../../components';
@@ -100,6 +105,39 @@ export function SetupPerformance({ trades }: Props) {
     () => getZonePenetrationInsights(zonePenetrationStats, zoneEntryPlacement, levelsInsideZones),
     [zonePenetrationStats, zoneEntryPlacement, levelsInsideZones]
   );
+
+  // Zone Entry Depth vs Outcome Analytics
+  const zoneEntryDepthAnalysis = useMemo(() => getZoneEntryDepthVsOutcome(trades), [trades]);
+  const [selectedEntryDepthZoneType, setSelectedEntryDepthZoneType] = useState<string>('');
+
+  // Set default zone type filter (prefer ATR_Range if present)
+  useEffect(() => {
+    if (zoneEntryDepthAnalysis.zoneTypesPresent.length > 0 && !selectedEntryDepthZoneType) {
+      const hasATRRange = zoneEntryDepthAnalysis.zoneTypesPresent.includes('ATR_Range');
+      setSelectedEntryDepthZoneType(hasATRRange ? 'ATR_Range' : '');
+    }
+  }, [zoneEntryDepthAnalysis.zoneTypesPresent, selectedEntryDepthZoneType]);
+
+  const zoneEntryDepthInsights = useMemo(
+    () => getZoneEntryDepthInsights(zoneEntryDepthAnalysis, selectedEntryDepthZoneType || undefined),
+    [zoneEntryDepthAnalysis, selectedEntryDepthZoneType]
+  );
+
+  // Get filtered histogram for display
+  const filteredEntryDepthHistogram = useMemo(() => {
+    if (selectedEntryDepthZoneType && zoneEntryDepthAnalysis.byZoneType.has(selectedEntryDepthZoneType)) {
+      return zoneEntryDepthAnalysis.byZoneType.get(selectedEntryDepthZoneType)!;
+    }
+    return zoneEntryDepthAnalysis.histogram;
+  }, [zoneEntryDepthAnalysis, selectedEntryDepthZoneType]);
+
+  // Get filtered scatter for display
+  const filteredEntryDepthScatter = useMemo(() => {
+    if (selectedEntryDepthZoneType) {
+      return zoneEntryDepthAnalysis.scatter.filter(s => s.zoneType === selectedEntryDepthZoneType);
+    }
+    return zoneEntryDepthAnalysis.scatter;
+  }, [zoneEntryDepthAnalysis, selectedEntryDepthZoneType]);
 
   const sortedTagStats = useMemo(() => {
     return [...tagStats].sort((a, b) => {
@@ -939,6 +977,185 @@ export function SetupPerformance({ trades }: Props) {
               <h4 className="text-sm font-medium text-purple-400 mb-2">Zone Penetration Insights</h4>
               <ul className="space-y-1">
                 {zonePenetrationInsights.map((insight, i) => (
+                  <li key={i} className="text-sm text-gray-300">{insight}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Section 6: Entry Depth vs Outcome */}
+      {zoneEntryDepthAnalysis.tradesWithData > 0 && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-medium text-white">Entry Depth vs Outcome</h3>
+            <p className="text-sm text-gray-400">
+              How does your entry position within zones affect trade outcomes?
+            </p>
+            <p className="text-xs text-gray-500 mt-1">
+              Entry depth: where your entry sat in the zone, direction-relative (0% = premium edge, 100% = maximum discount).
+              This is distinct from penetration, which measures how deep price went before turning.
+            </p>
+          </div>
+
+          {/* Zone Type Filter */}
+          {zoneEntryDepthAnalysis.zoneTypesPresent.length > 1 && (
+            <div className="mb-4 flex items-center gap-2">
+              <span className="text-sm text-gray-400">Filter by zone type:</span>
+              <select
+                value={selectedEntryDepthZoneType}
+                onChange={(e) => setSelectedEntryDepthZoneType(e.target.value)}
+                className="px-3 py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+              >
+                <option value="">All zones</option>
+                {zoneEntryDepthAnalysis.zoneTypesPresent.map(zt => (
+                  <option key={zt} value={zt}>{zt}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Histogram */}
+          {filteredEntryDepthHistogram.some(b => b.count > 0) && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Entry Depth Distribution</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                Click a bar to see trades in that depth bucket.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b border-gray-700 bg-gray-750">
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400">Depth</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">n</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Win Rate</th>
+                      <th className="px-4 py-2 text-right text-xs font-medium text-gray-400">Avg R</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-400 w-40">Distribution</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredEntryDepthHistogram.map((bucket) => (
+                      <tr
+                        key={bucket.bucket}
+                        className="border-b border-gray-700 hover:bg-gray-750 cursor-pointer"
+                        onClick={() => {
+                          const bucketTrades = trades.filter(t =>
+                            bucket.tradeIds.includes(t.id || '')
+                          );
+                          if (bucketTrades.length > 0) {
+                            setModalTitle(`Entry Depth: ${bucket.bucket}${selectedEntryDepthZoneType ? ` (${selectedEntryDepthZoneType})` : ''}`);
+                            setModalTrades(bucketTrades);
+                          }
+                        }}
+                      >
+                        <td className="px-4 py-2 text-sm font-medium text-white">{bucket.bucket}</td>
+                        <td className="px-4 py-2 text-sm text-gray-300 text-right">{bucket.count}</td>
+                        <td className={`px-4 py-2 text-sm text-right ${bucket.winRate >= 50 ? 'text-green-400' : 'text-red-400'}`}>
+                          {bucket.count > 0 ? `${bucket.winRate.toFixed(0)}%` : '-'}
+                        </td>
+                        <td className={`px-4 py-2 text-sm text-right ${bucket.avgR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {bucket.count > 0 ? `${bucket.avgR >= 0 ? '+' : ''}${bucket.avgR.toFixed(2)}R` : '-'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 h-3 bg-gray-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  bucket.bucketMin >= 75 ? 'bg-green-500' :
+                                  bucket.bucketMin >= 50 ? 'bg-blue-500' :
+                                  bucket.bucketMin >= 25 ? 'bg-yellow-500' :
+                                  'bg-orange-500'
+                                }`}
+                                style={{ width: `${Math.min(100, (bucket.count / Math.max(...filteredEntryDepthHistogram.map(b => b.count), 1)) * 100)}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Scatter Plot */}
+          {filteredEntryDepthScatter.length >= 5 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-medium text-gray-300 mb-3">Entry Depth vs Trade R</h4>
+              <p className="text-xs text-gray-500 mb-3">
+                Each point is a trade. Green = long, red = short.
+              </p>
+              <ResponsiveContainer width="100%" height={300}>
+                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis
+                    type="number"
+                    dataKey="entryDepth"
+                    name="Entry Depth"
+                    unit="%"
+                    domain={[0, 100]}
+                    stroke="#6b7280"
+                    fontSize={12}
+                    tickFormatter={(v) => `${v}%`}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="rMultiple"
+                    name="R Multiple"
+                    stroke="#6b7280"
+                    fontSize={12}
+                    tickFormatter={(v) => `${v}R`}
+                  />
+                  <ZAxis range={[50, 50]} />
+                  <Tooltip
+                    cursor={{ strokeDasharray: '3 3' }}
+                    contentStyle={{
+                      backgroundColor: '#1f2937',
+                      border: '1px solid #374151',
+                      borderRadius: '0.5rem',
+                    }}
+                    formatter={(value: number, name: string) => [
+                      name === 'Entry Depth' ? `${value.toFixed(1)}%` : `${value.toFixed(2)}R`,
+                      name,
+                    ]}
+                  />
+                  <ReferenceLine y={0} stroke="#6b7280" />
+                  <Scatter
+                    name="Trades"
+                    data={filteredEntryDepthScatter}
+                    shape="circle"
+                  >
+                    {filteredEntryDepthScatter.map((entry, index) => (
+                      <Cell
+                        key={index}
+                        fill={entry.direction === 'long' ? '#22c55e' : '#ef4444'}
+                        fillOpacity={0.7}
+                      />
+                    ))}
+                  </Scatter>
+                </ScatterChart>
+              </ResponsiveContainer>
+              <div className="flex justify-center gap-4 mt-2 text-xs">
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 bg-green-500 rounded-full" />
+                  <span className="text-gray-400">Longs</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 bg-red-500 rounded-full" />
+                  <span className="text-gray-400">Shorts</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Insights */}
+          {zoneEntryDepthInsights.length > 0 && (
+            <div className="bg-teal-500/10 border border-teal-500/30 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-teal-400 mb-2">Entry Depth Insights</h4>
+              <ul className="space-y-1">
+                {zoneEntryDepthInsights.map((insight, i) => (
                   <li key={i} className="text-sm text-gray-300">{insight}</li>
                 ))}
               </ul>

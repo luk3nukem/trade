@@ -25,6 +25,7 @@ import {
   isReviewDue,
   isPostExitReviewComplete,
   isPostExitReviewPartial,
+  getEntryDepthPercent,
 } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
@@ -838,6 +839,7 @@ export function TradeDetail() {
               {trade.levelSequence.map((level, index) => {
                 const isZone = isZoneLevelType(level.levelType) && level.priceFar;
                 const penetration = level.penetrationPercent;
+                const entryDepth = isZone ? getEntryDepthPercent(trade, level) : null;
 
                 return (
                   <div
@@ -881,30 +883,65 @@ export function TradeDetail() {
                       )}
                     </div>
 
-                    {/* Zone penetration bar */}
-                    {isZone && penetration !== null && penetration !== undefined && (
-                      <div className="mt-1.5 ml-6">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${
-                                penetration >= 75 ? 'bg-red-500' :
-                                penetration >= 50 ? 'bg-orange-500' :
-                                penetration >= 25 ? 'bg-yellow-500' :
-                                'bg-green-500'
-                              }`}
-                              style={{ width: `${Math.min(100, penetration)}%` }}
-                            />
+                    {/* Zone metrics: entry depth and penetration */}
+                    {isZone && (entryDepth !== null || (penetration !== null && penetration !== undefined)) && (
+                      <div className="mt-1.5 ml-6 flex items-center gap-4">
+                        {/* Entry depth */}
+                        {entryDepth !== null && (
+                          <div
+                            className="flex items-center gap-2 cursor-help"
+                            title="Entry depth: where your entry sat in the zone, direction-relative (100% = maximum discount)"
+                          >
+                            <span className="text-xs text-gray-500">Entry:</span>
+                            <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  entryDepth >= 75 ? 'bg-green-500' :
+                                  entryDepth >= 50 ? 'bg-blue-500' :
+                                  entryDepth >= 25 ? 'bg-yellow-500' :
+                                  'bg-orange-500'
+                                }`}
+                                style={{ width: `${entryDepth}%` }}
+                              />
+                            </div>
+                            <span className={`text-xs ${
+                              entryDepth >= 75 ? 'text-green-400' :
+                              entryDepth >= 50 ? 'text-blue-400' :
+                              entryDepth >= 25 ? 'text-yellow-400' :
+                              'text-orange-400'
+                            }`}>
+                              {entryDepth}%
+                            </span>
                           </div>
-                          <span className={`text-xs ${
-                            penetration >= 75 ? 'text-red-400' :
-                            penetration >= 50 ? 'text-orange-400' :
-                            penetration >= 25 ? 'text-yellow-400' :
-                            'text-green-400'
-                          }`}>
-                            {penetration}%
-                          </span>
-                        </div>
+                        )}
+                        {/* Penetration */}
+                        {penetration !== null && penetration !== undefined && (
+                          <div
+                            className="flex items-center gap-2 cursor-help"
+                            title="Penetration: how deep price went into the zone before turning"
+                          >
+                            <span className="text-xs text-gray-500">Penetration:</span>
+                            <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${
+                                  penetration >= 75 ? 'bg-red-500' :
+                                  penetration >= 50 ? 'bg-orange-500' :
+                                  penetration >= 25 ? 'bg-yellow-500' :
+                                  'bg-green-500'
+                                }`}
+                                style={{ width: `${Math.min(100, penetration)}%` }}
+                              />
+                            </div>
+                            <span className={`text-xs ${
+                              penetration >= 75 ? 'text-red-400' :
+                              penetration >= 50 ? 'text-orange-400' :
+                              penetration >= 25 ? 'text-yellow-400' :
+                              'text-green-400'
+                            }`}>
+                              {penetration}%
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
