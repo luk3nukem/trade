@@ -979,36 +979,47 @@ export function TradeDetail() {
                     <th className="px-4 py-2 text-right text-sm font-medium text-gray-400">Size</th>
                     <th className="px-4 py-2 text-left text-sm font-medium text-gray-400">Type</th>
                     <th className="px-4 py-2 text-left text-sm font-medium text-gray-400">Reason</th>
+                    {trade.exits.length > 1 && (
+                      <th className="px-4 py-2 text-right text-sm font-medium text-gray-400">Drawdown After</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {trade.exits.map((exit) => (
-                    <tr key={exit.id} className="border-b border-gray-700">
-                      <td className="px-4 py-2 text-sm text-gray-200">
-                        {formatShortDate(exit.time)}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-gray-200 text-right font-mono">
-                        {exit.price}
-                      </td>
-                      <td className="px-4 py-2 text-sm text-gray-200 text-right font-mono">
-                        {exit.size}
-                      </td>
-                      <td className="px-4 py-2 text-sm">
-                        <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
-                          exit.type === 'tp_hit' ? 'bg-green-500/20 text-green-400' :
-                          exit.type === 'sl_hit' ? 'bg-red-500/20 text-red-400' :
-                          exit.type === 'be_stop_hit' ? 'bg-yellow-500/20 text-yellow-400' :
-                          exit.type === 'trail_stop_hit' ? 'bg-blue-500/20 text-blue-400' :
-                          'bg-gray-500/20 text-gray-400'
-                        }`}>
-                          {exit.type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2 text-sm text-gray-200">
-                        {exit.reason || '-'}
-                      </td>
-                    </tr>
-                  ))}
+                  {trade.exits.map((exit, exitIndex) => {
+                    const isLastExit = exitIndex === trade.exits.length - 1;
+                    return (
+                      <tr key={exit.id} className="border-b border-gray-700">
+                        <td className="px-4 py-2 text-sm text-gray-200">
+                          {formatShortDate(exit.time)}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-200 text-right font-mono">
+                          {exit.price}
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-200 text-right font-mono">
+                          {exit.size}
+                        </td>
+                        <td className="px-4 py-2 text-sm">
+                          <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
+                            exit.type === 'tp_hit' ? 'bg-green-500/20 text-green-400' :
+                            exit.type === 'sl_hit' ? 'bg-red-500/20 text-red-400' :
+                            exit.type === 'be_stop_hit' ? 'bg-yellow-500/20 text-yellow-400' :
+                            exit.type === 'trail_stop_hit' ? 'bg-blue-500/20 text-blue-400' :
+                            'bg-gray-500/20 text-gray-400'
+                          }`}>
+                            {exit.type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-sm text-gray-200">
+                          {exit.reason || '-'}
+                        </td>
+                        {trade.exits.length > 1 && (
+                          <td className="px-4 py-2 text-sm text-gray-200 text-right font-mono">
+                            {!isLastExit && exit.drawdownAfter != null ? exit.drawdownAfter : '-'}
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

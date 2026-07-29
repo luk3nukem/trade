@@ -296,7 +296,11 @@ export function TradeForm() {
             riskAmount: trade.riskAmount ? String(trade.riskAmount) : '',
             riskPercent: trade.riskPercent ? String(trade.riskPercent) : '',
             exits: trade.exits || [],
-            timeline: trade.timeline || [],
+            // Convert UTC ISO times back to local datetime-local format for display
+            timeline: (trade.timeline || []).map(event => ({
+              ...event,
+              time: event.time ? toLocalDateTimeString(new Date(event.time)) : null,
+            })),
             levelSequence: (trade.levelSequence || []).map(l => ({
               ...l,
               levelDetail: l.levelDetail ?? '',
@@ -557,22 +561,39 @@ export function TradeForm() {
         newWarnings.targetPrice = `Target looks very different from entry - check for a typo`;
       }
 
-      // Exit price sanity
+      // Exit price and time sanity
       if (formData.exits && formData.exits.length > 0) {
         const exitWarnings: Record<string, string> = {};
+        const entryTimestamp = formData.entryTime ? new Date(formData.entryTime).getTime() : null;
+
         for (const exit of formData.exits) {
+          const warnings: string[] = [];
+
+          // Price sanity
           if (exit.price > 0) {
             if (Math.abs(exit.price - entryPrice) / entryPrice > 0.5) {
-              exitWarnings[exit.id] = 'This exit price looks very different from entry';
+              warnings.push('Price looks very different from entry');
             } else {
               const exitPnlDirection = formData.direction === 'long'
                 ? exit.price - entryPrice
                 : entryPrice - exit.price;
               const rMult = exitPnlDirection / stopDistance;
               if (Math.abs(rMult) > 20) {
-                exitWarnings[exit.id] = `This exit implies ${rMult.toFixed(1)}R - check the price`;
+                warnings.push(`This implies ${rMult.toFixed(1)}R - check price`);
               }
             }
+          }
+
+          // Time sanity - exit before entry
+          if (entryTimestamp && exit.time instanceof Date) {
+            const exitTimestamp = exit.time.getTime();
+            if (exitTimestamp < entryTimestamp) {
+              warnings.push('Exit time is before entry time');
+            }
+          }
+
+          if (warnings.length > 0) {
+            exitWarnings[exit.id] = warnings.join('; ');
           }
         }
         if (Object.keys(exitWarnings).length > 0) {
@@ -760,7 +781,12 @@ export function TradeForm() {
         riskAmount: formData.riskAmount ? parseFloat(formData.riskAmount) : undefined,
         riskPercent: formData.riskPercent ? parseFloat(formData.riskPercent) : undefined,
         exits: formData.exits,
-        timeline: formData.timeline,
+        // Normalize timeline event times to UTC ISO strings
+        timeline: formData.timeline.map(event => ({
+          ...event,
+          // Convert local datetime string to UTC ISO, or keep null
+          time: event.time ? new Date(event.time).toISOString() : null,
+        })),
         levelSequence: formData.levelSequence.map(level => ({
           ...level,
           timeframe: normalizeLevelTimeframe(level.timeframe),
@@ -2259,83 +2285,130 @@ export function TradeForm() {
 
           {formData.exits.length > 0 ? (
             <div className="space-y-3">
-              {formData.exits.map((exit) => (
-                <div key={exit.id} className="p-3 bg-gray-750 rounded-lg">
-                  <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
-                    <div className="col-span-1 md:w-28">
-                      <label className="block text-xs text-gray-400 mb-1">Price</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={exit.price || ''}
-                        onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
-                        placeholder="Exit price"
-                        className={`w-full px-2 py-2 md:py-1.5 bg-gray-700 border rounded text-white text-sm ${
-                          warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
-                        }`}
-                      />
-                      {warnings.exitWarnings?.[exit.id] && (
-                        <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
-                      )}
-                    </div>
-                    <div className="col-span-1 md:w-24">
-                      <label className="block text-xs text-gray-400 mb-1">Size</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={exit.size || ''}
-                        onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
-                        placeholder="Lots"
-                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                      />
-                    </div>
-                    <div className="col-span-2 md:w-44">
-                      <label className="block text-xs text-gray-400 mb-1">Time</label>
-                      <input
-                        type="datetime-local"
-                        value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
-                        onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
-                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                      />
-                    </div>
-                    <div className="col-span-1 md:w-36">
-                      <label className="block text-xs text-gray-400 mb-1">Type</label>
-                      <select
-                        value={exit.type}
-                        onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
-                        className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
-                      >
-                        {EXIT_TYPES.map((et) => (
-                          <option key={et.value} value={et.value}>
-                            {et.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="col-span-1 md:flex-1 md:min-w-[120px] flex items-end gap-2">
-                      <div className="flex-1">
-                        <label className="block text-xs text-gray-400 mb-1">Reason</label>
+              {formData.exits.map((exit, exitIndex) => {
+                const isLastExit = exitIndex === formData.exits.length - 1;
+                const showDrawdownAfter = formData.exits.length > 1 && !isLastExit;
+
+                // Sanity check for drawdownAfter - should be against trade direction
+                const drawdownAfterWarning = (() => {
+                  if (!showDrawdownAfter || exit.drawdownAfter == null || !exit.price) return null;
+                  const direction = formData.direction;
+                  // For a long, drawdown after partial exit means price went DOWN (below exit price)
+                  // For a short, drawdown after partial exit means price went UP (above exit price)
+                  if (direction === 'long' && exit.drawdownAfter > exit.price) {
+                    return 'For a long, drawdown should be below this exit price';
+                  }
+                  if (direction === 'short' && exit.drawdownAfter < exit.price) {
+                    return 'For a short, drawdown should be above this exit price';
+                  }
+                  return null;
+                })();
+
+                return (
+                  <div key={exit.id} className="p-3 bg-gray-750 rounded-lg">
+                    <div className="grid grid-cols-2 gap-2 md:flex md:gap-2 md:items-start md:flex-wrap">
+                      <div className="col-span-1 md:w-28">
+                        <label className="block text-xs text-gray-400 mb-1">Price</label>
                         <input
-                          type="text"
-                          value={exit.reason || ''}
-                          onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
-                          placeholder="Optional"
+                          type="number"
+                          step="any"
+                          value={exit.price || ''}
+                          onChange={(e) => updateExit(exit.id, 'price', parseFloat(e.target.value) || 0)}
+                          placeholder="Exit price"
+                          className={`w-full px-2 py-2 md:py-1.5 bg-gray-700 border rounded text-white text-sm ${
+                            warnings.exitWarnings?.[exit.id] ? 'border-yellow-500' : 'border-gray-600'
+                          }`}
+                        />
+                        {warnings.exitWarnings?.[exit.id] && (
+                          <p className="text-yellow-400 text-xs mt-1">{warnings.exitWarnings[exit.id]}</p>
+                        )}
+                      </div>
+                      <div className="col-span-1 md:w-24">
+                        <label className="block text-xs text-gray-400 mb-1">Size</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={exit.size || ''}
+                          onChange={(e) => updateExit(exit.id, 'size', parseFloat(e.target.value) || 0)}
+                          placeholder="Lots"
                           className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                         />
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => removeExit(exit.id)}
-                        className="p-2 md:p-1.5 text-red-400 hover:text-red-300 shrink-0"
-                      >
-                        <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
+                      <div className="col-span-2 md:w-44">
+                        <label className="block text-xs text-gray-400 mb-1">Time</label>
+                        <input
+                          type="datetime-local"
+                          value={exit.time instanceof Date ? toLocalDateTimeString(exit.time) : ''}
+                          onChange={(e) => updateExit(exit.id, 'time', new Date(e.target.value))}
+                          className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                        />
+                      </div>
+                      <div className="col-span-1 md:w-36">
+                        <label className="block text-xs text-gray-400 mb-1">Type</label>
+                        <select
+                          value={exit.type}
+                          onChange={(e) => updateExit(exit.id, 'type', e.target.value)}
+                          className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                        >
+                          {EXIT_TYPES.map((et) => (
+                            <option key={et.value} value={et.value}>
+                              {et.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-span-1 md:flex-1 md:min-w-[120px] flex items-end gap-2">
+                        <div className="flex-1">
+                          <label className="block text-xs text-gray-400 mb-1">Reason</label>
+                          <input
+                            type="text"
+                            value={exit.reason || ''}
+                            onChange={(e) => updateExit(exit.id, 'reason', e.target.value)}
+                            placeholder="Optional"
+                            className="w-full px-2 py-2 md:py-1.5 bg-gray-700 border border-gray-600 rounded text-white text-sm"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeExit(exit.id)}
+                          className="p-2 md:p-1.5 text-red-400 hover:text-red-300 shrink-0"
+                        >
+                          <svg className="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Drawdown After - only shown on non-final exits when multiple exits exist */}
+                    {showDrawdownAfter && (
+                      <div className="mt-2 pt-2 border-t border-gray-700">
+                        <div className="flex items-center gap-2">
+                          <div className="w-32">
+                            <label className="block text-xs text-gray-400 mb-1">Drawdown After</label>
+                            <input
+                              type="number"
+                              step="any"
+                              value={exit.drawdownAfter ?? ''}
+                              onChange={(e) => updateExit(exit.id, 'drawdownAfter', e.target.value ? parseFloat(e.target.value) : null)}
+                              placeholder="Worst price"
+                              className={`w-full px-2 py-1.5 bg-gray-700 border rounded text-white text-sm ${
+                                drawdownAfterWarning ? 'border-yellow-500' : 'border-gray-600'
+                              }`}
+                            />
+                          </div>
+                          <p className="text-xs text-gray-500 flex-1">
+                            Worst price between this exit and the next
+                          </p>
+                        </div>
+                        {drawdownAfterWarning && (
+                          <p className="text-yellow-400 text-xs mt-1">{drawdownAfterWarning}</p>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <p className="text-sm text-gray-500">No exits recorded - trade is open</p>
