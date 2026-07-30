@@ -185,6 +185,38 @@ export interface LevelTypePref {
   isZone: boolean; // true = zone (has near/far edge), false = line (single price)
 }
 
+// Note status
+export type NoteStatus = 'active' | 'validated' | 'retired';
+
+// Confirmation counterfactual outcomes (for blind entries)
+export type ConfirmationCounterfactual = 'appeared_worked' | 'appeared_failed' | 'never_appeared' | '';
+
+// Blind entry confirmation types
+export const BLIND_ENTRY_TYPES = ['blind_limit', 'blind_market'] as const;
+
+// Note category presets
+export const NOTE_CATEGORY_PRESETS = [
+  'observation',
+  'rule',
+  'hypothesis',
+  'mistake',
+  'idea',
+] as const;
+
+// Trading notebook note
+export interface Note {
+  id?: string; // Optional - Dexie Cloud generates with @id
+  createdAt: Date;
+  updatedAt: Date;
+  content: string;
+  category: string; // free combo with autocomplete from presets
+  status: NoteStatus; // "active" | "validated" | "retired"
+  pinned: boolean;
+}
+
+// Type for creating new notes
+export type CreateNote = Omit<Note, 'id' | 'createdAt' | 'updatedAt'>;
+
 // Trade record entity - v2 simplified schema
 export interface TradeRecord {
   id?: string; // Optional - Dexie Cloud generates with @id
@@ -235,6 +267,10 @@ export interface TradeRecord {
   // === Post-Exit Review ===
   reachedTargetPostExit: boolean | null; // Did price hit targetPrice after you exited?
   reviewedAt: string | null;   // Timestamp of when the trade was reviewed post-exit
+
+  // === Confirmation Counterfactual (for blind entries) ===
+  confirmationCounterfactual?: string;  // "appeared_worked" | "appeared_failed" | "never_appeared" | ""
+  counterfactualEntryPrice?: number | null; // where the confirmed entry would have filled (required when counterfactual = appeared_*)
 
   // === Screenshots ===
   screenshots: Screenshot[];
@@ -379,6 +415,10 @@ export interface TradeFormData {
 
   // Post-Exit Review
   reachedTargetPostExit: boolean | null;
+
+  // Confirmation Counterfactual (for blind entries)
+  confirmationCounterfactual: string;
+  counterfactualEntryPrice: string;
 }
 
 // Type for creating new records (without id and timestamps)

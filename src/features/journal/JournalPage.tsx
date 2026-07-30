@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import type { TradeRecord, DailyJournal, Account } from '../../types';
@@ -725,6 +726,9 @@ export function JournalPage() {
           adjustment={weeklyJournal?.weeklyAdjustment || ''}
           onSave={handleSaveWeeklyReview}
         />
+
+        {/* Active Notebook Entries */}
+        <ActiveNotebookPanel />
       </div>
     );
   };
@@ -1133,6 +1137,74 @@ function WeeklyPostExitSection({
           <p className="text-xl font-bold text-white">{reviewedStats.tradesReviewed}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+// Active Notebook Panel Component for Weekly Review
+function ActiveNotebookPanel() {
+  const notes = useLiveQuery(
+    () => db.notes
+      .filter(n => n.status === 'active' || n.pinned)
+      .toArray()
+      .then(arr => {
+        // Sort: pinned first, then by createdAt descending
+        return arr.sort((a, b) => {
+          if (a.pinned && !b.pinned) return -1;
+          if (!a.pinned && b.pinned) return 1;
+          return b.createdAt.getTime() - a.createdAt.getTime();
+        }).slice(0, 10); // Cap at 10
+      }),
+    []
+  );
+
+  if (!notes || notes.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-medium text-white">Active Notebook Entries</h3>
+        <Link
+          to="/notebook"
+          className="text-sm text-blue-400 hover:text-blue-300"
+        >
+          View all
+        </Link>
+      </div>
+      <div className="space-y-2">
+        {notes.map((note) => (
+          <div
+            key={note.id}
+            className={`p-3 bg-gray-750 rounded-lg border-l-2 ${note.pinned ? 'border-amber-500' : 'border-transparent'}`}
+          >
+            <div className="flex items-start gap-2">
+              {note.pinned && (
+                <svg className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                </svg>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-gray-200 text-sm">{note.content}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-400">
+                    {note.category}
+                  </span>
+                  {note.status === 'validated' && (
+                    <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400">
+                      Validated
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-gray-500 mt-3">
+        These observations resurface each week to help turn insights into behavior.
+      </p>
     </div>
   );
 }

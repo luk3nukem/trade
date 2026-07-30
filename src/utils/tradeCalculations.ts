@@ -195,6 +195,200 @@ export function calculateTotalExitsPnl(
 }
 
 /**
+ * Calculate counterfactual R for a blind entry trade.
+ * Given the counterfactual entry price (where confirmation would have filled),
+ * calculate what R the trade would have achieved using the same stop and target.
+ *
+ * For simplicity, uses target-vs-stop binary: did price reach target before breaching stop?
+ * Returns the planned R if target was reached, or -1R if stop was hit.
+ */
+export function calculateCounterfactualR(
+  trade: TradeRecord
+): number | null {
+  // Only for blind entries with counterfactual data
+  if (!trade.confirmationCounterfactual) return null;
+  if (trade.confirmationCounterfactual === 'never_appeared') return null;
+  if (!trade.counterfactualEntryPrice) return null;
+  if (!trade.targetPrice || !trade.stopLoss) return null;
+
+  const counterfactualEntry = trade.counterfactualEntryPrice;
+  const stop = trade.stopLoss;
+  const target = trade.targetPrice;
+  const direction = trade.direction;
+
+  // Calculate the stop distance from counterfactual entry
+  const counterfactualStopDistance = Math.abs(counterfactualEntry - stop);
+  if (counterfactualStopDistance === 0) return null;
+
+  // Check if the counterfactual entry would even be valid (stop not already breached)
+  if (direction === 'long') {
+    if (counterfactualEntry <= stop) return null; // Invalid: entry below stop for long
+  } else {
+    if (counterfactualEntry >= stop) return null; // Invalid: entry above stop for short
+  }
+
+  // Calculate planned R from counterfactual entry
+  const counterfactualTargetDistance = Math.abs(target - counterfactualEntry);
+  const plannedR = counterfactualTargetDistance / counterfactualStopDistance;
+
+  // Walk the timeline/exits to determine if target or stop was hit first
+  // Use the actual trade's price action - did price reach target before stop from counterfactual entry?
+
+  // Get the MFE (most favorable excursion) and MAE (most adverse excursion) from timeline
+  const timeline = trade.timeline || [];
+  let mfe: number | null = null;
+  let mae: number | null = null;
+
+  for (const event of timeline) {
+    if (!event.price) continue;
+    if (event.eventType === 'trade_high' || event.eventType === 'post_exit_high') {
+      if (mfe === null || event.price > mfe) mfe = event.price;
+    }
+    if (event.eventType === 'trade_low' || event.eventType === 'post_exit_low') {
+      if (mae === null || event.price < mae) mae = event.price;
+    }
+  }
+
+  // Also check the actual exit prices
+  const exits = trade.exits || [];
+  for (const exit of exits) {
+    if (direction === 'long') {
+      if (mfe === null || exit.price > mfe) mfe = exit.price;
+    } else {
+      if (mae === null || exit.price < mae) mae = exit.price;
+    }
+  }
+
+  // Determine outcome based on direction
+  if (direction === 'long') {
+    // For long: check if high reached target, or if low breached stop
+    const targetReached = mfe !== null && mfe >= target;
+    const stopHit = mae !== null && mae <= stop;
+
+    if (targetReached && !stopHit) {
+      return Number(plannedR.toFixed(2));
+    }
+    if (stopHit) {
+      return -1;
+    }
+    // Neither clearly hit - use actual trade outcome as proxy
+    const actualR = calculateRMultiple(counterfactualEntry, stop, trade.exits?.[0]?.price, direction);
+    return clampRValue(actualR) ?? null;
+  } else {
+    // For short: check if low reached target, or if high breached stop
+    const targetReached = mae !== null && mae <= target;
+    const stopHit = mfe !== null && mfe >= stop;
+
+    if (targetReached && !stopHit) {
+      return Number(plannedR.toFixed(2));
+    }
+    if (stopHit) {
+      return -1;
+    }
+    // Neither clearly hit - use actual trade outcome as proxy
+    const actualR = calculateRMultiple(counterfactualEntry, stop, trade.exits?.[0]?.price, direction);
+    return clampRValue(actualR) ?? null;
+  }
+}
+
+/**
+ * Calculate blind counterfactual R for a confirmed entry trade.
+ * What R would you have achieved if you entered blind at the first level price?
+ */
+export function calculateBlindCounterfactualR(
+  trade: TradeRecord
+): number | null {
+  // Only for confirmed entries (not blind)
+  if (trade.entryConfirmation === 'blind_limit' || trade.entryConfirmation === 'blind_market') {
+    return null;
+  }
+
+  // Get the first level price as the blind entry point
+  const levelSequence = trade.levelSequence || [];
+  if (levelSequence.length === 0) return null;
+  const blindEntry = levelSequence[0].price;
+  if (!blindEntry) return null;
+
+  if (!trade.targetPrice || !trade.stopLoss) return null;
+
+  const stop = trade.stopLoss;
+  const target = trade.targetPrice;
+  const direction = trade.direction;
+
+  // Calculate the stop distance from blind entry
+  const blindStopDistance = Math.abs(blindEntry - stop);
+  if (blindStopDistance === 0) return null;
+
+  // Check if the blind entry would even be valid
+  if (direction === 'long') {
+    if (blindEntry <= stop) return null;
+  } else {
+    if (blindEntry >= stop) return null;
+  }
+
+  // Calculate planned R from blind entry
+  const blindTargetDistance = Math.abs(target - blindEntry);
+  const plannedR = blindTargetDistance / blindStopDistance;
+
+  // Use the same logic as counterfactualR to determine outcome
+  const timeline = trade.timeline || [];
+  let mfe: number | null = null;
+  let mae: number | null = null;
+
+  for (const event of timeline) {
+    if (!event.price) continue;
+    if (event.eventType === 'trade_high' || event.eventType === 'post_exit_high') {
+      if (mfe === null || event.price > mfe) mfe = event.price;
+    }
+    if (event.eventType === 'trade_low' || event.eventType === 'post_exit_low') {
+      if (mae === null || event.price < mae) mae = event.price;
+    }
+  }
+
+  const exits = trade.exits || [];
+  for (const exit of exits) {
+    if (direction === 'long') {
+      if (mfe === null || exit.price > mfe) mfe = exit.price;
+    } else {
+      if (mae === null || exit.price < mae) mae = exit.price;
+    }
+  }
+
+  if (direction === 'long') {
+    const targetReached = mfe !== null && mfe >= target;
+    const stopHit = mae !== null && mae <= stop;
+
+    if (targetReached && !stopHit) {
+      return Number(plannedR.toFixed(2));
+    }
+    if (stopHit) {
+      return -1;
+    }
+    const actualR = calculateRMultiple(blindEntry, stop, trade.exits?.[0]?.price, direction);
+    return clampRValue(actualR) ?? null;
+  } else {
+    const targetReached = mae !== null && mae <= target;
+    const stopHit = mfe !== null && mfe >= stop;
+
+    if (targetReached && !stopHit) {
+      return Number(plannedR.toFixed(2));
+    }
+    if (stopHit) {
+      return -1;
+    }
+    const actualR = calculateRMultiple(blindEntry, stop, trade.exits?.[0]?.price, direction);
+    return clampRValue(actualR) ?? null;
+  }
+}
+
+/**
+ * Check if a trade is a blind entry
+ */
+export function isBlindEntry(trade: TradeRecord): boolean {
+  return trade.entryConfirmation === 'blind_limit' || trade.entryConfirmation === 'blind_market';
+}
+
+/**
  * Calculate hold duration in minutes
  */
 export function calculateHoldDuration(entryTime: Date, exitTime?: Date): number | undefined {
@@ -670,6 +864,27 @@ export function getRangeConsumedPercent(level: LevelEntry): number | null {
   }
 
   return Math.max(0, Math.min(100, Number(consumed.toFixed(1))));
+}
+
+/**
+ * Get the overshoot amount for a high_low zone where deepest went beyond an edge.
+ * Returns the absolute distance beyond the edge, or null if no overshoot.
+ */
+export function getZoneOvershoot(level: LevelEntry): { amount: number; edge: 'high' | 'low' } | null {
+  if (!isHighLowZoneType(level.levelType)) return null;
+  if (level.priceFar === null || level.deepestPrice === null || level.deepestPrice === undefined) return null;
+
+  const highEdge = Math.max(level.price, level.priceFar);
+  const lowEdge = Math.min(level.price, level.priceFar);
+  const deepest = level.deepestPrice;
+
+  if (deepest > highEdge) {
+    return { amount: deepest - highEdge, edge: 'high' };
+  }
+  if (deepest < lowEdge) {
+    return { amount: lowEdge - deepest, edge: 'low' };
+  }
+  return null;
 }
 
 /**

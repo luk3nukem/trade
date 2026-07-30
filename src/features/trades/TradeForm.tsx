@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { FormSection } from '../../components/FormSection';
+import { AddToNotebook } from '../../components/AddToNotebook';
 import { db } from '../../db';
 import { useAppStore } from '../../stores/appStore';
 import type {
@@ -35,6 +36,7 @@ import {
   toLocalDateTimeString,
   isHighLowZoneType,
   getRangeConsumedPercent,
+  getZoneOvershoot,
 } from '../../utils';
 
 // Preset level types - zones have two edges, lines are single price
@@ -117,6 +119,8 @@ const getInitialFormData = (): TradeFormData => ({
   accountId: '',
   strategyId: '',
   reachedTargetPostExit: null,
+  confirmationCounterfactual: '',
+  counterfactualEntryPrice: '',
 });
 
 // Options for selects
@@ -321,6 +325,8 @@ export function TradeForm() {
             accountId: trade.accountId,
             strategyId: trade.strategyId,
             reachedTargetPostExit: trade.reachedTargetPostExit ?? null,
+            confirmationCounterfactual: trade.confirmationCounterfactual || '',
+            counterfactualEntryPrice: trade.counterfactualEntryPrice?.toString() || '',
           });
           setOriginalStopLoss(trade.stopLoss);
           setCreatedAt(trade.createdAt);
@@ -810,11 +816,18 @@ export function TradeForm() {
         postExitNotes: formData.postExitNotes.trim() || undefined,
         screenshots: formData.screenshots,
         reachedTargetPostExit: formData.reachedTargetPostExit,
+        confirmationCounterfactual: formData.confirmationCounterfactual || undefined,
+        counterfactualEntryPrice: formData.counterfactualEntryPrice
+          ? parseFloat(formData.counterfactualEntryPrice)
+          : null,
         // Review is complete when reachedTargetPostExit is set and postExitNotes is filled
+        // For blind entries, also require counterfactual to be set
         reviewedAt: (() => {
           const hasReachedTarget = formData.reachedTargetPostExit !== null;
           const hasNotes = formData.postExitNotes.trim() !== '';
-          const isComplete = hasReachedTarget && hasNotes;
+          const isBlindEntry = formData.entryConfirmation === 'blind_limit' || formData.entryConfirmation === 'blind_market';
+          const hasCounterfactual = !isBlindEntry || formData.confirmationCounterfactual !== '';
+          const isComplete = hasReachedTarget && hasNotes && hasCounterfactual;
           return isComplete ? (existingReviewedAt || now.toISOString()) : null;
         })(),
         createdAt: isEditMode ? createdAt! : now,
@@ -1054,7 +1067,10 @@ export function TradeForm() {
     <form onSubmit={handleSubmit} className="max-w-4xl mx-auto space-y-4">
       {/* Header with Trade Taken toggle */}
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-white">{isEditMode ? 'Edit Trade' : 'New Trade'}</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold text-white">{isEditMode ? 'Edit Trade' : 'New Trade'}</h1>
+          <AddToNotebook />
+        </div>
         <label className="flex items-center gap-2 cursor-pointer">
           <span className="text-sm text-gray-400">Trade Taken</span>
           <button
@@ -1465,8 +1481,11 @@ export function TradeForm() {
                 {formData.levelSequence.map((level, index) => {
                   const isZone = isLevelTypeZone(level.levelType);
                   const showZoneToggle = shouldShowZoneToggle(level.levelType);
+                  // Use getRangeConsumedPercent for high_low zones, calculatePenetrationPercent for near_far
                   const penetration = isZone && level.priceFar
-                    ? calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice)
+                    ? (isHighLowZoneType(level.levelType)
+                        ? getRangeConsumedPercent(level)
+                        : calculatePenetrationPercent(level.price, level.priceFar, level.deepestPrice))
                     : null;
                   const filteredTypes = getFilteredLevelTypes(index, level.levelType);
                   const inputValue = levelTypeInputs[index] ?? '';
@@ -1793,11 +1812,25 @@ export function TradeForm() {
                           <select
                             value={level.reaction || ''}
                             onChange={(e) => {
+                              const newReaction = (e.target.value || null) as LevelReaction;
                               setFormData((prev) => ({
                                 ...prev,
-                                levelSequence: prev.levelSequence.map((l, i) =>
-                                  i === index ? { ...l, reaction: (e.target.value || null) as LevelReaction } : l
-                                ),
+                                levelSequence: prev.levelSequence.map((l, i) => {
+                                  if (i !== index) return l;
+                                  // For zones: handle deepest/penetration based on reaction
+                                  const levelIsZone = isLevelTypeZone(l.levelType);
+                                  if (levelIsZone && l.priceFar) {
+                                    if (newReaction === 'front_run') {
+                                      // Front-run: clear deepest, set penetration to 0
+                                      return { ...l, reaction: newReaction, deepestPrice: null, penetrationPercent: 0 };
+                                    }
+                                    if (newReaction === 'broken') {
+                                      // Broken: clear deepest, set penetration to 100
+                                      return { ...l, reaction: newReaction, deepestPrice: null, penetrationPercent: 100 };
+                                    }
+                                  }
+                                  return { ...l, reaction: newReaction };
+                                }),
                               }));
                             }}
                             className="flex-1 md:flex-none md:min-w-[90px] px-2 py-1.5 md:py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
@@ -1811,8 +1844,8 @@ export function TradeForm() {
                         </div>
                       </div>
 
-                      {/* Zone-only: Deepest price row */}
-                      {isZone && level.priceFar && (
+                      {/* Zone-only: Deepest price row - hidden for front_run and broken */}
+                      {isZone && level.priceFar && level.reaction !== 'front_run' && level.reaction !== 'broken' && (
                         <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-gray-600">
                           <span className="text-xs text-gray-400 w-20">Deepest price:</span>
                           <input
@@ -1840,16 +1873,33 @@ export function TradeForm() {
                             placeholder="Deepest in zone"
                             className="w-28 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm"
                           />
-                          {penetration !== null && (
-                            <span className={`text-xs px-2 py-0.5 rounded ${
-                              penetration >= 75 ? 'bg-red-500/20 text-red-400' :
-                              penetration >= 50 ? 'bg-orange-500/20 text-orange-400' :
-                              penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
-                              'bg-green-500/20 text-green-400'
-                            }`}>
-                              {penetration}% {isHighLowZoneType(level.levelType) ? 'consumed' : 'penetrated'}
-                            </span>
-                          )}
+                          {penetration !== null && (() => {
+                            const overshoot = isHighLowZoneType(level.levelType) ? getZoneOvershoot(level) : null;
+                            return (
+                              <span className={`text-xs px-2 py-0.5 rounded ${
+                                penetration >= 75 ? 'bg-red-500/20 text-red-400' :
+                                penetration >= 50 ? 'bg-orange-500/20 text-orange-400' :
+                                penetration >= 25 ? 'bg-yellow-500/20 text-yellow-400' :
+                                'bg-green-500/20 text-green-400'
+                              }`}>
+                                {penetration}% {isHighLowZoneType(level.levelType) ? 'consumed' : 'penetrated'}
+                                {overshoot && (
+                                  <span className="text-amber-400 ml-1">
+                                    (swept {overshoot.edge} by {overshoot.amount.toFixed(overshoot.amount < 1 ? 4 : 2)})
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      )}
+
+                      {/* Zone broken indicator - show 100% penetration/consumed */}
+                      {isZone && level.priceFar && level.reaction === 'broken' && (
+                        <div className="flex items-center gap-2 mt-2 ml-7 pl-2 border-l-2 border-red-600/50">
+                          <span className="text-xs text-red-400">
+                            100% {isHighLowZoneType(level.levelType) ? 'consumed' : 'penetrated'} (broken)
+                          </span>
                         </div>
                       )}
 
@@ -2644,6 +2694,87 @@ export function TradeForm() {
                 placeholder="Review this trade 3 days after closing. What happened? What would you do differently?"
               />
             </div>
+
+            {/* Confirmation Counterfactual - Only for blind entries */}
+            {(formData.entryConfirmation === 'blind_limit' || formData.entryConfirmation === 'blind_market') && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-amber-400 mb-2">
+                    Had you waited for confirmation?
+                  </label>
+                  <p className="text-xs text-gray-400 mb-3">
+                    Check the chart: did a valid confirmation (your usual structural/partial signal) print after your level was tapped?
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleChange('confirmationCounterfactual', 'appeared_worked')}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        formData.confirmationCounterfactual === 'appeared_worked'
+                          ? 'bg-green-500/30 text-green-400 ring-2 ring-green-500'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Appeared & worked
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleChange('confirmationCounterfactual', 'appeared_failed')}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        formData.confirmationCounterfactual === 'appeared_failed'
+                          ? 'bg-orange-500/30 text-orange-400 ring-2 ring-orange-500'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Appeared & failed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleChange('confirmationCounterfactual', 'never_appeared')}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        formData.confirmationCounterfactual === 'never_appeared'
+                          ? 'bg-blue-500/30 text-blue-400 ring-2 ring-blue-500'
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      Never appeared
+                    </button>
+                    {formData.confirmationCounterfactual && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleChange('confirmationCounterfactual', '');
+                          handleChange('counterfactualEntryPrice', '');
+                        }}
+                        className="px-3 py-2 rounded-lg text-sm font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Counterfactual Entry Price - Only when confirmation appeared */}
+                {(formData.confirmationCounterfactual === 'appeared_worked' || formData.confirmationCounterfactual === 'appeared_failed') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">
+                      Where would the confirmed entry have filled?
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      value={formData.counterfactualEntryPrice}
+                      onChange={(e) => handleChange('counterfactualEntryPrice', e.target.value)}
+                      placeholder="Confirmed entry price"
+                      className="w-48 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      This is used to calculate what R you would have achieved by waiting for confirmation.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
 
             {existingReviewedAt && (
               <div className="flex items-center gap-2 text-sm text-gray-500">

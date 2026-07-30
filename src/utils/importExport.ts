@@ -1,5 +1,5 @@
 import { db } from '../db';
-import type { TradeRecord, Account, Strategy, DailyJournal } from '../types';
+import type { TradeRecord, Account, Strategy, DailyJournal, Note } from '../types';
 import { getTradeRMetrics, type TradeRMetrics } from './tradeCalculations';
 
 // Metrics cache
@@ -30,12 +30,14 @@ export interface BackupData {
     accounts: Account[];
     strategies: Strategy[];
     dailyJournals: DailyJournal[];
+    notes?: Note[];
   };
   metadata: {
     tradeCount: number;
     accountCount: number;
     strategyCount: number;
     journalCount: number;
+    noteCount?: number;
     hasScreenshots: boolean;
     screenshotCount: number;
   };
@@ -64,12 +66,14 @@ export interface ImportResult {
     accounts: number;
     strategies: number;
     journals: number;
+    notes: number;
   };
   skipped: {
     trades: number;
     accounts: number;
     strategies: number;
     journals: number;
+    notes: number;
   };
   errors: string[];
 }
@@ -80,6 +84,7 @@ export async function exportFullBackup(): Promise<BackupData> {
   const accounts = await db.accounts.toArray();
   const strategies = await db.strategies.toArray();
   const dailyJournals = await db.dailyJournals.toArray();
+  const notes = await db.notes.toArray();
 
   // Count screenshots (now URL-based, no conversion needed)
   let screenshotCount = 0;
@@ -97,12 +102,14 @@ export async function exportFullBackup(): Promise<BackupData> {
       accounts,
       strategies,
       dailyJournals,
+      notes,
     },
     metadata: {
       tradeCount: trades.length,
       accountCount: accounts.length,
       strategyCount: strategies.length,
       journalCount: dailyJournals.length,
+      noteCount: notes.length,
       hasScreenshots: screenshotCount > 0,
       screenshotCount,
     },
@@ -287,8 +294,8 @@ export function validateBackup(data: unknown): { valid: boolean; error?: string;
 export async function importBackup(backup: BackupData): Promise<ImportResult> {
   const result: ImportResult = {
     success: true,
-    imported: { trades: 0, accounts: 0, strategies: 0, journals: 0 },
-    skipped: { trades: 0, accounts: 0, strategies: 0, journals: 0 },
+    imported: { trades: 0, accounts: 0, strategies: 0, journals: 0, notes: 0 },
+    skipped: { trades: 0, accounts: 0, strategies: 0, journals: 0, notes: 0 },
     errors: [],
   };
 
@@ -298,6 +305,7 @@ export async function importBackup(backup: BackupData): Promise<ImportResult> {
     const existingAccountIds = new Set((await db.accounts.toArray()).map((a) => a.id));
     const existingStrategyIds = new Set((await db.strategies.toArray()).map((s) => s.id));
     const existingJournalIds = new Set((await db.dailyJournals.toArray()).map((j) => j.id));
+    const existingNoteIds = new Set((await db.notes.toArray()).map((n) => n.id));
 
     // Import accounts (skip duplicates)
     for (const account of backup.data.accounts) {
@@ -377,6 +385,27 @@ export async function importBackup(backup: BackupData): Promise<ImportResult> {
           result.imported.journals++;
         } catch (e) {
           result.errors.push(`Failed to import journal: ${e}`);
+        }
+      }
+    }
+
+    // Import notes (skip duplicates)
+    if (backup.data.notes) {
+      for (const note of backup.data.notes) {
+        if (existingNoteIds.has(note.id)) {
+          result.skipped.notes++;
+        } else {
+          try {
+            const noteWithDates: Note = {
+              ...note,
+              createdAt: new Date(note.createdAt),
+              updatedAt: new Date(note.updatedAt),
+            };
+            await db.notes.add(noteWithDates);
+            result.imported.notes++;
+          } catch (e) {
+            result.errors.push(`Failed to import note: ${e}`);
+          }
         }
       }
     }
@@ -513,18 +542,21 @@ export async function clearEverything(): Promise<{
   journals: number;
   accounts: number;
   strategies: number;
+  notes: number;
 }> {
   const counts = {
     trades: await db.trades.count(),
     journals: await db.dailyJournals.count(),
     accounts: await db.accounts.count(),
     strategies: await db.strategies.count(),
+    notes: await db.notes.count(),
   };
 
   await db.trades.clear();
   await db.dailyJournals.clear();
   await db.accounts.clear();
   await db.strategies.clear();
+  await db.notes.clear();
 
   // Re-create default account and strategy (no id - Dexie Cloud will auto-generate)
   await db.accounts.add({

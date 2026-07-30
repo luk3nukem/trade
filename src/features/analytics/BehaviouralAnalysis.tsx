@@ -22,6 +22,7 @@ import {
   getConfirmationTFAnalysis,
   getConfirmationTFVsEntryTFMatrix,
   getConfirmationTFInsights,
+  getCounterfactualAnalysis,
   CHART_TOOLTIP_STYLES,
 } from '../../utils';
 import { deriveStatus, getTradeRMetrics } from '../../utils/tradeCalculations';
@@ -150,6 +151,7 @@ export function BehaviouralAnalysis({ trades }: Props) {
     [confirmationTFStats, confirmationTFMatrix]
   );
   const revengeStats = useMemo(() => getTimingBasedRevengeAnalysis(trades), [trades]);
+  const counterfactualAnalysis = useMemo(() => getCounterfactualAnalysis(trades), [trades]);
   const insights = useMemo(
     () => [
       ...getBehaviouralInsights(streakAnalysis, tradesPerDay, entryConfirmationStats),
@@ -377,6 +379,189 @@ export function BehaviouralAnalysis({ trades }: Props) {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Counterfactual Analysis */}
+      {(counterfactualAnalysis.blindTrades.total > 0 || counterfactualAnalysis.confirmedTrades.total > 0) && (
+        <div className="bg-gray-800 rounded-lg p-6">
+          <div className="mb-4">
+            <h3 className="text-lg font-medium text-white">Confirmation Counterfactual Analysis</h3>
+            <p className="text-sm text-gray-400">What if you had waited for confirmation vs entered blind?</p>
+          </div>
+
+          {/* Blind Trades Analysis */}
+          {counterfactualAnalysis.blindTrades.total > 0 && (
+            <div className="mb-6">
+              <h4 className="text-md font-medium text-white mb-3">Blind Entries ({counterfactualAnalysis.blindTrades.total})</h4>
+
+              {/* Outcome breakdown */}
+              <div className="overflow-x-auto mb-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-700">
+                      <th className="text-left py-2 px-3 text-gray-400 font-medium">Counterfactual Outcome</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">Count</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">Actual Avg R</th>
+                      <th className="text-right py-2 px-3 text-gray-400 font-medium">If Waited</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {counterfactualAnalysis.blindTrades.appearedWorked.length > 0 && (
+                      <tr className="border-b border-gray-700/50">
+                        <td className="py-2 px-3 text-green-400">Confirmation appeared & worked</td>
+                        <td className="py-2 px-3 text-right text-white">{counterfactualAnalysis.blindTrades.appearedWorked.length}</td>
+                        <td className={`py-2 px-3 text-right font-medium ${
+                          counterfactualAnalysis.blindTrades.appearedWorked.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.appearedWorked.length >= 0
+                            ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {(counterfactualAnalysis.blindTrades.appearedWorked.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.appearedWorked.length).toFixed(2)}R
+                        </td>
+                        <td className={`py-2 px-3 text-right font-medium ${
+                          (counterfactualAnalysis.blindTrades.appearedWorked.filter(t => t.counterfactualR !== null).reduce((s, t) => s + (t.counterfactualR ?? 0), 0) /
+                          (counterfactualAnalysis.blindTrades.appearedWorked.filter(t => t.counterfactualR !== null).length || 1)) >= 0
+                            ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {counterfactualAnalysis.blindTrades.appearedWorked.filter(t => t.counterfactualR !== null).length > 0
+                            ? (counterfactualAnalysis.blindTrades.appearedWorked.filter(t => t.counterfactualR !== null).reduce((s, t) => s + (t.counterfactualR ?? 0), 0) /
+                               counterfactualAnalysis.blindTrades.appearedWorked.filter(t => t.counterfactualR !== null).length).toFixed(2) + 'R'
+                            : '-'}
+                        </td>
+                      </tr>
+                    )}
+                    {counterfactualAnalysis.blindTrades.appearedFailed.length > 0 && (
+                      <tr className="border-b border-gray-700/50">
+                        <td className="py-2 px-3 text-red-400">Confirmation appeared & failed</td>
+                        <td className="py-2 px-3 text-right text-white">{counterfactualAnalysis.blindTrades.appearedFailed.length}</td>
+                        <td className={`py-2 px-3 text-right font-medium ${
+                          counterfactualAnalysis.blindTrades.appearedFailed.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.appearedFailed.length >= 0
+                            ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {(counterfactualAnalysis.blindTrades.appearedFailed.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.appearedFailed.length).toFixed(2)}R
+                        </td>
+                        <td className="py-2 px-3 text-right text-gray-400">
+                          {counterfactualAnalysis.blindTrades.appearedFailed.filter(t => t.counterfactualR !== null).length > 0
+                            ? 'Avoided' : '-'}
+                        </td>
+                      </tr>
+                    )}
+                    {counterfactualAnalysis.blindTrades.neverAppeared.length > 0 && (
+                      <tr className="border-b border-gray-700/50 last:border-0">
+                        <td className="py-2 px-3 text-yellow-400">Confirmation never appeared</td>
+                        <td className="py-2 px-3 text-right text-white">{counterfactualAnalysis.blindTrades.neverAppeared.length}</td>
+                        <td className={`py-2 px-3 text-right font-medium ${
+                          counterfactualAnalysis.blindTrades.neverAppeared.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.neverAppeared.length >= 0
+                            ? 'text-green-400' : 'text-red-400'
+                        }`}>
+                          {(counterfactualAnalysis.blindTrades.neverAppeared.reduce((s, t) => s + t.actualR, 0) / counterfactualAnalysis.blindTrades.neverAppeared.length).toFixed(2)}R
+                        </td>
+                        <td className="py-2 px-3 text-right text-gray-400">Missed</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Summary stats */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-gray-750 rounded-lg p-3 text-center">
+                  <p className="text-xs text-gray-400">Avg R (Blind)</p>
+                  <p className={`text-xl font-bold ${counterfactualAnalysis.blindTrades.avgActualR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {counterfactualAnalysis.blindTrades.avgActualR.toFixed(2)}
+                  </p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-3 text-center">
+                  <p className="text-xs text-gray-400">Avg R (If Waited)</p>
+                  <p className={`text-xl font-bold ${
+                    counterfactualAnalysis.blindTrades.avgCounterfactualR !== null
+                      ? counterfactualAnalysis.blindTrades.avgCounterfactualR >= 0 ? 'text-green-400' : 'text-red-400'
+                      : 'text-gray-500'
+                  }`}>
+                    {counterfactualAnalysis.blindTrades.avgCounterfactualR !== null
+                      ? counterfactualAnalysis.blindTrades.avgCounterfactualR.toFixed(2)
+                      : '-'}
+                  </p>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-3 text-center">
+                  <p className="text-xs text-gray-400">Miss Rate</p>
+                  <p className="text-xl font-bold text-yellow-400">
+                    {counterfactualAnalysis.blindTrades.total > 0
+                      ? ((counterfactualAnalysis.blindTrades.missedTradesCount / counterfactualAnalysis.blindTrades.total) * 100).toFixed(0)
+                      : 0}%
+                  </p>
+                  <p className="text-xs text-gray-500">({counterfactualAnalysis.blindTrades.missedTradesR.toFixed(1)}R forfeited)</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Confirmed Trades Analysis */}
+          {counterfactualAnalysis.confirmedTrades.total > 0 && counterfactualAnalysis.confirmedTrades.withBlindCounterfactual > 0 && (
+            <div className="pt-4 border-t border-gray-700">
+              <h4 className="text-md font-medium text-white mb-3">Confirmed Entries ({counterfactualAnalysis.confirmedTrades.total})</h4>
+              <p className="text-sm text-gray-400 mb-4">What if you had entered blind instead of waiting for confirmation?</p>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <h5 className="text-sm font-medium text-gray-400 mb-3">Actual (Waited)</h5>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Count</span>
+                      <span className="text-white font-medium">{counterfactualAnalysis.confirmedTrades.total}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Avg R</span>
+                      <span className={`font-medium ${counterfactualAnalysis.confirmedTrades.avgActualR >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {counterfactualAnalysis.confirmedTrades.avgActualR.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-gray-750 rounded-lg p-4">
+                  <h5 className="text-sm font-medium text-gray-400 mb-3">If Entered Blind</h5>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">With data</span>
+                      <span className="text-white font-medium">{counterfactualAnalysis.confirmedTrades.withBlindCounterfactual}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Avg R</span>
+                      <span className={`font-medium ${
+                        counterfactualAnalysis.confirmedTrades.avgBlindCounterfactualR !== null
+                          ? counterfactualAnalysis.confirmedTrades.avgBlindCounterfactualR >= 0 ? 'text-green-400' : 'text-red-400'
+                          : 'text-gray-500'
+                      }`}>
+                        {counterfactualAnalysis.confirmedTrades.avgBlindCounterfactualR !== null
+                          ? counterfactualAnalysis.confirmedTrades.avgBlindCounterfactualR.toFixed(2)
+                          : '-'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Verdict Insight */}
+          {counterfactualAnalysis.verdict && (
+            <div className="mt-4 bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-blue-400 mb-2">Verdict</h4>
+              <p className="text-sm text-gray-300">{counterfactualAnalysis.verdict.insight}</p>
+              <div className="flex gap-4 mt-3 text-xs">
+                <span className={`${counterfactualAnalysis.verdict.blindAhead ? 'text-green-400' : 'text-yellow-400'}`}>
+                  {counterfactualAnalysis.verdict.blindAhead ? 'Blind ahead' : 'Waiting ahead'}
+                </span>
+                <span className="text-gray-500">|</span>
+                <span className="text-gray-400">
+                  R diff: {counterfactualAnalysis.verdict.rDifferencePerTrade > 0 ? '+' : ''}{counterfactualAnalysis.verdict.rDifferencePerTrade}/trade
+                </span>
+                <span className="text-gray-500">|</span>
+                <span className="text-gray-400">
+                  Miss rate: {counterfactualAnalysis.verdict.missRate}%
+                </span>
+              </div>
             </div>
           )}
         </div>

@@ -10,6 +10,7 @@ import {
   getSingleTradeFilename,
   copyTradeExportToClipboard,
 } from '../../utils';
+import { AddToNotebook } from '../../components/AddToNotebook';
 
 // Helper to check if a level type is a zone
 const isZoneLevelType = (levelType: string): boolean => {
@@ -27,6 +28,7 @@ import {
   isPostExitReviewPartial,
   getEntryDepthPercent,
   isHighLowZoneType,
+  getZoneOvershoot,
 } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
@@ -919,8 +921,23 @@ export function TradeDetail() {
                             </span>
                           </div>
                         )}
-                        {/* Penetration / Range consumed */}
-                        {penetration !== null && penetration !== undefined && (
+                        {/* Front-run: show turn price for zones */}
+                        {level.reaction === 'front_run' && level.turnPrice !== null && level.turnPrice !== undefined && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-blue-400">Turn:</span>
+                            <span className="text-xs text-blue-300 font-mono">{level.turnPrice}</span>
+                          </div>
+                        )}
+                        {/* Broken: show 100% indicator */}
+                        {level.reaction === 'broken' && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-red-400">
+                              100% {isHighLowZoneType(level.levelType) ? 'consumed' : 'penetrated'} (broken)
+                            </span>
+                          </div>
+                        )}
+                        {/* Penetration / Range consumed - hide for front_run and broken */}
+                        {penetration !== null && penetration !== undefined && level.reaction !== 'front_run' && level.reaction !== 'broken' && (
                           <div
                             className="flex items-center gap-2 cursor-help"
                             title={isHighLowZoneType(level.levelType)
@@ -950,6 +967,15 @@ export function TradeDetail() {
                             }`}>
                               {penetration}%
                             </span>
+                            {(() => {
+                              const overshoot = isHighLowZoneType(level.levelType) ? getZoneOvershoot(level) : null;
+                              if (!overshoot) return null;
+                              return (
+                                <span className="text-xs text-amber-400 ml-1">
+                                  (swept {overshoot.edge} by {overshoot.amount.toFixed(overshoot.amount < 1 ? 4 : 2)})
+                                </span>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1181,7 +1207,10 @@ export function TradeDetail() {
 
           return (
             <div className="bg-gray-800 rounded-lg p-6 lg:col-span-2">
-              <h3 className="text-lg font-medium text-white mb-4">Post-Exit Review</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-medium text-white">Post-Exit Review</h3>
+                <AddToNotebook />
+              </div>
 
               {isReviewComplete ? (
                 // Display completed review data

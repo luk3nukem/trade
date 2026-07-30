@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import dexieCloud from 'dexie-cloud-addon';
-import type { TradeRecord, Account, Strategy, DailyJournal, GlossaryTerm, LevelTypePref } from '../types';
+import type { TradeRecord, Account, Strategy, DailyJournal, GlossaryTerm, LevelTypePref, Note } from '../types';
 import { normalizeHighLowZoneEdges, isHighLowZoneType } from '../utils/tradeCalculations';
 
 // Database class extending Dexie with cloud sync
@@ -11,6 +11,7 @@ class TradingDiaryDB extends Dexie {
   dailyJournals!: EntityTable<DailyJournal, 'id'>;
   glossaryTerms!: EntityTable<GlossaryTerm, 'id'>;
   levelTypePrefs!: EntityTable<LevelTypePref, 'id'>;
+  notes!: EntityTable<Note, 'id'>;
   settings!: EntityTable<{ id: string; [key: string]: unknown }, 'id'>;
 
   constructor() {
@@ -24,6 +25,18 @@ class TradingDiaryDB extends Dexie {
       dailyJournals: '@id, date, accountId',
       glossaryTerms: '@id, term',
       levelTypePrefs: '@id, levelType',
+      settings: '@id',
+    });
+
+    // v2 schema - add notes table
+    this.version(2).stores({
+      trades: '@id, accountId, strategyId, pair, entryTime',
+      accounts: '@id',
+      strategies: '@id',
+      dailyJournals: '@id, date, accountId',
+      glossaryTerms: '@id, term',
+      levelTypePrefs: '@id, levelType',
+      notes: '@id, category, status, pinned, createdAt',
       settings: '@id',
     });
 

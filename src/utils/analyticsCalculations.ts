@@ -10,6 +10,10 @@ import {
   getPostExitMilestones,
   getFavourableExtreme,
   calculateStopDistance,
+  isHighLowZoneType,
+  isBlindEntry,
+  calculateCounterfactualR,
+  calculateBlindCounterfactualR,
   type TradeRMetrics,
 } from './tradeCalculations';
 
@@ -1664,6 +1668,186 @@ export function getEntryConfirmationAnalysis(trades: TradeRecord[]): EntryConfir
   }
 
   return results;
+}
+
+// Counterfactual Analysis for Blind vs Confirmed Entries
+export interface CounterfactualTradeData {
+  tradeId: string;
+  pair: string;
+  direction: string;
+  actualR: number;
+  counterfactualR: number | null;
+  counterfactualOutcome: string; // 'appeared_worked' | 'appeared_failed' | 'never_appeared'
+}
+
+export interface CounterfactualAnalysis {
+  // Blind trades analysis
+  blindTrades: {
+    total: number;
+    withCounterfactual: number;
+    appearedWorked: CounterfactualTradeData[];
+    appearedFailed: CounterfactualTradeData[];
+    neverAppeared: CounterfactualTradeData[];
+    avgActualR: number;
+    avgCounterfactualR: number | null; // null if no counterfactual data
+    missedTradesCount: number; // Trades that never got confirmation
+    missedTradesR: number; // Total R from those trades
+  };
+  // Confirmed trades analysis
+  confirmedTrades: {
+    total: number;
+    withBlindCounterfactual: number;
+    avgActualR: number;
+    avgBlindCounterfactualR: number | null;
+    trades: CounterfactualTradeData[];
+  };
+  // Verdict
+  verdict: {
+    blindAhead: boolean; // Is blind entry ahead overall?
+    rDifferencePerTrade: number; // Avg R difference (positive = blind better)
+    missRate: number; // % of trades that would have been missed by waiting
+    insight: string;
+  } | null;
+}
+
+export function getCounterfactualAnalysis(trades: TradeRecord[]): CounterfactualAnalysis {
+  const closedTrades = trades.filter(t =>
+    getCachedMetrics(t).status === 'closed' &&
+    t.tradeTaken !== false
+  );
+
+  // Analyze blind trades
+  const blindTrades = closedTrades.filter(isBlindEntry);
+  const blindAppearedWorked: CounterfactualTradeData[] = [];
+  const blindAppearedFailed: CounterfactualTradeData[] = [];
+  const blindNeverAppeared: CounterfactualTradeData[] = [];
+
+  for (const trade of blindTrades) {
+    const metrics = getCachedMetrics(trade);
+    const actualR = metrics.rMultiple ?? 0;
+    const counterfactualR = calculateCounterfactualR(trade);
+
+    const data: CounterfactualTradeData = {
+      tradeId: trade.id || '',
+      pair: trade.pair,
+      direction: trade.direction,
+      actualR,
+      counterfactualR,
+      counterfactualOutcome: trade.confirmationCounterfactual || '',
+    };
+
+    if (trade.confirmationCounterfactual === 'appeared_worked') {
+      blindAppearedWorked.push(data);
+    } else if (trade.confirmationCounterfactual === 'appeared_failed') {
+      blindAppearedFailed.push(data);
+    } else if (trade.confirmationCounterfactual === 'never_appeared') {
+      blindNeverAppeared.push(data);
+    }
+  }
+
+  const blindWithCounterfactual = [...blindAppearedWorked, ...blindAppearedFailed];
+  const blindAvgActualR = blindTrades.length > 0
+    ? blindTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / blindTrades.length
+    : 0;
+
+  const blindWithValidCounterfactual = blindWithCounterfactual.filter(t => t.counterfactualR !== null);
+  const blindAvgCounterfactualR = blindWithValidCounterfactual.length > 0
+    ? blindWithValidCounterfactual.reduce((sum, t) => sum + (t.counterfactualR ?? 0), 0) / blindWithValidCounterfactual.length
+    : null;
+
+  const missedTradesR = blindNeverAppeared.reduce((sum, t) => sum + t.actualR, 0);
+
+  // Analyze confirmed trades
+  const confirmedTrades = closedTrades.filter(t =>
+    !isBlindEntry(t) &&
+    t.entryConfirmation // Has some confirmation
+  );
+
+  const confirmedTradesData: CounterfactualTradeData[] = [];
+  for (const trade of confirmedTrades) {
+    const metrics = getCachedMetrics(trade);
+    const actualR = metrics.rMultiple ?? 0;
+    const blindCounterfactualR = calculateBlindCounterfactualR(trade);
+
+    if (blindCounterfactualR !== null) {
+      confirmedTradesData.push({
+        tradeId: trade.id || '',
+        pair: trade.pair,
+        direction: trade.direction,
+        actualR,
+        counterfactualR: blindCounterfactualR,
+        counterfactualOutcome: 'blind_entry',
+      });
+    }
+  }
+
+  const confirmedAvgActualR = confirmedTrades.length > 0
+    ? confirmedTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0) / confirmedTrades.length
+    : 0;
+
+  const confirmedAvgBlindR = confirmedTradesData.length > 0
+    ? confirmedTradesData.reduce((sum, t) => sum + (t.counterfactualR ?? 0), 0) / confirmedTradesData.length
+    : null;
+
+  // Calculate verdict
+  let verdict: CounterfactualAnalysis['verdict'] = null;
+  const totalBlindWithData = blindWithCounterfactual.length + blindNeverAppeared.length;
+
+  if (totalBlindWithData >= 3 && blindWithValidCounterfactual.length >= 2) {
+    // Calculate how many trades would have been missed by waiting
+    const missRate = blindNeverAppeared.length / totalBlindWithData;
+
+    // Factor in missed trades
+    // If waiting, you miss blindNeverAppeared trades entirely
+    // Net effect: waiting gets counterfactualR on appeared trades, misses neverAppeared entirely
+    const totalBlindActualR = blindTrades.reduce((sum, t) => sum + (getCachedMetrics(t).rMultiple ?? 0), 0);
+    const totalBlindCounterfactualR = blindWithValidCounterfactual.reduce((sum, t) => sum + (t.counterfactualR ?? 0), 0);
+
+    const rDifferencePerTrade = blindAvgActualR - (blindAvgCounterfactualR ?? 0);
+    const blindAhead = totalBlindActualR > totalBlindCounterfactualR;
+
+    const appearedCount = blindWithCounterfactual.length;
+    const appearedWorkedCount = blindAppearedWorked.length;
+    const appearedWorkedRate = appearedCount > 0 ? (appearedWorkedCount / appearedCount) * 100 : 0;
+    const confirmationAppearedRate = totalBlindWithData > 0 ? (appearedCount / totalBlindWithData) * 100 : 0;
+
+    const waitingNetR = blindAvgCounterfactualR !== null
+      ? (blindAvgCounterfactualR * appearedCount - 0 * blindNeverAppeared.length) / totalBlindWithData
+      : null;
+    const blindNetR = blindAvgActualR;
+    const netDifference = waitingNetR !== null ? blindNetR - waitingNetR : 0;
+
+    const verdictText = blindAhead ? 'blind' : 'waiting';
+
+    verdict = {
+      blindAhead,
+      rDifferencePerTrade: Number(rDifferencePerTrade.toFixed(2)),
+      missRate: Number((missRate * 100).toFixed(1)),
+      insight: `On your blind entries, confirmation appeared on ${confirmationAppearedRate.toFixed(0)}% and would have paid on ${appearedWorkedRate.toFixed(0)}% — waiting nets ${netDifference > 0 ? '+' : ''}${netDifference.toFixed(2)}R per trade vs blind, but forfeits ${blindNeverAppeared.length} never-confirmed winner${blindNeverAppeared.length !== 1 ? 's' : ''} (${missedTradesR.toFixed(1)}R). Verdict so far: ${verdictText} is ahead.`,
+    };
+  }
+
+  return {
+    blindTrades: {
+      total: blindTrades.length,
+      withCounterfactual: blindWithCounterfactual.length,
+      appearedWorked: blindAppearedWorked,
+      appearedFailed: blindAppearedFailed,
+      neverAppeared: blindNeverAppeared,
+      avgActualR: Number(blindAvgActualR.toFixed(2)),
+      avgCounterfactualR: blindAvgCounterfactualR !== null ? Number(blindAvgCounterfactualR.toFixed(2)) : null,
+      missedTradesCount: blindNeverAppeared.length,
+      missedTradesR: Number(missedTradesR.toFixed(2)),
+    },
+    confirmedTrades: {
+      total: confirmedTrades.length,
+      withBlindCounterfactual: confirmedTradesData.length,
+      avgActualR: Number(confirmedAvgActualR.toFixed(2)),
+      avgBlindCounterfactualR: confirmedAvgBlindR !== null ? Number(confirmedAvgBlindR.toFixed(2)) : null,
+      trades: confirmedTradesData,
+    },
+    verdict,
+  };
 }
 
 export function getBehaviouralInsights(
@@ -4534,15 +4718,28 @@ export function getFrontRunDistanceAnalysis(trades: TradeRecord[]): FrontRunDist
       totalFrontRuns++;
 
       if (level.turnPrice !== null && level.turnPrice !== undefined && stopDistance > 0) {
-        const distanceR = Math.abs(level.price - level.turnPrice) / stopDistance;
+        // For high_low zones, use the entry edge based on trade direction:
+        // - Long: entry is near high edge (price)
+        // - Short: entry is near low edge (priceFar)
+        // For near_far zones, use near edge (price)
+        let entryEdge = level.price;
+        if (isHighLowZoneType(level.levelType) && level.priceFar !== null) {
+          // For high_low zones, pick edge based on trade direction
+          if (trade.direction === 'short') {
+            entryEdge = level.priceFar; // low edge for short entries
+          }
+          // For long trades, entryEdge stays as level.price (high edge)
+        }
+
+        const distanceR = Math.abs(entryEdge - level.turnPrice) / stopDistance;
 
         // Calculate % of distance from prior level (if one exists)
         let distancePercent: number | null = null;
         if (i > 0) {
           const priorLevel = trade.levelSequence[i - 1];
-          const distanceFromPrior = Math.abs(level.price - priorLevel.price);
+          const distanceFromPrior = Math.abs(entryEdge - priorLevel.price);
           if (distanceFromPrior > 0) {
-            distancePercent = (Math.abs(level.price - level.turnPrice) / distanceFromPrior) * 100;
+            distancePercent = (Math.abs(entryEdge - level.turnPrice) / distanceFromPrior) * 100;
           }
         }
 

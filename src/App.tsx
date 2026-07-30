@@ -7,6 +7,7 @@ import { TradeForm } from './features/trades/TradeForm';
 import { TradeDetail } from './features/trades/TradeDetail';
 import { AnalyticsPage } from './features/analytics/AnalyticsPage';
 import { JournalPage } from './features/journal/JournalPage';
+import { NotebookPage } from './features/notebook/NotebookPage';
 import { SettingsPage } from './features/settings/SettingsPage';
 import { GlossaryPage } from './features/settings/GlossaryPage';
 import { initializeSeedData } from './db';
@@ -37,6 +38,7 @@ function App() {
           <Route path="trades/:id/edit" element={<TradeForm />} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="journal" element={<JournalPage />} />
+          <Route path="notebook" element={<NotebookPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="settings/glossary" element={<GlossaryPage />} />
         </Route>
