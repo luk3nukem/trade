@@ -37,6 +37,10 @@ import {
   isHighLowZoneType,
   getRangeConsumedPercent,
   getZoneOvershoot,
+  getEffectiveReachedTarget,
+  getReplayVerdict,
+  getReplayVerdictText,
+  deriveReachedTargetPostExit,
 } from '../../utils';
 
 // Preset level types - zones have two edges, lines are single price
@@ -121,6 +125,7 @@ const getInitialFormData = (): TradeFormData => ({
   reachedTargetPostExit: null,
   confirmationCounterfactual: '',
   counterfactualEntryPrice: '',
+  counterfactualStopPrice: '',
 });
 
 // Options for selects
@@ -327,6 +332,7 @@ export function TradeForm() {
             reachedTargetPostExit: trade.reachedTargetPostExit ?? null,
             confirmationCounterfactual: trade.confirmationCounterfactual || '',
             counterfactualEntryPrice: trade.counterfactualEntryPrice?.toString() || '',
+            counterfactualStopPrice: trade.counterfactualStopPrice?.toString() || '',
           });
           setOriginalStopLoss(trade.stopLoss);
           setCreatedAt(trade.createdAt);
@@ -815,19 +821,52 @@ export function TradeForm() {
         closeNotes: formData.closeNotes.trim() || undefined,
         postExitNotes: formData.postExitNotes.trim() || undefined,
         screenshots: formData.screenshots,
-        reachedTargetPostExit: formData.reachedTargetPostExit,
+        // For taken trades: derive reachedTargetPostExit from milestones
+        // For not-taken trades: use manual value from form
+        reachedTargetPostExit: (() => {
+          if (!formData.tradeTaken) {
+            // Not-taken trades use manual value
+            return formData.reachedTargetPostExit;
+          }
+          // For taken trades, build a partial trade to derive the value
+          const partialTrade = {
+            direction: formData.direction,
+            targetPrice: formData.targetPrice ? parseFloat(formData.targetPrice) : undefined,
+            timeline: formData.timeline,
+            exits: formData.exits,
+            tradeTaken: true,
+          } as TradeRecord;
+          const derived = deriveReachedTargetPostExit(partialTrade);
+          // If can't derive, fall back to existing manual value (legacy)
+          return derived ?? formData.reachedTargetPostExit;
+        })(),
         confirmationCounterfactual: formData.confirmationCounterfactual || undefined,
         counterfactualEntryPrice: formData.counterfactualEntryPrice
           ? parseFloat(formData.counterfactualEntryPrice)
           : null,
-        // Review is complete when reachedTargetPostExit is set and postExitNotes is filled
+        counterfactualStopPrice: formData.counterfactualStopPrice
+          ? parseFloat(formData.counterfactualStopPrice)
+          : null,
+        // Review completion: both post_exit_high and post_exit_low present, plus notes
+        // For not-taken trades: require manual reachedTargetPostExit
         // For blind entries, also require counterfactual to be set
         reviewedAt: (() => {
-          const hasReachedTarget = formData.reachedTargetPostExit !== null;
+          const hasPostExitHigh = formData.timeline.some(e => e.eventType === 'post_exit_high' && e.price !== null);
+          const hasPostExitLow = formData.timeline.some(e => e.eventType === 'post_exit_low' && e.price !== null);
+          const hasMilestones = hasPostExitHigh && hasPostExitLow;
           const hasNotes = formData.postExitNotes.trim() !== '';
           const isBlindEntry = formData.entryConfirmation === 'blind_limit' || formData.entryConfirmation === 'blind_market';
           const hasCounterfactual = !isBlindEntry || formData.confirmationCounterfactual !== '';
-          const isComplete = hasReachedTarget && hasNotes && hasCounterfactual;
+
+          // For not-taken trades, also need manual reachedTargetPostExit
+          if (!formData.tradeTaken) {
+            const hasReachedTarget = formData.reachedTargetPostExit !== null;
+            const isComplete = hasReachedTarget && hasNotes;
+            return isComplete ? (existingReviewedAt || now.toISOString()) : null;
+          }
+
+          // For taken trades: milestones + notes (+ counterfactual for blind)
+          const isComplete = hasMilestones && hasNotes && hasCounterfactual;
           return isComplete ? (existingReviewedAt || now.toISOString()) : null;
         })(),
         createdAt: isEditMode ? createdAt! : now,
@@ -2643,44 +2682,127 @@ export function TradeForm() {
               </div>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Did price reach your target after you exited?
-              </label>
-              <div className="flex gap-4">
-                <button
-                  type="button"
-                  onClick={() => handleChange('reachedTargetPostExit', true)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                    formData.reachedTargetPostExit === true
-                      ? 'bg-red-500/30 text-red-400 ring-2 ring-red-500'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleChange('reachedTargetPostExit', false)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                    formData.reachedTargetPostExit === false
-                      ? 'bg-green-500/30 text-green-400 ring-2 ring-green-500'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  No
-                </button>
-                {formData.reachedTargetPostExit !== null && (
+            {/* For taken trades: Show derived verdict read-only */}
+            {formData.tradeTaken && (() => {
+              // Build partial trade for verdict calculation
+              const partialTrade = {
+                direction: formData.direction,
+                targetPrice: formData.targetPrice ? parseFloat(formData.targetPrice) : undefined,
+                stopLoss: formData.stopLoss ? parseFloat(formData.stopLoss) : 0,
+                entryPrice: formData.entryPrice ? parseFloat(formData.entryPrice) : 0,
+                timeline: formData.timeline,
+                exits: formData.exits,
+                tradeTaken: true,
+                reachedTargetPostExit: formData.reachedTargetPostExit,
+              } as TradeRecord;
+
+              const verdict = getReplayVerdict(partialTrade);
+              const verdictText = getReplayVerdictText(verdict);
+              const { value: reachedTarget, source } = getEffectiveReachedTarget(partialTrade);
+
+              // Check if we have the required milestones
+              const hasPostExitHigh = formData.timeline.some(e => e.eventType === 'post_exit_high' && e.price !== null);
+              const hasPostExitLow = formData.timeline.some(e => e.eventType === 'post_exit_low' && e.price !== null);
+              const hasMilestones = hasPostExitHigh && hasPostExitLow;
+              const hasTarget = formData.targetPrice && parseFloat(formData.targetPrice) > 0;
+
+              return (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Target Reached Post-Exit?
+                  </label>
+                  {!hasMilestones ? (
+                    <div className="bg-gray-700 rounded-lg p-4 text-gray-400 text-sm">
+                      <p>Add both post_exit_high and post_exit_low milestones to the timeline to see the verdict.</p>
+                      <p className="text-xs mt-1 text-gray-500">The system will automatically determine if price reached your target.</p>
+                    </div>
+                  ) : !hasTarget ? (
+                    <div className="bg-gray-700 rounded-lg p-4 text-gray-400 text-sm">
+                      <p>Set a target price to determine if it was reached post-exit.</p>
+                    </div>
+                  ) : (
+                    <div className={`rounded-lg p-4 ${
+                      verdict.type === 'target_touched_stopped_first' ? 'bg-green-500/10 border border-green-500/30' :
+                      verdict.type === 'target_reached_hold_survives' ? 'bg-amber-500/10 border border-amber-500/30' :
+                      verdict.type === 'target_not_reached' ? 'bg-blue-500/10 border border-blue-500/30' :
+                      'bg-gray-700'
+                    }`}>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-lg ${
+                          verdict.type === 'target_touched_stopped_first' ? 'text-green-400' :
+                          verdict.type === 'target_reached_hold_survives' ? 'text-amber-400' :
+                          verdict.type === 'target_not_reached' ? 'text-blue-400' :
+                          'text-gray-400'
+                        }`}>
+                          {verdict.type === 'target_touched_stopped_first' ? '✓' :
+                           verdict.type === 'target_reached_hold_survives' ? '⚠' :
+                           verdict.type === 'target_not_reached' ? '✓' : '?'}
+                        </span>
+                        <div>
+                          <p className={`font-medium ${
+                            verdict.type === 'target_touched_stopped_first' ? 'text-green-400' :
+                            verdict.type === 'target_reached_hold_survives' ? 'text-amber-400' :
+                            verdict.type === 'target_not_reached' ? 'text-blue-400' :
+                            'text-gray-400'
+                          }`}>
+                            {reachedTarget === true ? 'Yes' : reachedTarget === false ? 'No' : 'Unknown'}
+                          </p>
+                          <p className="text-sm text-gray-300 mt-1">{verdictText}</p>
+                          {source === 'legacy' && (
+                            <p className="text-xs text-gray-500 mt-1">(from manual entry - milestones not available)</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* For not-taken trades: Show Yes/No buttons */}
+            {!formData.tradeTaken && (
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Did price reach your target? (hypothetical)
+                </label>
+                <p className="text-xs text-gray-400 mb-3">
+                  Since you didn't take this trade, manually review if price would have hit your target.
+                </p>
+                <div className="flex gap-4">
                   <button
                     type="button"
-                    onClick={() => handleChange('reachedTargetPostExit', null)}
-                    className="px-4 py-2 rounded-lg font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
+                    onClick={() => handleChange('reachedTargetPostExit', true)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      formData.reachedTargetPostExit === true
+                        ? 'bg-red-500/30 text-red-400 ring-2 ring-red-500'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
                   >
-                    Clear
+                    Yes
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => handleChange('reachedTargetPostExit', false)}
+                    className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                      formData.reachedTargetPostExit === false
+                        ? 'bg-green-500/30 text-green-400 ring-2 ring-green-500'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    No
+                  </button>
+                  {formData.reachedTargetPostExit !== null && (
+                    <button
+                      type="button"
+                      onClick={() => handleChange('reachedTargetPostExit', null)}
+                      className="px-4 py-2 rounded-lg font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -2745,6 +2867,7 @@ export function TradeForm() {
                         onClick={() => {
                           handleChange('confirmationCounterfactual', '');
                           handleChange('counterfactualEntryPrice', '');
+                          handleChange('counterfactualStopPrice', '');
                         }}
                         className="px-3 py-2 rounded-lg text-sm font-medium bg-gray-700 text-gray-400 hover:bg-gray-600 transition-colors"
                       >
@@ -2754,22 +2877,66 @@ export function TradeForm() {
                   </div>
                 </div>
 
-                {/* Counterfactual Entry Price - Only when confirmation appeared */}
+                {/* Counterfactual Entry and Stop Price - Only when confirmation appeared */}
                 {(formData.confirmationCounterfactual === 'appeared_worked' || formData.confirmationCounterfactual === 'appeared_failed') && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      Where would the confirmed entry have filled?
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      value={formData.counterfactualEntryPrice}
-                      onChange={(e) => handleChange('counterfactualEntryPrice', e.target.value)}
-                      placeholder="Confirmed entry price"
-                      className="w-48 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      This is used to calculate what R you would have achieved by waiting for confirmation.
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-1">
+                        Where would the confirmed entry have filled?
+                      </label>
+                      <input
+                        type="number"
+                        step="any"
+                        value={formData.counterfactualEntryPrice}
+                        onChange={(e) => handleChange('counterfactualEntryPrice', e.target.value)}
+                        placeholder="Confirmed entry price"
+                        className="w-48 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-1">
+                        Where would the confirmed stop have been?
+                      </label>
+                      <p className="text-xs text-gray-400 mb-2">
+                        Confirmation structure often gives a tighter invalidation — log the stop you'd actually have used.
+                      </p>
+                      <input
+                        type="number"
+                        step="any"
+                        value={formData.counterfactualStopPrice}
+                        onChange={(e) => {
+                          handleChange('counterfactualStopPrice', e.target.value);
+                        }}
+                        onFocus={() => {
+                          // Default to trade's stopLoss if empty
+                          if (!formData.counterfactualStopPrice && formData.stopLoss) {
+                            handleChange('counterfactualStopPrice', formData.stopLoss);
+                          }
+                        }}
+                        placeholder={formData.stopLoss ? `Default: ${formData.stopLoss}` : 'Confirmed stop price'}
+                        className="w-48 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      {/* Direction sanity warning */}
+                      {formData.counterfactualStopPrice && formData.counterfactualEntryPrice && (() => {
+                        const cfEntry = parseFloat(formData.counterfactualEntryPrice);
+                        const cfStop = parseFloat(formData.counterfactualStopPrice);
+                        const isLong = formData.direction === 'long';
+                        const stopBelowEntry = cfStop < cfEntry;
+                        const isValid = isLong ? stopBelowEntry : !stopBelowEntry;
+                        if (!isValid) {
+                          return (
+                            <p className="text-xs text-red-400 mt-1">
+                              Warning: For a {formData.direction} trade, stop should be {isLong ? 'below' : 'above'} entry
+                            </p>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+
+                    <p className="text-xs text-gray-500">
+                      These values calculate what R you would have achieved by waiting for confirmation (each variant sized to the same $ risk).
                     </p>
                   </div>
                 )}

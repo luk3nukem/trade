@@ -29,6 +29,9 @@ import {
   getEntryDepthPercent,
   isHighLowZoneType,
   getZoneOvershoot,
+  getEffectiveReachedTarget,
+  getReplayVerdict,
+  getReplayVerdictText,
 } from '../../utils/tradeCalculations';
 import { useAppStore } from '../../stores/appStore';
 
@@ -221,29 +224,61 @@ function PostExitReviewDisplay({ trade }: { trade: TradeRecord }) {
         </div>
       </div>
 
-      {/* Reached Target Badge */}
-      <div className="flex items-center gap-4">
-        <span className="text-sm text-gray-400">Reached Target After Exit?</span>
-        {trade.reachedTargetPostExit === true && (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-500/20 text-red-400 rounded-full text-sm font-medium">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-            </svg>
-            Yes - Left money on the table
-          </span>
-        )}
-        {trade.reachedTargetPostExit === false && (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-green-500/20 text-green-400 rounded-full text-sm font-medium">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            No - Good exit timing
-          </span>
-        )}
-        {trade.reachedTargetPostExit === null && (
-          <span className="text-gray-500">Not recorded</span>
-        )}
-      </div>
+      {/* Reached Target Badge with Replay Verdict */}
+      {(() => {
+        const { value: reachedTarget, source } = getEffectiveReachedTarget(trade);
+        const verdict = getReplayVerdict(trade);
+        const verdictText = getReplayVerdictText(verdict);
+
+        return (
+          <div className="space-y-2">
+            <div className="flex items-center gap-4">
+              <span className="text-sm text-gray-400">Reached Target After Exit?</span>
+              {reachedTarget === true && (
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-medium ${
+                  verdict.type === 'target_touched_stopped_first'
+                    ? 'bg-green-500/20 text-green-400'
+                    : 'bg-amber-500/20 text-amber-400'
+                }`}>
+                  {verdict.type === 'target_touched_stopped_first' ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  )}
+                  Yes
+                </span>
+              )}
+              {reachedTarget === false && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-500/20 text-blue-400 rounded-full text-sm font-medium">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  No
+                </span>
+              )}
+              {reachedTarget === null && (
+                <span className="text-gray-500">Not recorded</span>
+              )}
+            </div>
+            {reachedTarget !== null && verdict.type !== 'no_data' && (
+              <p className={`text-sm ${
+                verdict.type === 'target_touched_stopped_first' ? 'text-green-400' :
+                verdict.type === 'target_reached_hold_survives' ? 'text-amber-400' :
+                'text-blue-400'
+              }`}>
+                {verdictText}
+              </p>
+            )}
+            {source === 'legacy' && (
+              <p className="text-xs text-gray-500">(from manual entry - milestones not available)</p>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Post-Exit Notes */}
       {trade.postExitNotes && (

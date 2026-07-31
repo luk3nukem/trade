@@ -202,37 +202,73 @@ export function calculateTotalExitsPnl(
  * For simplicity, uses target-vs-stop binary: did price reach target before breaching stop?
  * Returns the planned R if target was reached, or -1R if stop was hit.
  */
+
+/**
+ * Counterfactual R calculation result
+ */
+export type CounterfactualRResult = {
+  r: number;
+  plannedRR: number; // The planned R:R of the counterfactual entry
+  status: 'determinate';
+} | {
+  r: null;
+  plannedRR: number;
+  status: 'indeterminate'; // Both target and stop were breached, can't determine order
+} | {
+  r: null;
+  plannedRR: number | null;
+  status: 'no_data'; // Insufficient data (either for planned R:R or for outcome)
+};
+
+/**
+ * Calculate counterfactual R for a blind entry trade.
+ * Uses counterfactual entry AND counterfactual stop (or trade's stop as fallback).
+ * Risk unit = |cfEntry − cfStop| (each variant in its own risk units).
+ */
 export function calculateCounterfactualR(
   trade: TradeRecord
 ): number | null {
-  // Only for blind entries with counterfactual data
-  if (!trade.confirmationCounterfactual) return null;
-  if (trade.confirmationCounterfactual === 'never_appeared') return null;
-  if (!trade.counterfactualEntryPrice) return null;
-  if (!trade.targetPrice || !trade.stopLoss) return null;
+  const result = calculateCounterfactualRDetailed(trade);
+  return result.r;
+}
 
-  const counterfactualEntry = trade.counterfactualEntryPrice;
-  const stop = trade.stopLoss;
+/**
+ * Detailed counterfactual R calculation with indeterminate status.
+ */
+export function calculateCounterfactualRDetailed(
+  trade: TradeRecord
+): CounterfactualRResult {
+  // Only for blind entries with counterfactual data
+  if (!trade.confirmationCounterfactual) return { r: null, plannedRR: null, status: 'no_data' };
+  if (trade.confirmationCounterfactual === 'never_appeared') return { r: null, plannedRR: null, status: 'no_data' };
+  if (!trade.counterfactualEntryPrice) return { r: null, plannedRR: null, status: 'no_data' };
+  if (!trade.targetPrice) return { r: null, plannedRR: null, status: 'no_data' };
+
+  const cfEntry = trade.counterfactualEntryPrice;
+  // Use counterfactual stop if provided, otherwise fall back to trade's stop
+  const cfStop = trade.counterfactualStopPrice ?? trade.stopLoss;
+  if (!cfStop) return { r: null, plannedRR: null, status: 'no_data' };
+
   const target = trade.targetPrice;
   const direction = trade.direction;
 
-  // Calculate the stop distance from counterfactual entry
-  const counterfactualStopDistance = Math.abs(counterfactualEntry - stop);
-  if (counterfactualStopDistance === 0) return null;
+  // Calculate the risk unit from counterfactual entry to counterfactual stop
+  const cfRiskUnit = Math.abs(cfEntry - cfStop);
+  if (cfRiskUnit === 0) return { r: null, plannedRR: null, status: 'no_data' };
 
   // Check if the counterfactual entry would even be valid (stop not already breached)
   if (direction === 'long') {
-    if (counterfactualEntry <= stop) return null; // Invalid: entry below stop for long
+    if (cfEntry <= cfStop) return { r: null, plannedRR: null, status: 'no_data' }; // Invalid: entry at/below stop for long
   } else {
-    if (counterfactualEntry >= stop) return null; // Invalid: entry above stop for short
+    if (cfEntry >= cfStop) return { r: null, plannedRR: null, status: 'no_data' }; // Invalid: entry at/above stop for short
   }
 
-  // Calculate planned R from counterfactual entry
-  const counterfactualTargetDistance = Math.abs(target - counterfactualEntry);
-  const plannedR = counterfactualTargetDistance / counterfactualStopDistance;
+  // Calculate planned R:R from counterfactual entry (in counterfactual risk units)
+  const cfTargetDistance = Math.abs(target - cfEntry);
+  const plannedRR = Number((cfTargetDistance / cfRiskUnit).toFixed(2));
 
   // Walk the timeline/exits to determine if target or stop was hit first
-  // Use the actual trade's price action - did price reach target before stop from counterfactual entry?
+  // Use the actual trade's price action from the counterfactual entry point
 
   // Get the MFE (most favorable excursion) and MAE (most adverse excursion) from timeline
   const timeline = trade.timeline || [];
@@ -261,33 +297,53 @@ export function calculateCounterfactualR(
 
   // Determine outcome based on direction
   if (direction === 'long') {
-    // For long: check if high reached target, or if low breached stop
+    // For long: check if high reached target, or if low breached counterfactual stop
     const targetReached = mfe !== null && mfe >= target;
-    const stopHit = mae !== null && mae <= stop;
+    const stopHit = mae !== null && mae <= cfStop;
 
+    if (targetReached && stopHit) {
+      // Both hit - can't determine order from extremes alone
+      return { r: null, plannedRR, status: 'indeterminate' };
+    }
     if (targetReached && !stopHit) {
-      return Number(plannedR.toFixed(2));
+      // Target reached without hitting stop
+      return { r: plannedRR, plannedRR, status: 'determinate' };
     }
     if (stopHit) {
-      return -1;
+      // Stop hit
+      return { r: -1, plannedRR, status: 'determinate' };
     }
     // Neither clearly hit - use actual trade outcome as proxy
-    const actualR = calculateRMultiple(counterfactualEntry, stop, trade.exits?.[0]?.price, direction);
-    return clampRValue(actualR) ?? null;
+    const actualR = calculateRMultiple(cfEntry, cfStop, trade.exits?.[0]?.price, direction);
+    const clampedR = clampRValue(actualR);
+    if (clampedR !== undefined) {
+      return { r: Number(clampedR.toFixed(2)), plannedRR, status: 'determinate' };
+    }
+    return { r: null, plannedRR, status: 'no_data' };
   } else {
-    // For short: check if low reached target, or if high breached stop
+    // For short: check if low reached target, or if high breached counterfactual stop
     const targetReached = mae !== null && mae <= target;
-    const stopHit = mfe !== null && mfe >= stop;
+    const stopHit = mfe !== null && mfe >= cfStop;
 
+    if (targetReached && stopHit) {
+      // Both hit - can't determine order from extremes alone
+      return { r: null, plannedRR, status: 'indeterminate' };
+    }
     if (targetReached && !stopHit) {
-      return Number(plannedR.toFixed(2));
+      // Target reached without hitting stop
+      return { r: plannedRR, plannedRR, status: 'determinate' };
     }
     if (stopHit) {
-      return -1;
+      // Stop hit
+      return { r: -1, plannedRR, status: 'determinate' };
     }
     // Neither clearly hit - use actual trade outcome as proxy
-    const actualR = calculateRMultiple(counterfactualEntry, stop, trade.exits?.[0]?.price, direction);
-    return clampRValue(actualR) ?? null;
+    const actualR = calculateRMultiple(cfEntry, cfStop, trade.exits?.[0]?.price, direction);
+    const clampedR = clampRValue(actualR);
+    if (clampedR !== undefined) {
+      return { r: Number(clampedR.toFixed(2)), plannedRR, status: 'determinate' };
+    }
+    return { r: null, plannedRR, status: 'no_data' };
   }
 }
 
@@ -1209,28 +1265,26 @@ export function derivePostExitMetrics(
 
 /**
  * Check if a post-exit review is complete.
- * Requires: both post_exit_high AND post_exit_low in timeline,
- * reachedTargetPostExit set, postExitNotes non-empty
+ * For taken trades: requires both post_exit_high AND post_exit_low in timeline, postExitNotes non-empty
+ * For not-taken trades: requires reachedTargetPostExit set (manual), postExitNotes non-empty
  */
 export function isPostExitReviewComplete(trade: TradeRecord): boolean {
-  const postExitEvents = getPostExitEvents(trade);
-
-  const hasPostExitHigh = postExitEvents.some(e => e.eventType === 'post_exit_high');
-  const hasPostExitLow = postExitEvents.some(e => e.eventType === 'post_exit_low');
-
-  if (!hasPostExitHigh || !hasPostExitLow) {
-    return false;
-  }
-
-  if (trade.reachedTargetPostExit === null || trade.reachedTargetPostExit === undefined) {
-    return false;
-  }
-
+  // Notes are always required
   if (!trade.postExitNotes || trade.postExitNotes.trim() === '') {
     return false;
   }
 
-  return true;
+  // For not-taken trades: need manual reachedTargetPostExit
+  if (trade.tradeTaken === false) {
+    return trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined;
+  }
+
+  // For taken trades: need both milestones (reachedTargetPostExit is derived)
+  const postExitEvents = getPostExitEvents(trade);
+  const hasPostExitHigh = postExitEvents.some(e => e.eventType === 'post_exit_high');
+  const hasPostExitLow = postExitEvents.some(e => e.eventType === 'post_exit_low');
+
+  return hasPostExitHigh && hasPostExitLow;
 }
 
 /**
@@ -1241,12 +1295,18 @@ export function isPostExitReviewPartial(trade: TradeRecord): boolean {
 
   const hasPostExitHigh = postExitEvents.some(e => e.eventType === 'post_exit_high');
   const hasPostExitLow = postExitEvents.some(e => e.eventType === 'post_exit_low');
-  const hasReachedTarget = trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined;
   const hasNotes = trade.postExitNotes !== undefined && trade.postExitNotes.trim() !== '';
 
-  const filledCount = [hasPostExitHigh, hasPostExitLow, hasReachedTarget, hasNotes].filter(Boolean).length;
+  // For not-taken trades: also check manual reachedTargetPostExit
+  if (trade.tradeTaken === false) {
+    const hasReachedTarget = trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined;
+    const filledCount = [hasReachedTarget, hasNotes].filter(Boolean).length;
+    return filledCount > 0 && filledCount < 2;
+  }
 
-  return filledCount > 0 && filledCount < 4;
+  // For taken trades: check milestones and notes
+  const filledCount = [hasPostExitHigh, hasPostExitLow, hasNotes].filter(Boolean).length;
+  return filledCount > 0 && filledCount < 3;
 }
 
 // ============================================
@@ -1402,4 +1462,145 @@ export function getHoldReplayAnalysis(trade: TradeRecord): HoldReplayAnalysis {
     replayExitEfficiency,
     holdSurvived,
   };
+}
+
+// ============================================
+// DERIVED REACHED TARGET POST-EXIT
+// ============================================
+
+/**
+ * Derive whether price reached target post-exit from milestones.
+ * For long trades: check if post_exit_high >= targetPrice
+ * For short trades: check if post_exit_low <= targetPrice
+ * Returns null if target or relevant milestone is missing.
+ */
+export function deriveReachedTargetPostExit(trade: TradeRecord): boolean | null {
+  // Need a target price to determine if reached
+  if (!trade.targetPrice) {
+    return null;
+  }
+
+  const postExitEvents = getPostExitEvents(trade);
+
+  // For longs, we need post_exit_high; for shorts, we need post_exit_low
+  const relevantType = trade.direction === 'long' ? 'post_exit_high' : 'post_exit_low';
+  const relevantMilestone = postExitEvents.find(e => e.eventType === relevantType);
+
+  if (!relevantMilestone || relevantMilestone.price === null) {
+    return null; // Can't determine without milestone
+  }
+
+  if (trade.direction === 'long') {
+    return relevantMilestone.price >= trade.targetPrice;
+  } else {
+    return relevantMilestone.price <= trade.targetPrice;
+  }
+}
+
+/**
+ * Get the effective reachedTargetPostExit value.
+ * For taken trades with milestones: derive from milestones
+ * For not-taken trades or trades without milestones: use stored manual value
+ */
+export function getEffectiveReachedTarget(trade: TradeRecord): {
+  value: boolean | null;
+  source: 'derived' | 'manual' | 'legacy';
+} {
+  // For not-taken trades, always use manual value (they have no exits to anchor replay)
+  if (trade.tradeTaken === false) {
+    return {
+      value: trade.reachedTargetPostExit ?? null,
+      source: 'manual',
+    };
+  }
+
+  // Try to derive from milestones
+  const derived = deriveReachedTargetPostExit(trade);
+
+  if (derived !== null) {
+    return {
+      value: derived,
+      source: 'derived',
+    };
+  }
+
+  // Fall back to stored value (legacy or manual)
+  return {
+    value: trade.reachedTargetPostExit ?? null,
+    source: trade.reachedTargetPostExit !== null && trade.reachedTargetPostExit !== undefined
+      ? 'legacy'
+      : 'manual',
+  };
+}
+
+// ============================================
+// REPLAY VERDICT
+// ============================================
+
+export type ReplayVerdict =
+  | { type: 'target_touched_stopped_first'; missedR: number }
+  | { type: 'target_reached_hold_survives'; missedR: number }
+  | { type: 'target_not_reached' }
+  | { type: 'no_data' };
+
+/**
+ * Get the combined replay verdict for a trade.
+ * Combines reachedTargetPostExit with hold replay analysis.
+ */
+export function getReplayVerdict(trade: TradeRecord): ReplayVerdict {
+  const { value: reachedTarget } = getEffectiveReachedTarget(trade);
+
+  if (reachedTarget === null) {
+    return { type: 'no_data' };
+  }
+
+  if (!reachedTarget) {
+    return { type: 'target_not_reached' };
+  }
+
+  // Target was reached - check if hold would have survived
+  const replayAnalysis = getHoldReplayAnalysis(trade);
+
+  if (!replayAnalysis.hasSequence) {
+    // No sequence to replay, but target was reached
+    // Assume hold survived since we can't prove otherwise
+    return {
+      type: 'target_reached_hold_survives',
+      missedR: replayAnalysis.replayMissedR ?? 0,
+    };
+  }
+
+  if (replayAnalysis.holdSurvived) {
+    return {
+      type: 'target_reached_hold_survives',
+      missedR: replayAnalysis.replayMissedR ?? 0,
+    };
+  } else {
+    // Hold would have been stopped before reaching favourable extreme
+    const stopped = replayAnalysis.originalStopOutcome;
+    const missedR = stopped.type === 'stopped' ? stopped.beforeReaching : 0;
+    return {
+      type: 'target_touched_stopped_first',
+      missedR,
+    };
+  }
+}
+
+/**
+ * Get a human-readable verdict string for display
+ */
+export function getReplayVerdictText(verdict: ReplayVerdict): string {
+  switch (verdict.type) {
+    case 'target_touched_stopped_first':
+      return 'Target touched post-exit — but hold would have been stopped first (exit validated)';
+    case 'target_reached_hold_survives':
+      if (verdict.missedR > 0) {
+        return `Target reached — hold survives (+${verdict.missedR.toFixed(1)}R missed)`;
+      }
+      return 'Target reached — hold survives';
+    case 'target_not_reached':
+      return 'Target not reached post-exit';
+    case 'no_data':
+      return 'Insufficient data for verdict';
+  }
 }

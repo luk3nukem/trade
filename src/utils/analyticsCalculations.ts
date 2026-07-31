@@ -12,8 +12,10 @@ import {
   calculateStopDistance,
   isHighLowZoneType,
   isBlindEntry,
-  calculateCounterfactualR,
+  calculateCounterfactualRDetailed,
   calculateBlindCounterfactualR,
+  getEffectiveReachedTarget,
+  calculatePlannedRR,
   type TradeRMetrics,
 } from './tradeCalculations';
 
@@ -1677,6 +1679,8 @@ export interface CounterfactualTradeData {
   direction: string;
   actualR: number;
   counterfactualR: number | null;
+  counterfactualPlannedRR: number | null; // Planned R:R of the counterfactual
+  counterfactualStatus: 'determinate' | 'indeterminate' | 'no_data';
   counterfactualOutcome: string; // 'appeared_worked' | 'appeared_failed' | 'never_appeared'
 }
 
@@ -1685,11 +1689,14 @@ export interface CounterfactualAnalysis {
   blindTrades: {
     total: number;
     withCounterfactual: number;
+    indeterminateCount: number; // Trades where outcome couldn't be determined
     appearedWorked: CounterfactualTradeData[];
     appearedFailed: CounterfactualTradeData[];
     neverAppeared: CounterfactualTradeData[];
     avgActualR: number;
     avgCounterfactualR: number | null; // null if no counterfactual data
+    avgBlindPlannedRR: number | null; // Avg planned R:R of blind trades
+    avgCounterfactualPlannedRR: number | null; // Avg planned R:R of counterfactual (confirmed) variants
     missedTradesCount: number; // Trades that never got confirmation
     missedTradesR: number; // Total R from those trades
   };
@@ -1721,18 +1728,40 @@ export function getCounterfactualAnalysis(trades: TradeRecord[]): Counterfactual
   const blindAppearedWorked: CounterfactualTradeData[] = [];
   const blindAppearedFailed: CounterfactualTradeData[] = [];
   const blindNeverAppeared: CounterfactualTradeData[] = [];
+  let indeterminateCount = 0;
+
+  // Track planned R:R values
+  const blindPlannedRRs: number[] = [];
+  const cfPlannedRRs: number[] = [];
 
   for (const trade of blindTrades) {
     const metrics = getCachedMetrics(trade);
     const actualR = metrics.rMultiple ?? 0;
-    const counterfactualR = calculateCounterfactualR(trade);
+    const cfResult = calculateCounterfactualRDetailed(trade);
+
+    // Calculate blind trade's planned R:R
+    const blindPlannedRR = calculatePlannedRR(trade.entryPrice, trade.stopLoss, trade.targetPrice);
+    if (blindPlannedRR !== undefined) {
+      blindPlannedRRs.push(blindPlannedRR);
+    }
+
+    // Track counterfactual planned R:R
+    if (cfResult.plannedRR !== null) {
+      cfPlannedRRs.push(cfResult.plannedRR);
+    }
+
+    if (cfResult.status === 'indeterminate') {
+      indeterminateCount++;
+    }
 
     const data: CounterfactualTradeData = {
       tradeId: trade.id || '',
       pair: trade.pair,
       direction: trade.direction,
       actualR,
-      counterfactualR,
+      counterfactualR: cfResult.r,
+      counterfactualPlannedRR: cfResult.plannedRR,
+      counterfactualStatus: cfResult.status,
       counterfactualOutcome: trade.confirmationCounterfactual || '',
     };
 
@@ -1753,6 +1782,14 @@ export function getCounterfactualAnalysis(trades: TradeRecord[]): Counterfactual
   const blindWithValidCounterfactual = blindWithCounterfactual.filter(t => t.counterfactualR !== null);
   const blindAvgCounterfactualR = blindWithValidCounterfactual.length > 0
     ? blindWithValidCounterfactual.reduce((sum, t) => sum + (t.counterfactualR ?? 0), 0) / blindWithValidCounterfactual.length
+    : null;
+
+  const avgBlindPlannedRR = blindPlannedRRs.length > 0
+    ? blindPlannedRRs.reduce((a, b) => a + b, 0) / blindPlannedRRs.length
+    : null;
+
+  const avgCfPlannedRR = cfPlannedRRs.length > 0
+    ? cfPlannedRRs.reduce((a, b) => a + b, 0) / cfPlannedRRs.length
     : null;
 
   const missedTradesR = blindNeverAppeared.reduce((sum, t) => sum + t.actualR, 0);
@@ -1776,6 +1813,8 @@ export function getCounterfactualAnalysis(trades: TradeRecord[]): Counterfactual
         direction: trade.direction,
         actualR,
         counterfactualR: blindCounterfactualR,
+        counterfactualPlannedRR: null, // Not applicable for blind counterfactual
+        counterfactualStatus: 'determinate',
         counterfactualOutcome: 'blind_entry',
       });
     }
@@ -1819,11 +1858,28 @@ export function getCounterfactualAnalysis(trades: TradeRecord[]): Counterfactual
 
     const verdictText = blindAhead ? 'blind' : 'waiting';
 
+    // Build insight with planned R:R clause
+    let insight = `On your blind entries, confirmation appeared on ${confirmationAppearedRate.toFixed(0)}% and would have paid on ${appearedWorkedRate.toFixed(0)}% — waiting nets ${netDifference > 0 ? '+' : ''}${netDifference.toFixed(2)}R per trade vs blind, but forfeits ${blindNeverAppeared.length} never-confirmed winner${blindNeverAppeared.length !== 1 ? 's' : ''} (${missedTradesR.toFixed(1)}R).`;
+
+    // Add planned R:R comparison
+    if (avgBlindPlannedRR !== null && avgCfPlannedRR !== null) {
+      const rrDiff = avgCfPlannedRR - avgBlindPlannedRR;
+      const compensates = rrDiff > 0 && avgCfPlannedRR > avgBlindPlannedRR;
+      insight += ` Confirmed variants averaged ${avgCfPlannedRR.toFixed(1)}:1 planned vs ${avgBlindPlannedRR.toFixed(1)}:1 blind — the tighter structural stops ${compensates ? 'do' : 'don\'t'} compensate for worse entries.`;
+    }
+
+    // Add indeterminate warning
+    if (indeterminateCount > 0) {
+      insight += ` (${indeterminateCount} trade${indeterminateCount !== 1 ? 's' : ''} indeterminate — both stop and target breached, order unknown.)`;
+    }
+
+    insight += ` Verdict so far: ${verdictText} is ahead.`;
+
     verdict = {
       blindAhead,
       rDifferencePerTrade: Number(rDifferencePerTrade.toFixed(2)),
       missRate: Number((missRate * 100).toFixed(1)),
-      insight: `On your blind entries, confirmation appeared on ${confirmationAppearedRate.toFixed(0)}% and would have paid on ${appearedWorkedRate.toFixed(0)}% — waiting nets ${netDifference > 0 ? '+' : ''}${netDifference.toFixed(2)}R per trade vs blind, but forfeits ${blindNeverAppeared.length} never-confirmed winner${blindNeverAppeared.length !== 1 ? 's' : ''} (${missedTradesR.toFixed(1)}R). Verdict so far: ${verdictText} is ahead.`,
+      insight,
     };
   }
 
@@ -1831,11 +1887,14 @@ export function getCounterfactualAnalysis(trades: TradeRecord[]): Counterfactual
     blindTrades: {
       total: blindTrades.length,
       withCounterfactual: blindWithCounterfactual.length,
+      indeterminateCount,
       appearedWorked: blindAppearedWorked,
       appearedFailed: blindAppearedFailed,
       neverAppeared: blindNeverAppeared,
       avgActualR: Number(blindAvgActualR.toFixed(2)),
       avgCounterfactualR: blindAvgCounterfactualR !== null ? Number(blindAvgCounterfactualR.toFixed(2)) : null,
+      avgBlindPlannedRR: avgBlindPlannedRR !== null ? Number(avgBlindPlannedRR.toFixed(2)) : null,
+      avgCounterfactualPlannedRR: avgCfPlannedRR !== null ? Number(avgCfPlannedRR.toFixed(2)) : null,
       missedTradesCount: blindNeverAppeared.length,
       missedTradesR: Number(missedTradesR.toFixed(2)),
     },
@@ -2994,8 +3053,9 @@ export function getFrontRunMissAnalysis(trades: TradeRecord[]): FrontRunMissAnal
     const distanceR = Math.abs(entryPrice - turnPrice) / riskPerR;
     distancesR.push(distanceR);
 
-    // Check hypothetical outcome using reachedTargetPostExit
-    if (trade.reachedTargetPostExit === true) {
+    // Check hypothetical outcome using effective reached target
+    const { value: reachedTarget } = getEffectiveReachedTarget(trade);
+    if (reachedTarget === true) {
       winsIfTaken++;
       // Assume ~2R win for simplicity since we don't have exact TP data on missed trades
       const targetPrice = trade.targetPrice;
@@ -3005,7 +3065,7 @@ export function getFrontRunMissAnalysis(trades: TradeRecord[]): FrontRunMissAnal
       } else {
         totalOutcomeR += 2; // Default 2R win
       }
-    } else if (trade.reachedTargetPostExit === false) {
+    } else if (reachedTarget === false) {
       lossesIfTaken++;
       totalOutcomeR -= 1; // -1R loss
     } else {
@@ -3573,8 +3633,9 @@ export function getPostExitAnalysis(trades: TradeRecord[]): PostExitAnalysis {
       }
     }
 
-    // Use the direct reachedTargetPostExit field
-    if (trade.reachedTargetPostExit === true) {
+    // Use effective reached target (derived for taken, manual for not-taken)
+    const { value: reachedTarget } = getEffectiveReachedTarget(trade);
+    if (reachedTarget === true) {
       tradesReachedTarget++;
     }
   }
@@ -3675,7 +3736,8 @@ export function getVoluntaryExitPostExitAnalysis(trades: TradeRecord[]): Volunta
       }
     }
 
-    if (trade.reachedTargetPostExit === true) {
+    const { value: reachedTarget } = getEffectiveReachedTarget(trade);
+    if (reachedTarget === true) {
       reachedTargetCount++;
     }
   }
@@ -3956,7 +4018,8 @@ export function getMissedRByStopReason(trades: TradeRecord[]): MissedRByStopReas
         tradesWithData++;
       }
 
-      if (trade.reachedTargetPostExit === true) {
+      const { value: reachedTarget } = getEffectiveReachedTarget(trade);
+      if (reachedTarget === true) {
         reachedTargetCount++;
       }
     }

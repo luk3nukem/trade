@@ -271,6 +271,7 @@ export interface TradeRecord {
   // === Confirmation Counterfactual (for blind entries) ===
   confirmationCounterfactual?: string;  // "appeared_worked" | "appeared_failed" | "never_appeared" | ""
   counterfactualEntryPrice?: number | null; // where the confirmed entry would have filled (required when counterfactual = appeared_*)
+  counterfactualStopPrice?: number | null; // stop for the confirmed entry (required when counterfactual = appeared_*)
 
   // === Screenshots ===
   screenshots: Screenshot[];
@@ -419,6 +420,7 @@ export interface TradeFormData {
   // Confirmation Counterfactual (for blind entries)
   confirmationCounterfactual: string;
   counterfactualEntryPrice: string;
+  counterfactualStopPrice: string;
 }
 
 // Type for creating new records (without id and timestamps)

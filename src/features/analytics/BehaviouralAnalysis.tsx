@@ -494,6 +494,36 @@ export function BehaviouralAnalysis({ trades }: Props) {
                   <p className="text-xs text-gray-500">({counterfactualAnalysis.blindTrades.missedTradesR.toFixed(1)}R forfeited)</p>
                 </div>
               </div>
+
+              {/* Planned R:R Comparison */}
+              {(counterfactualAnalysis.blindTrades.avgBlindPlannedRR !== null || counterfactualAnalysis.blindTrades.avgCounterfactualPlannedRR !== null) && (
+                <div className="grid grid-cols-2 gap-4 mt-4">
+                  <div className="bg-gray-750 rounded-lg p-3 text-center">
+                    <p className="text-xs text-gray-400">Blind Planned R:R</p>
+                    <p className="text-xl font-bold text-white">
+                      {counterfactualAnalysis.blindTrades.avgBlindPlannedRR !== null
+                        ? `${counterfactualAnalysis.blindTrades.avgBlindPlannedRR.toFixed(1)}:1`
+                        : '-'}
+                    </p>
+                  </div>
+                  <div className="bg-gray-750 rounded-lg p-3 text-center">
+                    <p className="text-xs text-gray-400">Confirmed Planned R:R</p>
+                    <p className="text-xl font-bold text-white">
+                      {counterfactualAnalysis.blindTrades.avgCounterfactualPlannedRR !== null
+                        ? `${counterfactualAnalysis.blindTrades.avgCounterfactualPlannedRR.toFixed(1)}:1`
+                        : '-'}
+                    </p>
+                    <p className="text-xs text-gray-500">(tighter stops)</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Indeterminate warning */}
+              {counterfactualAnalysis.blindTrades.indeterminateCount > 0 && (
+                <p className="text-xs text-gray-500 mt-2">
+                  {counterfactualAnalysis.blindTrades.indeterminateCount} trade{counterfactualAnalysis.blindTrades.indeterminateCount !== 1 ? 's' : ''} indeterminate (both stop and target breached, order unknown)
+                </p>
+              )}
             </div>
           )}
 
