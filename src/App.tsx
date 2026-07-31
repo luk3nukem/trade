@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { useEffect } from 'react';
 import { Layout } from './components/Layout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { DashboardPage } from './features/dashboard/DashboardPage';
 import { TradesPage } from './features/trades/TradesPage';
 import { TradeForm } from './features/trades/TradeForm';
@@ -33,9 +34,9 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<DashboardPage />} />
           <Route path="trades" element={<TradesPage />} />
-          <Route path="trades/new" element={<TradeForm />} />
-          <Route path="trades/:id" element={<TradeDetail />} />
-          <Route path="trades/:id/edit" element={<TradeForm />} />
+          <Route path="trades/new" element={<ErrorBoundary><TradeForm /></ErrorBoundary>} />
+          <Route path="trades/:id" element={<ErrorBoundary><TradeDetail /></ErrorBoundary>} />
+          <Route path="trades/:id/edit" element={<ErrorBoundary><TradeForm /></ErrorBoundary>} />
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="journal" element={<JournalPage />} />
           <Route path="notebook" element={<NotebookPage />} />

@@ -29,7 +29,8 @@ export function clampRValue(r: number | undefined): number | undefined {
  * NY: 13:00-21:00 UTC
  * Overlap: 13:00-16:00 UTC (London/NY overlap)
  */
-export function deriveSession(entryTime: Date): TradingSession {
+export function deriveSession(entryTime: Date | null | undefined): TradingSession {
+  if (!entryTime) return 'other';
   const hour = entryTime.getUTCHours();
 
   // Overlap takes precedence (13:00-16:00 UTC)
@@ -447,8 +448,8 @@ export function isBlindEntry(trade: TradeRecord): boolean {
 /**
  * Calculate hold duration in minutes
  */
-export function calculateHoldDuration(entryTime: Date, exitTime?: Date): number | undefined {
-  if (!exitTime) return undefined;
+export function calculateHoldDuration(entryTime: Date | null | undefined, exitTime?: Date | null): number | undefined {
+  if (!entryTime || !exitTime) return undefined;
   const diffMs = exitTime.getTime() - entryTime.getTime();
   return Math.round(diffMs / (1000 * 60));
 }
@@ -503,7 +504,8 @@ export function parseLocalDateTime(value: string): Date | undefined {
 /**
  * Convert Date to datetime-local string format
  */
-export function toLocalDateTimeString(date: Date): string {
+export function toLocalDateTimeString(date: Date | null | undefined): string {
+  if (!date) return '';
   const pad = (n: number) => n.toString().padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
@@ -643,7 +645,9 @@ export function getStopMoves(trade: TradeRecord): TradeEvent[] {
  * Returns the most recent stop_moved price before the given time, or the original stopLoss.
  * For untimed stop_moved events, uses order position relative to timed neighbours.
  */
-export function getEffectiveStopAt(trade: TradeRecord, time: Date): number {
+export function getEffectiveStopAt(trade: TradeRecord, time: Date | null | undefined): number {
+  if (!time) return trade.stopLoss;
+
   const stopMoves = getStopMoves(trade).filter(e => e.price !== null);
 
   if (stopMoves.length === 0) {
@@ -1317,7 +1321,8 @@ export function isPostExitReviewPartial(trade: TradeRecord): boolean {
  * Calculate when a post-exit review is due.
  * Due at exit + 7 flat calendar days (no weekend logic).
  */
-export function getReviewDueDate(exitTime: Date): Date {
+export function getReviewDueDate(exitTime: Date | null | undefined): Date | null {
+  if (!exitTime) return null;
   const REVIEW_DAYS = 7;
   const MS_IN_DAY = 24 * 60 * 60 * 1000;
   return new Date(exitTime.getTime() + REVIEW_DAYS * MS_IN_DAY);
@@ -1331,6 +1336,7 @@ export function isReviewDue(trade: TradeRecord): boolean {
   if (!exitTime) return false;
 
   const dueDate = getReviewDueDate(exitTime);
+  if (!dueDate) return false;
   return new Date() >= dueDate;
 }
 

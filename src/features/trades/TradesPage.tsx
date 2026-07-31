@@ -43,7 +43,7 @@ function getReviewStatus(trade: TradeRecord): ReviewStatus {
   // Check if review is due
   if (metrics.exitTime) {
     const dueDate = getReviewDueDate(metrics.exitTime);
-    if (new Date() >= dueDate) {
+    if (dueDate && new Date() >= dueDate) {
       return 'due';
     }
   }

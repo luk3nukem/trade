@@ -2685,11 +2685,14 @@ export function TradeForm() {
             {/* For taken trades: Show derived verdict read-only */}
             {formData.tradeTaken && (() => {
               // Build partial trade for verdict calculation
+              // Note: entryTime is required for metrics calculation
+              const entryTime = formData.entryTime ? parseLocalDateTime(formData.entryTime) : new Date();
               const partialTrade = {
                 direction: formData.direction,
                 targetPrice: formData.targetPrice ? parseFloat(formData.targetPrice) : undefined,
                 stopLoss: formData.stopLoss ? parseFloat(formData.stopLoss) : 0,
                 entryPrice: formData.entryPrice ? parseFloat(formData.entryPrice) : 0,
+                entryTime,
                 timeline: formData.timeline,
                 exits: formData.exits,
                 tradeTaken: true,
