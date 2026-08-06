@@ -7,6 +7,7 @@ import {
   exportMultipleTrades,
   downloadTradeExport,
   getMultiTradeFilename,
+  hasAuditErrors,
 } from '../../utils';
 import { getReviewDueDate, getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 
@@ -19,6 +20,17 @@ function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
     metricsCache.set(trade, metrics);
   }
   return metrics;
+}
+
+// Audit error cache
+const auditErrorCache = new WeakMap<TradeRecord, boolean>();
+function getCachedAuditErrors(trade: TradeRecord): boolean {
+  let hasErrors = auditErrorCache.get(trade);
+  if (hasErrors === undefined) {
+    hasErrors = hasAuditErrors(trade);
+    auditErrorCache.set(trade, hasErrors);
+  }
+  return hasErrors;
 }
 
 type SortField = 'entryTime' | 'pair' | 'direction' | 'pnl' | 'rMultiple' | 'setupTags' | 'status' | 'review' | 'age' | 'holdDuration';
@@ -641,6 +653,9 @@ export function TradesPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-white">{trade.pair}</span>
+                        {getCachedAuditErrors(trade) && (
+                          <span className="inline-flex items-center justify-center w-4 h-4 bg-red-500 text-white text-xs font-bold rounded-full" title="Trade has data errors">!</span>
+                        )}
                         <span
                           className={`inline-flex px-2 py-0.5 rounded text-xs font-medium ${
                             trade.direction === 'long'
@@ -894,7 +909,12 @@ export function TradesPage() {
                             {formatDate(trade.entryTime)}
                           </td>
                           <td className="px-4 py-3 text-sm font-medium text-white">
-                            {trade.pair}
+                            <span className="flex items-center gap-1.5">
+                              {trade.pair}
+                              {getCachedAuditErrors(trade) && (
+                                <span className="inline-flex items-center justify-center w-4 h-4 bg-red-500 text-white text-xs font-bold rounded-full" title="Trade has data errors">!</span>
+                              )}
+                            </span>
                           </td>
                           <td className="px-4 py-3">
                             <span

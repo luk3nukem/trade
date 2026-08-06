@@ -18,7 +18,9 @@ import {
   calculateAccountBalance,
   getAccountTradeCount,
   getStrategyStats,
+  getAuditSummaries,
 } from '../../utils';
+import type { AuditSummary } from '../../utils/tradeAuditor';
 import type { AlertType, Account, Strategy, BackupData, ImportResult, TradeEvent } from '../../types';
 import { NOT_TAKEN_REASON_PRESETS, NOT_TAKEN_REASON_LABELS, PROTECTED_NOT_TAKEN_REASONS } from '../../types';
 
@@ -140,6 +142,11 @@ export function SettingsPage() {
 
   // Clear confirmation
   const [confirmText, setConfirmText] = useState('');
+
+  // Audit state
+  const [auditSummaries, setAuditSummaries] = useState<AuditSummary[]>([]);
+  const [showAuditResults, setShowAuditResults] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const { alertSettings, setAlertSettings, toggleAlertType, clearDismissedAlerts, dashboardFilters } = useAppStore();
 
@@ -1059,6 +1066,28 @@ export function SettingsPage() {
     }
   };
 
+  // Audit all trades handler
+  const handleAuditAllTrades = async () => {
+    setAuditLoading(true);
+    try {
+      const allTrades = await db.trades.toArray();
+      const summaries = getAuditSummaries(allTrades);
+      // Sort by severity (errors first, then warnings, then incomplete)
+      summaries.sort((a, b) => {
+        if (a.errorCount !== b.errorCount) return b.errorCount - a.errorCount;
+        if (a.warningCount !== b.warningCount) return b.warningCount - a.warningCount;
+        return b.incompleteCount - a.incompleteCount;
+      });
+      setAuditSummaries(summaries);
+      setShowAuditResults(true);
+    } catch (error) {
+      console.error('Failed to audit trades:', error);
+      setMessage({ type: 'error', text: 'Failed to audit trades. See console for details.' });
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
   // Import handler
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1795,6 +1824,23 @@ export function SettingsPage() {
               className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-green-600/50 text-white rounded-lg transition-colors whitespace-nowrap"
             >
               Export CSV
+            </button>
+          </div>
+
+          {/* Audit All Trades */}
+          <div className="flex items-center justify-between p-4 bg-gray-750 rounded-lg">
+            <div>
+              <h3 className="font-medium text-white">Audit All Trades</h3>
+              <p className="text-sm text-gray-400 mt-1">
+                Run data validation checks on all trades to find errors, inconsistencies, and incomplete records.
+              </p>
+            </div>
+            <button
+              onClick={handleAuditAllTrades}
+              disabled={auditLoading}
+              className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-amber-600/50 text-white rounded-lg transition-colors whitespace-nowrap"
+            >
+              {auditLoading ? 'Auditing...' : 'Audit All Trades'}
             </button>
           </div>
 
@@ -2905,6 +2951,124 @@ export function SettingsPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Audit Results Modal */}
+      {showAuditResults && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-lg max-w-4xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-700 flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-white">Audit Results</h2>
+                <p className="text-sm text-gray-400 mt-1">
+                  {auditSummaries.length} trades audited ·{' '}
+                  {auditSummaries.filter(s => s.errorCount > 0).length} with errors ·{' '}
+                  {auditSummaries.filter(s => s.warningCount > 0).length} with warnings ·{' '}
+                  {auditSummaries.filter(s => s.incompleteCount > 0).length} incomplete
+                </p>
+              </div>
+              <button
+                onClick={() => setShowAuditResults(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6">
+              {auditSummaries.filter(s => s.errorCount > 0 || s.warningCount > 0 || s.incompleteCount > 0).length === 0 ? (
+                <div className="flex items-center gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
+                  <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-green-400 font-medium">All trades pass validation</span>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-gray-700">
+                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Trade</th>
+                        <th className="px-4 py-3 text-center text-sm font-medium text-red-400">Errors</th>
+                        <th className="px-4 py-3 text-center text-sm font-medium text-amber-400">Warnings</th>
+                        <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Incomplete</th>
+                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Top Finding</th>
+                        <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditSummaries
+                        .filter(s => s.errorCount > 0 || s.warningCount > 0 || s.incompleteCount > 0)
+                        .map(summary => (
+                          <tr key={summary.tradeId} className="border-b border-gray-700 hover:bg-gray-750">
+                            <td className="px-4 py-3">
+                              <span className="text-white font-medium">{summary.pair}</span>
+                              <span className="text-gray-500 text-xs ml-2">{summary.tradeId.slice(0, 8)}...</span>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {summary.errorCount > 0 ? (
+                                <span className="inline-flex items-center justify-center w-6 h-6 bg-red-500/20 text-red-400 text-sm font-medium rounded-full">
+                                  {summary.errorCount}
+                                </span>
+                              ) : (
+                                <span className="text-gray-600">-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {summary.warningCount > 0 ? (
+                                <span className="inline-flex items-center justify-center w-6 h-6 bg-amber-500/20 text-amber-400 text-sm font-medium rounded-full">
+                                  {summary.warningCount}
+                                </span>
+                              ) : (
+                                <span className="text-gray-600">-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {summary.incompleteCount > 0 ? (
+                                <span className="inline-flex items-center justify-center w-6 h-6 bg-gray-500/20 text-gray-400 text-sm font-medium rounded-full">
+                                  {summary.incompleteCount}
+                                </span>
+                              ) : (
+                                <span className="text-gray-600">-</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-sm ${
+                                summary.findings[0]?.severity === 'error' ? 'text-red-400' :
+                                summary.findings[0]?.severity === 'warning' ? 'text-amber-400' :
+                                'text-gray-400'
+                              }`}>
+                                {summary.topFinding?.slice(0, 50)}
+                                {(summary.topFinding?.length ?? 0) > 50 ? '...' : ''}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <Link
+                                to={`/trades/${summary.tradeId}`}
+                                onClick={() => setShowAuditResults(false)}
+                                className="text-blue-400 hover:text-blue-300 text-sm"
+                              >
+                                View →
+                              </Link>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-700 flex justify-end">
+              <button
+                onClick={() => setShowAuditResults(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

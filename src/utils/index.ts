@@ -5,3 +5,4 @@ export * from './analyticsCalculations';
 export * from './alertEngine';
 export * from './importExport';
 export * from './chartStyles';
+export * from './tradeAuditor';

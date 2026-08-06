@@ -598,10 +598,12 @@ export function TradeForm() {
             }
           }
 
-          // Time sanity - exit before entry
-          if (entryTimestamp && exit.time instanceof Date) {
-            const exitTimestamp = exit.time.getTime();
-            if (exitTimestamp < entryTimestamp) {
+          // Time sanity - exit before entry (handle both Date objects and strings)
+          if (entryTimestamp && exit.time) {
+            const exitTimestamp = exit.time instanceof Date
+              ? exit.time.getTime()
+              : new Date(exit.time).getTime();
+            if (!isNaN(exitTimestamp) && exitTimestamp < entryTimestamp) {
               warnings.push('Exit time is before entry time');
             }
           }
@@ -620,6 +622,24 @@ export function TradeForm() {
     setWarnings(newWarnings);
     return Object.keys(newErrors).length === 0;
   }, [formData]);
+
+  // Real-time validation for warnings (exit-before-entry, price sanity, etc.)
+  useEffect(() => {
+    // Only run if we have entry time and exits
+    if (!formData.entryTime || formData.exits.length === 0) {
+      // Clear exit warnings if no exits
+      if (warnings.exitWarnings) {
+        setWarnings(prev => {
+          const { exitWarnings: _, ...rest } = prev;
+          return rest;
+        });
+      }
+      return;
+    }
+    // Run validation to update warnings in real-time
+    validate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.entryTime, formData.exits, formData.entryPrice, formData.stopLoss, formData.direction, formData.assetClass, validate]);
 
   // Handle form field changes
   const handleChange = (field: keyof TradeFormData, value: unknown) => {

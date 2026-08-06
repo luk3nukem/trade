@@ -9,7 +9,10 @@ import {
   downloadTradeExport,
   getSingleTradeFilename,
   copyTradeExportToClipboard,
+  auditTrade,
+  hasAuditErrors,
 } from '../../utils';
+import type { AuditFinding } from '../../utils/tradeAuditor';
 import { AddToNotebook } from '../../components/AddToNotebook';
 
 // Helper to check if a level type is a zone
@@ -547,6 +550,8 @@ export function TradeDetail() {
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
   const [copyFeedback, setCopyFeedback] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [showAuditPanel, setShowAuditPanel] = useState(false);
+  const [auditFindings, setAuditFindings] = useState<AuditFinding[]>([]);
 
   // Export trade as JSON file
   const handleExportTrade = () => {
@@ -564,6 +569,20 @@ export function TradeDetail() {
     setCopyFeedback(success ? 'copied' : 'failed');
     setTimeout(() => setCopyFeedback('idle'), 2000);
   };
+
+  // Run audit check on trade
+  const handleCheckRecord = () => {
+    if (!trade) return;
+    const findings = auditTrade(trade);
+    setAuditFindings(findings);
+    setShowAuditPanel(true);
+  };
+
+  // Memoized audit error check for badge
+  const tradeHasErrors = useMemo(() => {
+    if (!trade) return false;
+    return hasAuditErrors(trade);
+  }, [trade]);
 
   // Load trade from database
   useEffect(() => {
@@ -706,6 +725,27 @@ export function TradeDetail() {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Check Record button */}
+          <button
+            onClick={handleCheckRecord}
+            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-white transition-colors ${
+              tradeHasErrors
+                ? 'bg-red-600 hover:bg-red-500'
+                : 'bg-gray-700 hover:bg-gray-600'
+            }`}
+            title="Run data audit on this trade"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Check Record
+            {tradeHasErrors && (
+              <span className="flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+              </span>
+            )}
+          </button>
           {/* Export button */}
           <button
             onClick={handleExportTrade}
@@ -1363,6 +1403,99 @@ export function TradeDetail() {
                 className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-white transition-colors"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit Panel Modal */}
+      {showAuditPanel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-white">Record Audit</h3>
+              <button
+                onClick={() => setShowAuditPanel(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {auditFindings.length === 0 ? (
+              <div className="flex items-center gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
+                <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                <span className="text-green-400 font-medium">No issues found</span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Errors */}
+                {auditFindings.filter(f => f.severity === 'error').length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                      Errors ({auditFindings.filter(f => f.severity === 'error').length})
+                    </h4>
+                    <div className="space-y-2">
+                      {auditFindings.filter(f => f.severity === 'error').map((finding, i) => (
+                        <div key={`error-${i}`} className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+                          <p className="text-sm text-red-300">{finding.message}</p>
+                          <p className="text-xs text-red-400/70 mt-1 font-mono">{finding.field}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Warnings */}
+                {auditFindings.filter(f => f.severity === 'warning').length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-amber-400 mb-2 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                      Warnings ({auditFindings.filter(f => f.severity === 'warning').length})
+                    </h4>
+                    <div className="space-y-2">
+                      {auditFindings.filter(f => f.severity === 'warning').map((finding, i) => (
+                        <div key={`warning-${i}`} className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                          <p className="text-sm text-amber-300">{finding.message}</p>
+                          <p className="text-xs text-amber-400/70 mt-1 font-mono">{finding.field}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Incomplete */}
+                {auditFindings.filter(f => f.severity === 'incomplete').length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-gray-500"></span>
+                      Incomplete ({auditFindings.filter(f => f.severity === 'incomplete').length})
+                    </h4>
+                    <div className="space-y-2">
+                      {auditFindings.filter(f => f.severity === 'incomplete').map((finding, i) => (
+                        <div key={`incomplete-${i}`} className="p-3 bg-gray-700/50 border border-gray-600 rounded-lg">
+                          <p className="text-sm text-gray-300">{finding.message}</p>
+                          <p className="text-xs text-gray-500 mt-1 font-mono">{finding.field}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setShowAuditPanel(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>
