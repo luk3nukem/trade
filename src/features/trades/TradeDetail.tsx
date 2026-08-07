@@ -597,41 +597,54 @@ export function TradeDetail() {
       return;
     }
 
-    await acknowledgeFinding(trade, finding);
-    // Refresh findings
-    const result = await auditTradeWithAcknowledgements(trade);
-    setAuditFindings(result.findings);
-    setAcknowledgedCount(result.acknowledgedCount);
-    // Update badge state
-    const hasErrors = await hasUnacknowledgedErrors(trade);
-    setTradeHasErrors(hasErrors);
+    try {
+      await acknowledgeFinding(trade, finding);
+      // Refresh findings
+      const result = await auditTradeWithAcknowledgements(trade);
+      setAuditFindings(result.findings);
+      setAcknowledgedCount(result.acknowledgedCount);
+      // Update badge state
+      const hasErrors = await hasUnacknowledgedErrors(trade);
+      setTradeHasErrors(hasErrors);
+    } catch (error) {
+      console.error('Failed to acknowledge finding:', error);
+    }
   };
 
   // Confirm acknowledging an error
   const handleConfirmAckError = async () => {
     if (!trade || !confirmAckError) return;
-    await acknowledgeFinding(trade, confirmAckError);
-    setConfirmAckError(null);
-    // Refresh findings
-    const result = await auditTradeWithAcknowledgements(trade);
-    setAuditFindings(result.findings);
-    setAcknowledgedCount(result.acknowledgedCount);
-    // Update badge state
-    const hasErrors = await hasUnacknowledgedErrors(trade);
-    setTradeHasErrors(hasErrors);
+    try {
+      await acknowledgeFinding(trade, confirmAckError);
+      setConfirmAckError(null);
+      // Refresh findings
+      const result = await auditTradeWithAcknowledgements(trade);
+      setAuditFindings(result.findings);
+      setAcknowledgedCount(result.acknowledgedCount);
+      // Update badge state
+      const hasErrors = await hasUnacknowledgedErrors(trade);
+      setTradeHasErrors(hasErrors);
+    } catch (error) {
+      console.error('Failed to acknowledge error finding:', error);
+      setConfirmAckError(null);
+    }
   };
 
   // Handle unacknowledging a finding
   const handleUnacknowledgeFinding = async (finding: AuditFindingWithAck) => {
     if (!trade) return;
-    await unacknowledgeFinding(trade, finding);
-    // Refresh findings
-    const result = await auditTradeWithAcknowledgements(trade);
-    setAuditFindings(result.findings);
-    setAcknowledgedCount(result.acknowledgedCount);
-    // Update badge state
-    const hasErrors = await hasUnacknowledgedErrors(trade);
-    setTradeHasErrors(hasErrors);
+    try {
+      await unacknowledgeFinding(trade, finding);
+      // Refresh findings
+      const result = await auditTradeWithAcknowledgements(trade);
+      setAuditFindings(result.findings);
+      setAcknowledgedCount(result.acknowledgedCount);
+      // Update badge state
+      const hasErrors = await hasUnacknowledgedErrors(trade);
+      setTradeHasErrors(hasErrors);
+    } catch (error) {
+      console.error('Failed to unacknowledge finding:', error);
+    }
   };
 
   // Load trade from database

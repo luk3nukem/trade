@@ -834,12 +834,16 @@ export async function acknowledgeFinding(
   trade: TradeRecord,
   finding: AuditFinding
 ): Promise<AcknowledgedFinding> {
+  if (!trade.id) {
+    throw new Error('Cannot acknowledge finding: trade has no ID');
+  }
+
   const valueHash = generateFindingValueHash(trade, finding);
-  const id = generateAcknowledgementKey(trade.id!, finding.field, valueHash);
+  const id = generateAcknowledgementKey(trade.id, finding.field, valueHash);
 
   const acknowledgement: AcknowledgedFinding = {
     id,
-    tradeId: trade.id!,
+    tradeId: trade.id,
     field: finding.field,
     valueHash,
     severity: finding.severity,
@@ -847,7 +851,13 @@ export async function acknowledgeFinding(
     acknowledgedAt: new Date(),
   };
 
-  await db.acknowledgedFindings.put(acknowledgement);
+  try {
+    await db.acknowledgedFindings.put(acknowledgement);
+  } catch (error) {
+    console.error('Failed to acknowledge finding:', error);
+    throw error;
+  }
+
   return acknowledgement;
 }
 

@@ -54,6 +54,20 @@ class TradingDiaryDB extends Dexie {
       settings: '@id',
     });
 
+    // v4 schema - fix acknowledgedFindings to use user-provided composite key
+    // Uses 'id' (not '@id') because we provide our own key: tradeId:field:valueHash
+    this.version(4).stores({
+      trades: '@id, accountId, strategyId, pair, entryTime',
+      accounts: '@id',
+      strategies: '@id',
+      dailyJournals: '@id, date, accountId',
+      glossaryTerms: '@id, term',
+      levelTypePrefs: '@id, levelType',
+      notes: '@id, category, status, pinned, createdAt',
+      acknowledgedFindings: 'id, tradeId',
+      settings: '@id',
+    });
+
     // Configure Dexie Cloud
     const cloudUrl = import.meta.env.VITE_DEXIE_CLOUD_URL;
     if (cloudUrl) {
