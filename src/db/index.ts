@@ -54,8 +54,8 @@ class TradingDiaryDB extends Dexie {
       settings: '@id',
     });
 
-    // v4 schema - fix acknowledgedFindings to use user-provided composite key
-    // Uses 'id' (not '@id') because we provide our own key: tradeId:field:valueHash
+    // v4 schema - acknowledgedFindings uses @id with "ack" prefix per Dexie Cloud convention
+    // Our composite key: ack{tradeId}:{field}:{valueHash}
     this.version(4).stores({
       trades: '@id, accountId, strategyId, pair, entryTime',
       accounts: '@id',
@@ -64,7 +64,7 @@ class TradingDiaryDB extends Dexie {
       glossaryTerms: '@id, term',
       levelTypePrefs: '@id, levelType',
       notes: '@id, category, status, pinned, createdAt',
-      acknowledgedFindings: 'id, tradeId',
+      acknowledgedFindings: '@id, tradeId',
       settings: '@id',
     });
 

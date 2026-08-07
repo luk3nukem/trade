@@ -822,9 +822,11 @@ function simpleHash(str: string): string {
 
 /**
  * Generate the composite key for an acknowledged finding
+ * Note: Prefixed with "ack" to comply with Dexie Cloud's @id requirement
+ * (tables with @id require IDs to start with the table's short prefix)
  */
 export function generateAcknowledgementKey(tradeId: string, field: string, valueHash: string): string {
-  return `${tradeId}:${field}:${valueHash}`;
+  return `ack${tradeId}:${field}:${valueHash}`;
 }
 
 /**
