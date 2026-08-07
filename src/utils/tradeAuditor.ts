@@ -132,85 +132,63 @@ export function auditTrade(trade: TradeRecord): AuditFinding[] {
     }
   }
 
-  // Check 3: Pre-exit timeline events (trade_high/low, stop_moved) timed before entryTime or after final exit
-  const preExitEventTypes = ['trade_high', 'trade_low', 'stop_moved', 'liquidity_sweep', 'spike_up', 'spike_down', 'dump', 'pump', 'stall_consolidation', 'reversal', 'news_reaction', 'session_open_move', 'retest'];
-  for (let i = 0; i < trade.timeline.length; i++) {
-    const event = trade.timeline[i];
-    if (preExitEventTypes.includes(event.eventType)) {
-      const eventTs = getTimestamp(event.time);
-      if (eventTs !== null) {
-        if (entryTimestamp && eventTs < entryTimestamp) {
-          findings.push({
-            severity: 'error',
-            field: `timeline[${i}].time`,
-            message: `Timeline event "${event.eventType}" is timed before entry`,
-          });
-        }
-        if (finalExitTime !== null && eventTs > finalExitTime) {
-          findings.push({
-            severity: 'error',
-            field: `timeline[${i}].time`,
-            message: `Pre-exit event "${event.eventType}" is timed after final exit`,
-          });
-        }
-      }
-    }
-  }
+  // ============================================
+  // TEMPORAL PHASE CHECKS (B3/B4/B5)
+  // ============================================
+  // Phase-locked event types:
+  //   Pre-exit-only (flag if after final exit): trade_high, trade_low, stop_moved
+  //   Post-exit-only (flag if before final exit): post_exit_high, post_exit_low
+  // Phase-neutral (valid any time >= entryTime, never flagged by phase):
+  //   leg, and ALL contextual types (spike_up/down, dump, pump, stall_consolidation,
+  //   reversal, news_reaction, session_open_move, retest, liquidity_sweep, plus any custom type)
+  // The ">30 days after final exit" outlier check applies to ALL types (date-typo catch).
 
-  // Check 4: Post-exit events timed before final exit, or more than 30 days after
-  // Note: 'leg' is phase-neutral (valid pre-exit as intra-trade swings, post-exit as path milestones)
-  const postExitEventTypes = ['post_exit_high', 'post_exit_low'];
+  const preExitOnlyTypes = ['trade_high', 'trade_low', 'stop_moved'];
+  const postExitOnlyTypes = ['post_exit_high', 'post_exit_low'];
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-  for (let i = 0; i < trade.timeline.length; i++) {
-    const event = trade.timeline[i];
-    if (postExitEventTypes.includes(event.eventType)) {
-      const eventTs = getTimestamp(event.time);
-      if (eventTs !== null && finalExitTime !== null) {
-        if (eventTs < finalExitTime) {
-          findings.push({
-            severity: 'error',
-            field: `timeline[${i}].time`,
-            message: `Post-exit event "${event.eventType}" is timed before final exit`,
-          });
-        }
-        if (eventTs > finalExitTime + THIRTY_DAYS_MS) {
-          findings.push({
-            severity: 'error',
-            field: `timeline[${i}].time`,
-            message: `Post-exit event "${event.eventType}" is more than 30 days after exit (possible typo)`,
-          });
-        }
-      }
-    }
-  }
 
-  // Check 4b: 'leg' events are phase-neutral but must be after entryTime (if timed)
   for (let i = 0; i < trade.timeline.length; i++) {
     const event = trade.timeline[i];
-    if (event.eventType === 'leg') {
-      const eventTs = getTimestamp(event.time);
-      if (eventTs !== null && entryTimestamp && eventTs < entryTimestamp) {
-        findings.push({
-          severity: 'error',
-          field: `timeline[${i}].time`,
-          message: 'leg event is timed before entry',
-        });
-      }
-    }
-  }
+    const eventTs = getTimestamp(event.time);
+    if (eventTs === null) continue;
 
-  // Check 5: stop_moved timed after final exit
-  for (let i = 0; i < trade.timeline.length; i++) {
-    const event = trade.timeline[i];
-    if (event.eventType === 'stop_moved') {
-      const eventTs = getTimestamp(event.time);
-      if (eventTs !== null && finalExitTime !== null && eventTs > finalExitTime) {
-        findings.push({
-          severity: 'error',
-          field: `timeline[${i}].time`,
-          message: 'stop_moved event is timed after final exit',
-        });
-      }
+    const isPreExitOnly = preExitOnlyTypes.includes(event.eventType);
+    const isPostExitOnly = postExitOnlyTypes.includes(event.eventType);
+
+    // Check 3: All timed events must be >= entryTime
+    if (entryTimestamp && eventTs < entryTimestamp) {
+      findings.push({
+        severity: 'error',
+        field: `timeline[${i}].time`,
+        message: `Timeline event "${event.eventType}" is timed before entry`,
+      });
+    }
+
+    // Check 4: Pre-exit-only events flagged if after final exit
+    if (isPreExitOnly && finalExitTime !== null && eventTs > finalExitTime) {
+      findings.push({
+        severity: 'error',
+        field: `timeline[${i}].time`,
+        message: `Pre-exit event "${event.eventType}" is timed after final exit`,
+      });
+    }
+
+    // Check 5: Post-exit-only events flagged if before final exit
+    if (isPostExitOnly && finalExitTime !== null && eventTs < finalExitTime) {
+      findings.push({
+        severity: 'error',
+        field: `timeline[${i}].time`,
+        message: `Post-exit event "${event.eventType}" is timed before final exit`,
+      });
+    }
+
+    // Check 6: Date outlier check - any event >30 days after final exit is likely a typo
+    if (finalExitTime !== null && eventTs > finalExitTime + THIRTY_DAYS_MS) {
+      findings.push({
+        severity: 'error',
+        field: `timeline[${i}].time`,
+        message: `Timeline event "${event.eventType}" is more than 30 days after exit (possible typo)`,
+      });
     }
   }
 
