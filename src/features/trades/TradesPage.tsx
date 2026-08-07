@@ -7,8 +7,8 @@ import {
   exportMultipleTrades,
   downloadTradeExport,
   getMultiTradeFilename,
-  hasAuditErrors,
 } from '../../utils';
+import { hasUnacknowledgedErrors } from '../../utils/tradeAuditor';
 import { getReviewDueDate, getTradeRMetrics, type TradeRMetrics } from '../../utils/tradeCalculations';
 
 // Metrics cache
@@ -20,17 +20,6 @@ function getCachedMetrics(trade: TradeRecord): TradeRMetrics {
     metricsCache.set(trade, metrics);
   }
   return metrics;
-}
-
-// Audit error cache
-const auditErrorCache = new WeakMap<TradeRecord, boolean>();
-function getCachedAuditErrors(trade: TradeRecord): boolean {
-  let hasErrors = auditErrorCache.get(trade);
-  if (hasErrors === undefined) {
-    hasErrors = hasAuditErrors(trade);
-    auditErrorCache.set(trade, hasErrors);
-  }
-  return hasErrors;
 }
 
 type SortField = 'entryTime' | 'pair' | 'direction' | 'pnl' | 'rMultiple' | 'setupTags' | 'status' | 'review' | 'age' | 'holdDuration';
@@ -150,6 +139,13 @@ export function TradesPage() {
   const [filters, setFilters] = useState<Filters>(initialFilters);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [selectedTradeIds, setSelectedTradeIds] = useState<Set<string>>(new Set());
+  // Map of trade ID to unacknowledged error status
+  const [auditErrorMap, setAuditErrorMap] = useState<Map<string, boolean>>(new Map());
+
+  // Helper to check if a trade has unacknowledged errors
+  const hasTradeErrors = (trade: TradeRecord): boolean => {
+    return auditErrorMap.get(trade.id!) ?? false;
+  };
 
   // Selection handlers
   const toggleTradeSelection = (tradeId: string, event: React.MouseEvent) => {
@@ -191,6 +187,18 @@ export function TradesPage() {
       try {
         const allTrades = await db.trades.toArray();
         setTrades(allTrades);
+
+        // Load unacknowledged error status for all trades
+        const errorMap = new Map<string, boolean>();
+        await Promise.all(
+          allTrades.map(async (trade) => {
+            if (trade.id) {
+              const hasErrors = await hasUnacknowledgedErrors(trade);
+              errorMap.set(trade.id, hasErrors);
+            }
+          })
+        );
+        setAuditErrorMap(errorMap);
       } catch (error) {
         console.error('Failed to load trades:', error);
       } finally {
@@ -653,7 +661,7 @@ export function TradesPage() {
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-white">{trade.pair}</span>
-                        {getCachedAuditErrors(trade) && (
+                        {hasTradeErrors(trade) && (
                           <span className="inline-flex items-center justify-center w-4 h-4 bg-red-500 text-white text-xs font-bold rounded-full" title="Trade has data errors">!</span>
                         )}
                         <span
@@ -911,7 +919,7 @@ export function TradesPage() {
                           <td className="px-4 py-3 text-sm font-medium text-white">
                             <span className="flex items-center gap-1.5">
                               {trade.pair}
-                              {getCachedAuditErrors(trade) && (
+                              {hasTradeErrors(trade) && (
                                 <span className="inline-flex items-center justify-center w-4 h-4 bg-red-500 text-white text-xs font-bold rounded-full" title="Trade has data errors">!</span>
                               )}
                             </span>

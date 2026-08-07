@@ -158,7 +158,8 @@ export function auditTrade(trade: TradeRecord): AuditFinding[] {
   }
 
   // Check 4: Post-exit events timed before final exit, or more than 30 days after
-  const postExitEventTypes = ['post_exit_high', 'post_exit_low', 'leg'];
+  // Note: 'leg' is phase-neutral (valid pre-exit as intra-trade swings, post-exit as path milestones)
+  const postExitEventTypes = ['post_exit_high', 'post_exit_low'];
   const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
   for (let i = 0; i < trade.timeline.length; i++) {
     const event = trade.timeline[i];
@@ -179,6 +180,21 @@ export function auditTrade(trade: TradeRecord): AuditFinding[] {
             message: `Post-exit event "${event.eventType}" is more than 30 days after exit (possible typo)`,
           });
         }
+      }
+    }
+  }
+
+  // Check 4b: 'leg' events are phase-neutral but must be after entryTime (if timed)
+  for (let i = 0; i < trade.timeline.length; i++) {
+    const event = trade.timeline[i];
+    if (event.eventType === 'leg') {
+      const eventTs = getTimestamp(event.time);
+      if (eventTs !== null && entryTimestamp && eventTs < entryTimestamp) {
+        findings.push({
+          severity: 'error',
+          field: `timeline[${i}].time`,
+          message: 'leg event is timed before entry',
+        });
       }
     }
   }
@@ -745,4 +761,372 @@ export function getAuditCounts(trade: TradeRecord): { errors: number; warnings: 
     warnings: findings.filter(f => f.severity === 'warning').length,
     incomplete: findings.filter(f => f.severity === 'incomplete').length,
   };
+}
+
+// ============================================
+// ACKNOWLEDGEMENT SYSTEM
+// ============================================
+
+import type { AcknowledgedFinding } from '../types';
+import { db } from '../db';
+
+/**
+ * Generate a stable hash of the values relevant to a finding.
+ * Uses the field path to extract the corresponding value(s) from the trade.
+ * If the underlying data changes, the hash changes and the finding resurfaces.
+ */
+export function generateFindingValueHash(trade: TradeRecord, finding: AuditFinding): string {
+  // Extract the relevant value based on the field path
+  let valueToHash: unknown;
+
+  const field = finding.field;
+
+  // Parse array-style field paths like "exits[0].time" or "timeline[3].price"
+  const arrayMatch = field.match(/^(\w+)\[(\d+)\]\.?(.*)$/);
+  if (arrayMatch) {
+    const [, arrayName, indexStr, subField] = arrayMatch;
+    const index = parseInt(indexStr, 10);
+    const array = (trade as unknown as Record<string, unknown[]>)[arrayName];
+    if (Array.isArray(array) && array[index] !== undefined) {
+      if (subField) {
+        valueToHash = (array[index] as Record<string, unknown>)[subField];
+      } else {
+        valueToHash = array[index];
+      }
+    }
+  } else if (field.includes('(')) {
+    // Special fields like "timeline (stop_moved)" - hash all stop_moved events
+    if (field.includes('stop_moved')) {
+      valueToHash = trade.timeline
+        .filter(e => e.eventType === 'stop_moved')
+        .map(e => ({ price: e.price, time: e.time }));
+    } else {
+      // Generic timeline field
+      valueToHash = trade.timeline;
+    }
+  } else if (field === 'duplicate') {
+    // Duplicate findings - hash core identifying fields
+    valueToHash = {
+      pair: trade.pair,
+      direction: trade.direction,
+      entryPrice: trade.entryPrice,
+      stopLoss: trade.stopLoss,
+      exitPrices: trade.exits.map(e => e.price).sort(),
+    };
+  } else if (field === 'timeline') {
+    // General timeline issues - hash all timeline events
+    valueToHash = trade.timeline;
+  } else if (field === 'reviewedAt') {
+    // Review status - hash the reviewedAt field and exit time
+    valueToHash = { reviewedAt: trade.reviewedAt, exits: trade.exits.map(e => e.time) };
+  } else {
+    // Simple field path - direct property access
+    valueToHash = (trade as unknown as Record<string, unknown>)[field];
+  }
+
+  // Create a simple hash from the JSON representation
+  const jsonStr = JSON.stringify(valueToHash ?? null);
+  return simpleHash(jsonStr);
+}
+
+/**
+ * Simple string hash function (djb2 algorithm)
+ */
+function simpleHash(str: string): string {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash) + str.charCodeAt(i);
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  // Convert to hex string, handle negative numbers
+  return (hash >>> 0).toString(16);
+}
+
+/**
+ * Generate the composite key for an acknowledged finding
+ */
+export function generateAcknowledgementKey(tradeId: string, field: string, valueHash: string): string {
+  return `${tradeId}:${field}:${valueHash}`;
+}
+
+/**
+ * Acknowledge a finding - stores it in the database
+ */
+export async function acknowledgeFinding(
+  trade: TradeRecord,
+  finding: AuditFinding
+): Promise<AcknowledgedFinding> {
+  const valueHash = generateFindingValueHash(trade, finding);
+  const id = generateAcknowledgementKey(trade.id!, finding.field, valueHash);
+
+  const acknowledgement: AcknowledgedFinding = {
+    id,
+    tradeId: trade.id!,
+    field: finding.field,
+    valueHash,
+    severity: finding.severity,
+    message: finding.message,
+    acknowledgedAt: new Date(),
+  };
+
+  await db.acknowledgedFindings.put(acknowledgement);
+  return acknowledgement;
+}
+
+/**
+ * Remove acknowledgement for a finding
+ */
+export async function unacknowledgeFinding(
+  trade: TradeRecord,
+  finding: AuditFinding
+): Promise<void> {
+  const valueHash = generateFindingValueHash(trade, finding);
+  const id = generateAcknowledgementKey(trade.id!, finding.field, valueHash);
+  await db.acknowledgedFindings.delete(id);
+}
+
+/**
+ * Get all acknowledged findings for a trade
+ */
+export async function getAcknowledgedFindings(tradeId: string): Promise<AcknowledgedFinding[]> {
+  return db.acknowledgedFindings.where('tradeId').equals(tradeId).toArray();
+}
+
+/**
+ * Check if a specific finding is currently acknowledged
+ * (Returns false if the underlying data has changed - hash mismatch)
+ */
+export async function isFindingAcknowledged(
+  trade: TradeRecord,
+  finding: AuditFinding
+): Promise<boolean> {
+  const valueHash = generateFindingValueHash(trade, finding);
+  const id = generateAcknowledgementKey(trade.id!, finding.field, valueHash);
+  const existing = await db.acknowledgedFindings.get(id);
+  return existing !== undefined;
+}
+
+/**
+ * Extended finding type that includes acknowledgement status
+ */
+export interface AuditFindingWithAck extends AuditFinding {
+  isAcknowledged: boolean;
+  acknowledgementId?: string;
+}
+
+/**
+ * Get audit findings for a trade with acknowledgement status
+ */
+export async function auditTradeWithAcknowledgements(
+  trade: TradeRecord
+): Promise<{ findings: AuditFindingWithAck[]; acknowledgedCount: number }> {
+  const findings = auditTrade(trade);
+  const acknowledged = await getAcknowledgedFindings(trade.id!);
+
+  // Build a set of currently valid acknowledgement keys
+  const ackKeySet = new Set(acknowledged.map(a => a.id));
+
+  let acknowledgedCount = 0;
+  const findingsWithAck: AuditFindingWithAck[] = findings.map(finding => {
+    const valueHash = generateFindingValueHash(trade, finding);
+    const key = generateAcknowledgementKey(trade.id!, finding.field, valueHash);
+    const isAcknowledged = ackKeySet.has(key);
+
+    if (isAcknowledged) {
+      acknowledgedCount++;
+    }
+
+    return {
+      ...finding,
+      isAcknowledged,
+      acknowledgementId: isAcknowledged ? key : undefined,
+    };
+  });
+
+  return { findings: findingsWithAck, acknowledgedCount };
+}
+
+/**
+ * Get unacknowledged findings only (for badge counts)
+ */
+export async function getUnacknowledgedFindings(trade: TradeRecord): Promise<AuditFinding[]> {
+  const { findings } = await auditTradeWithAcknowledgements(trade);
+  return findings.filter(f => !f.isAcknowledged);
+}
+
+/**
+ * Check if a trade has any unacknowledged errors (for badge display)
+ */
+export async function hasUnacknowledgedErrors(trade: TradeRecord): Promise<boolean> {
+  const unacknowledged = await getUnacknowledgedFindings(trade);
+  return unacknowledged.some(f => f.severity === 'error');
+}
+
+/**
+ * Get counts by severity for unacknowledged findings only
+ */
+export async function getUnacknowledgedCounts(trade: TradeRecord): Promise<{
+  errors: number;
+  warnings: number;
+  incomplete: number;
+  acknowledged: number;
+}> {
+  const { findings, acknowledgedCount } = await auditTradeWithAcknowledgements(trade);
+  const unacknowledged = findings.filter(f => !f.isAcknowledged);
+
+  return {
+    errors: unacknowledged.filter(f => f.severity === 'error').length,
+    warnings: unacknowledged.filter(f => f.severity === 'warning').length,
+    incomplete: unacknowledged.filter(f => f.severity === 'incomplete').length,
+    acknowledged: acknowledgedCount,
+  };
+}
+
+/**
+ * Clean up stale acknowledgements for a trade
+ * (Removes acknowledgements whose hashes no longer match any current finding)
+ */
+export async function cleanupStaleAcknowledgements(trade: TradeRecord): Promise<number> {
+  const findings = auditTrade(trade);
+  const acknowledged = await getAcknowledgedFindings(trade.id!);
+
+  // Build set of current valid keys
+  const currentKeys = new Set(
+    findings.map(f => {
+      const valueHash = generateFindingValueHash(trade, f);
+      return generateAcknowledgementKey(trade.id!, f.field, valueHash);
+    })
+  );
+
+  // Find stale acknowledgements
+  const staleIds = acknowledged
+    .filter(a => !currentKeys.has(a.id))
+    .map(a => a.id);
+
+  if (staleIds.length > 0) {
+    await db.acknowledgedFindings.bulkDelete(staleIds);
+  }
+
+  return staleIds.length;
+}
+
+/**
+ * Extended audit summary that includes acknowledged count
+ */
+export interface AuditSummaryWithAck extends AuditSummary {
+  acknowledgedCount: number;
+  // These are the unacknowledged counts
+  unacknowledgedErrorCount: number;
+  unacknowledgedWarningCount: number;
+  unacknowledgedIncompleteCount: number;
+  unacknowledgedTopFinding: string | null;
+}
+
+/**
+ * Get audit summaries with acknowledgement awareness
+ * Counts reflect only unacknowledged findings
+ */
+export async function getAuditSummariesWithAcknowledgements(
+  trades: TradeRecord[]
+): Promise<AuditSummaryWithAck[]> {
+  const { individualFindings, duplicates } = auditAllTrades(trades);
+  const summaries: AuditSummaryWithAck[] = [];
+
+  for (const trade of trades) {
+    if (!trade.id) continue;
+
+    const findings = individualFindings.get(trade.id) || [];
+
+    // Add duplicate findings
+    for (const dup of duplicates) {
+      if (dup.trade1Id === trade.id || dup.trade2Id === trade.id) {
+        const otherTradeId = dup.trade1Id === trade.id ? dup.trade2Id : dup.trade1Id;
+        findings.push({
+          severity: 'warning',
+          field: 'duplicate',
+          message: `Possible duplicate of trade ${otherTradeId.slice(0, 8)}...`,
+        });
+      }
+    }
+
+    // Get acknowledged findings for this trade
+    const acknowledged = await getAcknowledgedFindings(trade.id);
+    const ackKeySet = new Set(acknowledged.map(a => a.id));
+
+    // Separate acknowledged and unacknowledged
+    let acknowledgedCount = 0;
+    const unacknowledged: AuditFinding[] = [];
+
+    for (const finding of findings) {
+      const valueHash = generateFindingValueHash(trade, finding);
+      const key = generateAcknowledgementKey(trade.id, finding.field, valueHash);
+      if (ackKeySet.has(key)) {
+        acknowledgedCount++;
+      } else {
+        unacknowledged.push(finding);
+      }
+    }
+
+    // Calculate unacknowledged counts
+    const unacknowledgedErrorCount = unacknowledged.filter(f => f.severity === 'error').length;
+    const unacknowledgedWarningCount = unacknowledged.filter(f => f.severity === 'warning').length;
+    const unacknowledgedIncompleteCount = unacknowledged.filter(f => f.severity === 'incomplete').length;
+
+    // Get top unacknowledged finding
+    let unacknowledgedTopFinding: string | null = null;
+    const firstError = unacknowledged.find(f => f.severity === 'error');
+    if (firstError) {
+      unacknowledgedTopFinding = firstError.message;
+    } else {
+      const firstWarning = unacknowledged.find(f => f.severity === 'warning');
+      if (firstWarning) {
+        unacknowledgedTopFinding = firstWarning.message;
+      } else {
+        const firstIncomplete = unacknowledged.find(f => f.severity === 'incomplete');
+        if (firstIncomplete) {
+          unacknowledgedTopFinding = firstIncomplete.message;
+        }
+      }
+    }
+
+    // Total counts (for reference)
+    const errorCount = findings.filter(f => f.severity === 'error').length;
+    const warningCount = findings.filter(f => f.severity === 'warning').length;
+    const incompleteCount = findings.filter(f => f.severity === 'incomplete').length;
+
+    // Top finding from all (for compatibility)
+    let topFinding: string | null = null;
+    const allFirstError = findings.find(f => f.severity === 'error');
+    if (allFirstError) {
+      topFinding = allFirstError.message;
+    } else {
+      const allFirstWarning = findings.find(f => f.severity === 'warning');
+      if (allFirstWarning) {
+        topFinding = allFirstWarning.message;
+      } else {
+        const allFirstIncomplete = findings.find(f => f.severity === 'incomplete');
+        if (allFirstIncomplete) {
+          topFinding = allFirstIncomplete.message;
+        }
+      }
+    }
+
+    summaries.push({
+      trade,
+      tradeId: trade.id,
+      pair: trade.pair,
+      findings,
+      errorCount,
+      warningCount,
+      incompleteCount,
+      topFinding,
+      acknowledgedCount,
+      unacknowledgedErrorCount,
+      unacknowledgedWarningCount,
+      unacknowledgedIncompleteCount,
+      unacknowledgedTopFinding,
+    });
+  }
+
+  return summaries;
 }

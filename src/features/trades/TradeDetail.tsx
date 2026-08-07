@@ -9,10 +9,14 @@ import {
   downloadTradeExport,
   getSingleTradeFilename,
   copyTradeExportToClipboard,
-  auditTrade,
-  hasAuditErrors,
 } from '../../utils';
-import type { AuditFinding } from '../../utils/tradeAuditor';
+import type { AuditFindingWithAck } from '../../utils/tradeAuditor';
+import {
+  auditTradeWithAcknowledgements,
+  hasUnacknowledgedErrors,
+  acknowledgeFinding,
+  unacknowledgeFinding,
+} from '../../utils/tradeAuditor';
 import { AddToNotebook } from '../../components/AddToNotebook';
 
 // Helper to check if a level type is a zone
@@ -551,7 +555,11 @@ export function TradeDetail() {
   const [tagDescriptions, setTagDescriptions] = useState<Record<string, string>>({});
   const [copyFeedback, setCopyFeedback] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [showAuditPanel, setShowAuditPanel] = useState(false);
-  const [auditFindings, setAuditFindings] = useState<AuditFinding[]>([]);
+  const [auditFindings, setAuditFindings] = useState<AuditFindingWithAck[]>([]);
+  const [acknowledgedCount, setAcknowledgedCount] = useState(0);
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
+  const [confirmAckError, setConfirmAckError] = useState<AuditFindingWithAck | null>(null);
+  const [tradeHasErrors, setTradeHasErrors] = useState(false);
 
   // Export trade as JSON file
   const handleExportTrade = () => {
@@ -570,19 +578,61 @@ export function TradeDetail() {
     setTimeout(() => setCopyFeedback('idle'), 2000);
   };
 
-  // Run audit check on trade
-  const handleCheckRecord = () => {
+  // Run audit check on trade (async with acknowledgement status)
+  const handleCheckRecord = async () => {
     if (!trade) return;
-    const findings = auditTrade(trade);
-    setAuditFindings(findings);
+    const result = await auditTradeWithAcknowledgements(trade);
+    setAuditFindings(result.findings);
+    setAcknowledgedCount(result.acknowledgedCount);
     setShowAuditPanel(true);
   };
 
-  // Memoized audit error check for badge
-  const tradeHasErrors = useMemo(() => {
-    if (!trade) return false;
-    return hasAuditErrors(trade);
-  }, [trade]);
+  // Handle acknowledging a finding
+  const handleAcknowledgeFinding = async (finding: AuditFindingWithAck) => {
+    if (!trade) return;
+
+    // For errors, require confirmation
+    if (finding.severity === 'error') {
+      setConfirmAckError(finding);
+      return;
+    }
+
+    await acknowledgeFinding(trade, finding);
+    // Refresh findings
+    const result = await auditTradeWithAcknowledgements(trade);
+    setAuditFindings(result.findings);
+    setAcknowledgedCount(result.acknowledgedCount);
+    // Update badge state
+    const hasErrors = await hasUnacknowledgedErrors(trade);
+    setTradeHasErrors(hasErrors);
+  };
+
+  // Confirm acknowledging an error
+  const handleConfirmAckError = async () => {
+    if (!trade || !confirmAckError) return;
+    await acknowledgeFinding(trade, confirmAckError);
+    setConfirmAckError(null);
+    // Refresh findings
+    const result = await auditTradeWithAcknowledgements(trade);
+    setAuditFindings(result.findings);
+    setAcknowledgedCount(result.acknowledgedCount);
+    // Update badge state
+    const hasErrors = await hasUnacknowledgedErrors(trade);
+    setTradeHasErrors(hasErrors);
+  };
+
+  // Handle unacknowledging a finding
+  const handleUnacknowledgeFinding = async (finding: AuditFindingWithAck) => {
+    if (!trade) return;
+    await unacknowledgeFinding(trade, finding);
+    // Refresh findings
+    const result = await auditTradeWithAcknowledgements(trade);
+    setAuditFindings(result.findings);
+    setAcknowledgedCount(result.acknowledgedCount);
+    // Update badge state
+    const hasErrors = await hasUnacknowledgedErrors(trade);
+    setTradeHasErrors(hasErrors);
+  };
 
   // Load trade from database
   useEffect(() => {
@@ -591,6 +641,12 @@ export function TradeDetail() {
       try {
         const found = await db.trades.get(id);
         setTrade(found || null);
+
+        // Check for unacknowledged errors (for badge display)
+        if (found) {
+          const hasErrors = await hasUnacknowledgedErrors(found);
+          setTradeHasErrors(hasErrors);
+        }
 
         // Load glossary for tag tooltips
         const glossaryTerms = await db.glossaryTerms.toArray();
@@ -1434,57 +1490,141 @@ export function TradeDetail() {
               </div>
             ) : (
               <div className="space-y-4">
-                {/* Errors */}
-                {auditFindings.filter(f => f.severity === 'error').length > 0 && (
+                {/* Unacknowledged Errors */}
+                {auditFindings.filter(f => f.severity === 'error' && !f.isAcknowledged).length > 0 && (
                   <div>
                     <h4 className="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                      Errors ({auditFindings.filter(f => f.severity === 'error').length})
+                      Errors ({auditFindings.filter(f => f.severity === 'error' && !f.isAcknowledged).length})
                     </h4>
                     <div className="space-y-2">
-                      {auditFindings.filter(f => f.severity === 'error').map((finding, i) => (
+                      {auditFindings.filter(f => f.severity === 'error' && !f.isAcknowledged).map((finding, i) => (
                         <div key={`error-${i}`} className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
-                          <p className="text-sm text-red-300">{finding.message}</p>
-                          <p className="text-xs text-red-400/70 mt-1 font-mono">{finding.field}</p>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-red-300">{finding.message}</p>
+                              <p className="text-xs text-red-400/70 mt-1 font-mono">{finding.field}</p>
+                            </div>
+                            <button
+                              onClick={() => handleAcknowledgeFinding(finding)}
+                              className="shrink-0 text-xs px-2 py-1 text-red-400/70 hover:text-red-300 hover:bg-red-500/20 rounded transition-colors"
+                              title="Acknowledge this finding"
+                            >
+                              Ack
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
 
-                {/* Warnings */}
-                {auditFindings.filter(f => f.severity === 'warning').length > 0 && (
+                {/* Unacknowledged Warnings */}
+                {auditFindings.filter(f => f.severity === 'warning' && !f.isAcknowledged).length > 0 && (
                   <div>
                     <h4 className="text-sm font-medium text-amber-400 mb-2 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                      Warnings ({auditFindings.filter(f => f.severity === 'warning').length})
+                      Warnings ({auditFindings.filter(f => f.severity === 'warning' && !f.isAcknowledged).length})
                     </h4>
                     <div className="space-y-2">
-                      {auditFindings.filter(f => f.severity === 'warning').map((finding, i) => (
+                      {auditFindings.filter(f => f.severity === 'warning' && !f.isAcknowledged).map((finding, i) => (
                         <div key={`warning-${i}`} className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-                          <p className="text-sm text-amber-300">{finding.message}</p>
-                          <p className="text-xs text-amber-400/70 mt-1 font-mono">{finding.field}</p>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-amber-300">{finding.message}</p>
+                              <p className="text-xs text-amber-400/70 mt-1 font-mono">{finding.field}</p>
+                            </div>
+                            <button
+                              onClick={() => handleAcknowledgeFinding(finding)}
+                              className="shrink-0 text-xs px-2 py-1 text-amber-400/70 hover:text-amber-300 hover:bg-amber-500/20 rounded transition-colors"
+                              title="Acknowledge this finding"
+                            >
+                              Ack
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
 
-                {/* Incomplete */}
-                {auditFindings.filter(f => f.severity === 'incomplete').length > 0 && (
+                {/* Unacknowledged Incomplete */}
+                {auditFindings.filter(f => f.severity === 'incomplete' && !f.isAcknowledged).length > 0 && (
                   <div>
                     <h4 className="text-sm font-medium text-gray-400 mb-2 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-gray-500"></span>
-                      Incomplete ({auditFindings.filter(f => f.severity === 'incomplete').length})
+                      Incomplete ({auditFindings.filter(f => f.severity === 'incomplete' && !f.isAcknowledged).length})
                     </h4>
                     <div className="space-y-2">
-                      {auditFindings.filter(f => f.severity === 'incomplete').map((finding, i) => (
+                      {auditFindings.filter(f => f.severity === 'incomplete' && !f.isAcknowledged).map((finding, i) => (
                         <div key={`incomplete-${i}`} className="p-3 bg-gray-700/50 border border-gray-600 rounded-lg">
-                          <p className="text-sm text-gray-300">{finding.message}</p>
-                          <p className="text-xs text-gray-500 mt-1 font-mono">{finding.field}</p>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-gray-300">{finding.message}</p>
+                              <p className="text-xs text-gray-500 mt-1 font-mono">{finding.field}</p>
+                            </div>
+                            <button
+                              onClick={() => handleAcknowledgeFinding(finding)}
+                              className="shrink-0 text-xs px-2 py-1 text-gray-500 hover:text-gray-300 hover:bg-gray-600 rounded transition-colors"
+                              title="Acknowledge this finding"
+                            >
+                              Ack
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Acknowledged Findings (collapsed by default) */}
+                {acknowledgedCount > 0 && (
+                  <div className="border-t border-gray-700 pt-4">
+                    <button
+                      onClick={() => setShowAcknowledged(!showAcknowledged)}
+                      className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-400 transition-colors w-full"
+                    >
+                      <svg
+                        className={`w-4 h-4 transition-transform ${showAcknowledged ? 'rotate-90' : ''}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      Acknowledged ({acknowledgedCount})
+                    </button>
+
+                    {showAcknowledged && (
+                      <div className="mt-3 space-y-2">
+                        {auditFindings.filter(f => f.isAcknowledged).map((finding, i) => (
+                          <div
+                            key={`ack-${i}`}
+                            className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg opacity-60"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className={`w-2 h-2 rounded-full ${
+                                    finding.severity === 'error' ? 'bg-red-500/50' :
+                                    finding.severity === 'warning' ? 'bg-amber-500/50' : 'bg-gray-500/50'
+                                  }`}></span>
+                                  <p className="text-sm text-gray-400">{finding.message}</p>
+                                </div>
+                                <p className="text-xs text-gray-600 mt-1 font-mono ml-4">{finding.field}</p>
+                              </div>
+                              <button
+                                onClick={() => handleUnacknowledgeFinding(finding)}
+                                className="shrink-0 text-xs px-2 py-1 text-gray-600 hover:text-gray-400 hover:bg-gray-700 rounded transition-colors"
+                                title="Remove acknowledgement"
+                              >
+                                Unack
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1496,6 +1636,36 @@ export function TradeDetail() {
                 className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Acknowledgement Confirmation Modal */}
+      {confirmAckError && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-lg font-medium text-white mb-2">Acknowledge Error?</h3>
+            <p className="text-sm text-gray-400 mb-4">
+              You're acknowledging an <span className="text-red-400 font-medium">error</span>. This finding won't appear in counts or summaries until the underlying data changes.
+            </p>
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg mb-4">
+              <p className="text-sm text-red-300">{confirmAckError.message}</p>
+              <p className="text-xs text-red-400/70 mt-1 font-mono">{confirmAckError.field}</p>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmAckError(null)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAckError}
+                className="px-4 py-2 bg-red-600 hover:bg-red-500 rounded-lg text-white transition-colors"
+              >
+                Acknowledge
               </button>
             </div>
           </div>

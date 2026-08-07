@@ -1,6 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import dexieCloud from 'dexie-cloud-addon';
-import type { TradeRecord, Account, Strategy, DailyJournal, GlossaryTerm, LevelTypePref, Note } from '../types';
+import type { TradeRecord, Account, Strategy, DailyJournal, GlossaryTerm, LevelTypePref, Note, AcknowledgedFinding } from '../types';
 import { normalizeHighLowZoneEdges, isHighLowZoneType } from '../utils/tradeCalculations';
 
 // Database class extending Dexie with cloud sync
@@ -12,6 +12,7 @@ class TradingDiaryDB extends Dexie {
   glossaryTerms!: EntityTable<GlossaryTerm, 'id'>;
   levelTypePrefs!: EntityTable<LevelTypePref, 'id'>;
   notes!: EntityTable<Note, 'id'>;
+  acknowledgedFindings!: EntityTable<AcknowledgedFinding, 'id'>;
   settings!: EntityTable<{ id: string; [key: string]: unknown }, 'id'>;
 
   constructor() {
@@ -37,6 +38,19 @@ class TradingDiaryDB extends Dexie {
       glossaryTerms: '@id, term',
       levelTypePrefs: '@id, levelType',
       notes: '@id, category, status, pinned, createdAt',
+      settings: '@id',
+    });
+
+    // v3 schema - add acknowledgedFindings table for audit acknowledgements
+    this.version(3).stores({
+      trades: '@id, accountId, strategyId, pair, entryTime',
+      accounts: '@id',
+      strategies: '@id',
+      dailyJournals: '@id, date, accountId',
+      glossaryTerms: '@id, term',
+      levelTypePrefs: '@id, levelType',
+      notes: '@id, category, status, pinned, createdAt',
+      acknowledgedFindings: '@id, tradeId',
       settings: '@id',
     });
 

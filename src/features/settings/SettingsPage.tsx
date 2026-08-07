@@ -18,9 +18,8 @@ import {
   calculateAccountBalance,
   getAccountTradeCount,
   getStrategyStats,
-  getAuditSummaries,
 } from '../../utils';
-import type { AuditSummary } from '../../utils/tradeAuditor';
+import { getAuditSummariesWithAcknowledgements, type AuditSummaryWithAck } from '../../utils/tradeAuditor';
 import type { AlertType, Account, Strategy, BackupData, ImportResult, TradeEvent } from '../../types';
 import { NOT_TAKEN_REASON_PRESETS, NOT_TAKEN_REASON_LABELS, PROTECTED_NOT_TAKEN_REASONS } from '../../types';
 
@@ -144,7 +143,7 @@ export function SettingsPage() {
   const [confirmText, setConfirmText] = useState('');
 
   // Audit state
-  const [auditSummaries, setAuditSummaries] = useState<AuditSummary[]>([]);
+  const [auditSummaries, setAuditSummaries] = useState<AuditSummaryWithAck[]>([]);
   const [showAuditResults, setShowAuditResults] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
 
@@ -1071,12 +1070,16 @@ export function SettingsPage() {
     setAuditLoading(true);
     try {
       const allTrades = await db.trades.toArray();
-      const summaries = getAuditSummaries(allTrades);
-      // Sort by severity (errors first, then warnings, then incomplete)
+      const summaries = await getAuditSummariesWithAcknowledgements(allTrades);
+      // Sort by unacknowledged severity (errors first, then warnings, then incomplete)
       summaries.sort((a, b) => {
-        if (a.errorCount !== b.errorCount) return b.errorCount - a.errorCount;
-        if (a.warningCount !== b.warningCount) return b.warningCount - a.warningCount;
-        return b.incompleteCount - a.incompleteCount;
+        if (a.unacknowledgedErrorCount !== b.unacknowledgedErrorCount) {
+          return b.unacknowledgedErrorCount - a.unacknowledgedErrorCount;
+        }
+        if (a.unacknowledgedWarningCount !== b.unacknowledgedWarningCount) {
+          return b.unacknowledgedWarningCount - a.unacknowledgedWarningCount;
+        }
+        return b.unacknowledgedIncompleteCount - a.unacknowledgedIncompleteCount;
       });
       setAuditSummaries(summaries);
       setShowAuditResults(true);
@@ -2964,9 +2967,12 @@ export function SettingsPage() {
                 <h2 className="text-xl font-bold text-white">Audit Results</h2>
                 <p className="text-sm text-gray-400 mt-1">
                   {auditSummaries.length} trades audited ·{' '}
-                  {auditSummaries.filter(s => s.errorCount > 0).length} with errors ·{' '}
-                  {auditSummaries.filter(s => s.warningCount > 0).length} with warnings ·{' '}
-                  {auditSummaries.filter(s => s.incompleteCount > 0).length} incomplete
+                  {auditSummaries.filter(s => s.unacknowledgedErrorCount > 0).length} with errors ·{' '}
+                  {auditSummaries.filter(s => s.unacknowledgedWarningCount > 0).length} with warnings ·{' '}
+                  {auditSummaries.filter(s => s.unacknowledgedIncompleteCount > 0).length} incomplete
+                  {auditSummaries.reduce((sum, s) => sum + s.acknowledgedCount, 0) > 0 && (
+                    <span className="text-gray-500"> · {auditSummaries.reduce((sum, s) => sum + s.acknowledgedCount, 0)} acknowledged</span>
+                  )}
                 </p>
               </div>
               <button
@@ -2979,7 +2985,7 @@ export function SettingsPage() {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-6">
-              {auditSummaries.filter(s => s.errorCount > 0 || s.warningCount > 0 || s.incompleteCount > 0).length === 0 ? (
+              {auditSummaries.filter(s => s.unacknowledgedErrorCount > 0 || s.unacknowledgedWarningCount > 0 || s.unacknowledgedIncompleteCount > 0).length === 0 ? (
                 <div className="flex items-center gap-3 p-4 bg-green-500/10 border border-green-500/30 rounded-lg">
                   <svg className="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -3001,35 +3007,38 @@ export function SettingsPage() {
                     </thead>
                     <tbody>
                       {auditSummaries
-                        .filter(s => s.errorCount > 0 || s.warningCount > 0 || s.incompleteCount > 0)
+                        .filter(s => s.unacknowledgedErrorCount > 0 || s.unacknowledgedWarningCount > 0 || s.unacknowledgedIncompleteCount > 0)
                         .map(summary => (
                           <tr key={summary.tradeId} className="border-b border-gray-700 hover:bg-gray-750">
                             <td className="px-4 py-3">
                               <span className="text-white font-medium">{summary.pair}</span>
                               <span className="text-gray-500 text-xs ml-2">{summary.tradeId.slice(0, 8)}...</span>
+                              {summary.acknowledgedCount > 0 && (
+                                <span className="text-gray-600 text-xs ml-2">({summary.acknowledgedCount} ack)</span>
+                              )}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {summary.errorCount > 0 ? (
+                              {summary.unacknowledgedErrorCount > 0 ? (
                                 <span className="inline-flex items-center justify-center w-6 h-6 bg-red-500/20 text-red-400 text-sm font-medium rounded-full">
-                                  {summary.errorCount}
+                                  {summary.unacknowledgedErrorCount}
                                 </span>
                               ) : (
                                 <span className="text-gray-600">-</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {summary.warningCount > 0 ? (
+                              {summary.unacknowledgedWarningCount > 0 ? (
                                 <span className="inline-flex items-center justify-center w-6 h-6 bg-amber-500/20 text-amber-400 text-sm font-medium rounded-full">
-                                  {summary.warningCount}
+                                  {summary.unacknowledgedWarningCount}
                                 </span>
                               ) : (
                                 <span className="text-gray-600">-</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              {summary.incompleteCount > 0 ? (
+                              {summary.unacknowledgedIncompleteCount > 0 ? (
                                 <span className="inline-flex items-center justify-center w-6 h-6 bg-gray-500/20 text-gray-400 text-sm font-medium rounded-full">
-                                  {summary.incompleteCount}
+                                  {summary.unacknowledgedIncompleteCount}
                                 </span>
                               ) : (
                                 <span className="text-gray-600">-</span>
@@ -3037,12 +3046,12 @@ export function SettingsPage() {
                             </td>
                             <td className="px-4 py-3">
                               <span className={`text-sm ${
-                                summary.findings[0]?.severity === 'error' ? 'text-red-400' :
-                                summary.findings[0]?.severity === 'warning' ? 'text-amber-400' :
+                                summary.unacknowledgedTopFinding && summary.unacknowledgedErrorCount > 0 ? 'text-red-400' :
+                                summary.unacknowledgedTopFinding && summary.unacknowledgedWarningCount > 0 ? 'text-amber-400' :
                                 'text-gray-400'
                               }`}>
-                                {summary.topFinding?.slice(0, 50)}
-                                {(summary.topFinding?.length ?? 0) > 50 ? '...' : ''}
+                                {summary.unacknowledgedTopFinding?.slice(0, 50) ?? '-'}
+                                {(summary.unacknowledgedTopFinding?.length ?? 0) > 50 ? '...' : ''}
                               </span>
                             </td>
                             <td className="px-4 py-3 text-right">

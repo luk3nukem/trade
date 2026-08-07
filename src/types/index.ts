@@ -434,3 +434,15 @@ export type UpdateTradeRecord = Partial<TradeRecord> & { id: string };
 export type UpdateAccount = Partial<Account> & { id: string };
 export type UpdateStrategy = Partial<Strategy> & { id: string };
 export type UpdateDailyJournal = Partial<DailyJournal> & { id: string };
+
+// Acknowledged audit findings - keyed by trade id + field + value hash
+// If underlying values change, the hash changes and finding resurfaces
+export interface AcknowledgedFinding {
+  id: string;                    // Composite key: tradeId:field:valueHash
+  tradeId: string;               // The trade this acknowledgement belongs to
+  field: string;                 // The field path (e.g., "exits[0].time")
+  valueHash: string;             // Hash of the offending values - changes if data changes
+  severity: 'error' | 'warning' | 'incomplete';
+  message: string;               // Original message at time of acknowledgement
+  acknowledgedAt: Date;          // When it was acknowledged
+}
